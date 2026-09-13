@@ -1,6 +1,6 @@
 /** Editable statistic cards over the existing durable calculation workflow. */
 import { calculationIntent, chunkPixels } from "./calculation-session.js";
-import { CalculationsController } from "./calculations-controller.js";
+import { CalculationExecutor } from "./calculation-executor.js";
 import { catalogSelectionsEqual, normalizeRasterSamplingArea } from "../selected-area.js";
 
 export const AUTOMATIC_CALCULATION_LIMITS = Object.freeze({ nativeBlocks: 128, decodedBytes: 64 * 1024 * 1024, geometryCells: 25000 });
@@ -39,9 +39,10 @@ export class SummaryStatisticsController {
         this.state = { sources: [], statistics: [], area: null, selectedArea: null, areaChoice: "selection",
             active: false, automatic: true, jobs: [], historyError: "", saved: null, undo: false, targetChunkPixels: null };
         this.state.statistics.push(this.makeStatistic(STATISTIC_PRESETS.mean));
-        this.engine = new CalculationsController({ ...dependencies, canAutoSubmit: canAutomaticallyCalculate,
-            view: { bind: handlers => { this.engineHandlers = handlers; }, render: state => this.receive(state), unbind() {} },
-            onOpen() {}, onClose() {},
+        this.executor = new CalculationExecutor({ api, jobs, storage: dependencies.storage,
+            onActivity: dependencies.onActivity, requestId: dependencies.requestId, now,
+            canAutoSubmit: canAutomaticallyCalculate,
+            onChange: snapshot => this.receive(snapshot),
         });
         view.bind({ onOpen: () => this.open(), onClose: () => this.close(), onEditArea,
             onArea: choice => this.chooseArea(choice), onAutomatic: value => this.setAutomatic(value),
@@ -49,9 +50,9 @@ export class SummaryStatisticsController {
             onEdit: (id, change) => this.editStatistic(id, change), onAdd: preset => this.addStatistic(preset),
             onRemove: id => this.removeStatistic(id), onUndo: () => this.undoRemove(),
             onRun: id => this.request(id, "manual"), onStop: id => this.stopStatistic(id),
-            onRetry: () => this.engineHandlers.onRetry(), onRefresh: () => void jobs.refresh(),
-            onInspect: id => this.inspect(id), onCancel: id => void this.engine.jobAction(id, "cancel"),
-            onDelete: id => void this.engine.jobAction(id, "delete"),
+            onRetry: () => void this.executor.retry(), onRefresh: () => void jobs.refresh(),
+            onInspect: id => this.inspect(id), onCancel: id => void this.executor.jobAction(id, "cancel"),
+            onDelete: id => void this.executor.jobAction(id, "delete"),
             onCloseSaved: () => { this.state.saved = null; this.render(); },
         });
         this.render();
@@ -66,9 +67,11 @@ export class SummaryStatisticsController {
     key(card) { return JSON.stringify([sourceKey(card.source), card.expression.trim(), this.state.area, this.state.targetChunkPixels]); }
     get isActive() { return this.state.active && !this.destroyed; }
 
-    /** Recover the existing durable record without starting a new automatic calculation. */
+    /** Restore cards from the execution recovery projection without automatic admission.
+     * @return {Promise<void>} Recovery progress.
+     */
     async start() {
-        const record = this.engine.record;
+        const record = this.executor.snapshot.recovery;
         if (record) {
             this.state.targetChunkPixels = record.intent.targetChunkPixels ?? null;
             this.state.area = this.state.selectedArea = record.intent.area;
@@ -80,8 +83,8 @@ export class SummaryStatisticsController {
             this.batch = { automatic: record.automatic, obsolete: record.cancelRequested,
                 intent: record.intent, cards: this.state.statistics.map(card => ({ id: card.id, key: this.key(card) })) };
         }
-        await this.engine.start();
-        this.receive(this.engine.state);
+        await this.executor.start();
+        this.receive(this.executor.snapshot);
     }
 
     /** Opening/reopening is presentation, never an automatic calculation trigger.
@@ -160,7 +163,7 @@ export class SummaryStatisticsController {
         const selecting = ["reading", "selected"].includes(selection.phase);
         if (selecting && !this.state.vectorSelecting) {
             this.invalidateBatch();
-            this.engine.invalidate();
+            this.executor.invalidate();
             this.state.areaChoice = "vector";
             this.changeArea(null, false);
         }
@@ -183,7 +186,7 @@ export class SummaryStatisticsController {
         const target = chunkPixels(value);
         if (target === this.state.targetChunkPixels) return;
         this.invalidateBatch();
-        this.engine.invalidate();
+        this.executor.invalidate();
         this.state.targetChunkPixels = target;
         for (const card of this.state.statistics) {
             card.plan = null; card.manualRequired = false; card.requested = null; card.error = false;
@@ -213,7 +216,7 @@ export class SummaryStatisticsController {
     changeArea(area, automatic) {
         if (same(area, this.state.area)) return;
         if (this.batch?.automatic || this.isActive) this.invalidateBatch();
-        this.engine.invalidate();
+        this.executor.invalidate();
         this.state.area = area;
         for (const card of this.state.statistics) {
             card.plan = null; card.manualRequired = false; card.error = false;
@@ -339,7 +342,7 @@ export class SummaryStatisticsController {
                 if (card && card.id !== id && id !== undefined && this.key(card) === entry.key &&
                     (!batch.automatic || (this.isActive && this.state.automatic))) card.requested = batch.automatic ? "automatic" : "manual";
             }
-            this.engine.stop();
+            this.executor.stop();
         }
     }
     schedulePump() {
@@ -347,13 +350,17 @@ export class SummaryStatisticsController {
         this.pumpScheduled = true;
         queueMicrotask(() => { this.pumpScheduled = false; this.pump(); });
     }
+    /** Admit one compatible card batch using the executor status contract.
+     * @return {void}
+     */
     pump() {
-        if (this.destroyed || this.batch || this.engine.record || this.engine.desired || this.engine.advanceRunning) return;
+        const execution = this.executor.snapshot;
+        if (this.destroyed || this.batch || !execution.settled) return;
         const eligible = this.state.statistics.filter(card => card.requested && card.valid && !card.checking && card.source && this.state.area &&
             (["manual", "review"].includes(card.requested) || (this.isActive && this.state.automatic)));
         const first = eligible[0];
         if (!first) return;
-        if (this.engine.blocked && first.requested === "automatic") {
+        if (execution.admission === "manual" && first.requested === "automatic") {
             for (const card of eligible) { card.requested = null; card.error = true; card.message = "Calculation paused after an error · Calculate to retry"; }
             this.render(); return;
         }
@@ -367,52 +374,55 @@ export class SummaryStatisticsController {
         const intent = calculationIntent({ source: first.source, area: this.state.area,
             targetChunkPixels: this.state.targetChunkPixels,
             calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
-        this.batch = { intent, previousJobId: this.engine.state.result?.jobId, automatic: first.requested !== "manual", obsolete: false,
+        this.batch = { intent, previousJobId: execution.result?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Checking calculation size…"; }
-        this.engine.executeIntent(intent, this.batch.automatic);
+        this.executor.executeIntent(intent, this.batch.automatic);
         this.render();
     }
 
-    /** Project durable progress onto matching cards; stale results never move between cards. */
-    receive(engineState) {
-        if (!this.engine || this.destroyed) return;
-        this.state.jobs = engineState.jobs;
-        this.state.historyError = engineState.historyError;
+    /** Apply execution progress to the batch that owns it, including terminal results.
+     * @param {import("./calculation-executor.js").CalculationExecutionSnapshot} execution Coherent execution status.
+     * @return {void}
+     */
+    receive(execution) {
+        if (!this.executor || this.destroyed) return;
+        this.state.jobs = execution.jobs;
+        this.state.historyError = execution.historyError;
         if (this.state.saved) {
-            const saved = engineState.jobs.find(job => job.jobId === this.state.saved.jobId) ?? this.state.saved;
+            const saved = execution.jobs.find(job => job.jobId === this.state.saved.jobId) ?? this.state.saved;
             this.state.saved = saved.status === "deleted" ? null : saved;
         }
-        this.state.recoverable = engineState.recoverable;
-        this.state.recoveryMessage = engineState.recoverable ? engineState.message : "";
+        this.state.recoverable = execution.recoverable;
+        this.state.recoveryMessage = execution.recoverable ? execution.message : "";
         for (const card of this.state.statistics) {
             if (card.result) {
-                const job = engineState.jobs.find(item => item.jobId === card.result.job.jobId);
+                const job = execution.jobs.find(item => item.jobId === card.result.job.jobId);
                 if (job?.status === "deleted") card.result = null;
             }
         }
         const batch = this.batch;
         if (batch) {
-            const settled = !this.engine.record && !this.engine.desired && !this.engine.advanceRunning;
-            const job = engineState.result;
-            const matching = !batch.obsolete && same(engineState.resultIntent, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
+            const settled = execution.settled;
+            const job = execution.result;
+            const matching = !batch.obsolete && same(execution.resultIntent, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
             batch.cards.forEach((entry, index) => {
                 const card = this.state.statistics.find(item => item.id === entry.id);
                 if (!card) return;
                 if (!batch.obsolete && this.key(card) === entry.key) {
-                    card.message = engineState.message || (engineState.current?.status === "running" ? "Calculating…" : "Waiting to calculate…");
-                    card.progress = engineState.current?.progress ?? null;
-                    card.error = engineState.phase === "error";
-                    if (engineState.plan) card.plan = engineState.plan;
+                    card.message = execution.message || (execution.current?.status === "running" ? "Calculating…" : "Waiting to calculate…");
+                    card.progress = execution.current?.progress ?? null;
+                    card.error = execution.phase === "error";
+                    if (execution.plan) card.plan = execution.plan;
                     if (settled && matching && job.result?.rows[index]) {
                         card.result = { key: entry.key, row: job.result.rows[index], job, source: batch.intent.source, area: batch.intent.area,
-                            requestStarted: entry.requestStarted, stageTrace: engineState.resultTiming };
+                            requestStarted: entry.requestStarted, stageTrace: execution.resultTiming };
                         card.message = "Up to date";
-                    } else if (settled && engineState.manualRequired) {
+                    } else if (settled && execution.manualRequired) {
                         card.manualRequired = true;
                         card.message = "Ready to calculate · explicit confirmation needed";
                     } else if (settled && !matching) {
-                        card.error = engineState.phase === "error" || !batch.obsolete;
+                        card.error = execution.phase === "error" || !batch.obsolete;
                     }
                 }
                 if (settled) { card.pending = false; card.progress = null; }
@@ -475,6 +485,6 @@ export class SummaryStatisticsController {
     destroy() {
         this.destroyed = true;
         for (const card of this.state.statistics) { this.clock.clearTimeout(card.timer); card.abort?.abort(); }
-        this.engine.destroy(); this.view.unbind();
+        this.executor.destroy(); this.view.unbind();
     }
 }

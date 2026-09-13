@@ -17,6 +17,44 @@ const grid = { width: 100, height: 100, crs: "EPSG:3857", nativeBlocks: 4, decod
 const flush = async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); };
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => {resolve=a;reject=b;}); return {promise,resolve,reject}; };
 
+test("the first active map click calculates and an unchanged completed box reuses its result", async () => {
+    const h = fixture(); await h.open();
+    assert.equal(h.submits(), 0);
+    h.controller.calculateSelection(); await h.tick();
+    assert.equal(h.submits(), 1);
+    await h.finish();
+    h.controller.calculateSelection(); await h.tick();
+    assert.equal(h.submits(), 1);
+    assert.equal(h.controller.state.statistics[0].current, true);
+});
+
+test("late formula checks and plans cannot submit after leaving the summary panel", async () => {
+    for (const stage of ["validateCalculation", "planCalculation"]) {
+        const response = deferred(); const h = fixture(); await h.open();
+        const original = h.api[stage];
+        h.api[stage] = async value => { const result = await original(value); await response.promise; return result; };
+        h.controller.calculateSelection(); await h.tick();
+        h.controller.setActive(false);
+        response.resolve(); await flush();
+        assert.equal(h.submits(), 0);
+        assert.equal(h.requests.filter(([kind]) => kind === "discard").length, stage === "planCalculation" ? 1 : 0);
+    }
+});
+
+test("clearing raster coverage cancels automatic work without relabeling the previous result", async () => {
+    const h = fixture(); await h.open();
+    h.controller.calculateSelection(); await h.tick(); await h.finish();
+    const card = h.controller.state.statistics[0], previous = card.result;
+    h.controller.setSelection(box(80));
+    h.controller.calculateSelection(); await h.tick();
+    h.controller.setSelection(null); await flush();
+    assert.equal(h.requests.filter(([kind]) => kind === "cancel").length, 1);
+    assert.equal(h.controller.isActive, true);
+    assert.equal(h.controller.state.area, null);
+    assert.equal(card.result, previous);
+    assert.equal(card.current, false);
+});
+
 /** Build the real summary/controller/job boundary against current HTML identities.
  * @param {Object} [overrides={}] API fault overrides. @param {Map} [data=new Map()] Session storage.
  * @param {Object} [browserContext={}] Clipboard capability. @return {Object} Observable workflow harness.
@@ -50,7 +88,7 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}) {
         onOpen:()=>controller.setActive(true),onClose(){},onEditArea(){},requestId:()=>`request-${String(jobSerial).padStart(16,"0")}`});
     const tick = async (delay = 700) => { const due=[...timers.entries()].filter(([,t])=>t.delay===delay);for(const[id,t]of due){timers.delete(id);t.fn();}await flush(); };
     const finish = async (status="ready", values=["12.5"]) => {
-        const old=server.get(controller.engine.record.jobId);
+        const old=server.get(controller.executor.snapshot.current.jobId);
         const result=status==="ready"?{url:`/api/processing/jobs/${old.jobId}/result`,provenanceUrl:`/api/processing/jobs/${old.jobId}/provenance`,rows:old.calculations.map((row,i)=>({...row,value:values[i]??values[0],valueType:"float",state:"ok",aggregates:[{function:"mean",matchedPixels:8,validPixels:8,invalidArithmeticPixels:0}]}))}:null;
         server.set(old.jobId,{...old,status,result,error:status==="failed"?{detail:"Scan failed"}:null});
         await jobs.refresh();await flush();
@@ -108,7 +146,7 @@ for (const [name, bbox, confirmations] of [
             selection.view.handlers.onConfirm(); await h.tick();
         }
         assert.equal(h.submits(), 1);
-        assert.deepEqual(h.controller.engine.record.intent.area.catalogSelection, CATALOG_SELECTION);
+        assert.deepEqual(h.controller.executor.snapshot.recovery.intent.area.catalogSelection, CATALOG_SELECTION);
         assert.equal(h.controller.isActive, true);
         selection.view.handlers.onConfirm(); await h.tick();
         assert.equal(h.submits(), 1, "A repeated confirmation cannot resubmit");
@@ -139,8 +177,8 @@ test("applied vector action runs configured valid statistics once even with auto
     h.controller.addStatistic("custom"); await h.tick();
     h.controller.setVectorSamplingArea({ selection: CATALOG_SELECTION, label: "Canada" }, true); await h.tick();
     assert.equal(h.submits(), 1);
-    assert.equal(h.controller.engine.record.intent.calculations.length, 1);
-    assert.deepEqual(h.controller.engine.record.intent.area.catalogSelection, CATALOG_SELECTION);
+    assert.equal(h.controller.executor.snapshot.recovery.intent.calculations.length, 1);
+    assert.deepEqual(h.controller.executor.snapshot.recovery.intent.area.catalogSelection, CATALOG_SELECTION);
     await h.finish(); assert.equal(h.controller.state.statistics[0].current, true);
     assert.equal(h.controller.state.statistics[1].result, null);
 });
@@ -174,7 +212,7 @@ test("late vector plans are released before the newest applied area is submitted
     h.controller.setVectorSelectionState({ analysis: true, phase: "reading", message: "Replacement" });
     h.controller.setVectorSamplingArea({ selection: { ...CATALOG_SELECTION, itemId: "second" }, label: "Second" }, true); await h.tick();
     assert.equal(h.submits(), 0); wait.resolve(); await flush();
-    assert.equal(h.submits(), 1); assert.equal(h.controller.engine.record.intent.area.catalogSelection.itemId, "second");
+    assert.equal(h.submits(), 1); assert.equal(h.controller.executor.snapshot.recovery.intent.area.catalogSelection.itemId, "second");
     const operations = h.requests.map(row => row[0]);
     assert.ok(operations.indexOf("discard") < operations.lastIndexOf("plan"));
 });
@@ -271,7 +309,7 @@ test("saved results retain typed empty and arithmetic explanations", async () =>
 test("saved jobs show progress and failure safely when their Catalog label is unavailable", async () => {
     const h = fixture(); await h.open(); const card = h.controller.state.statistics[0];
     h.controller.request(card.id, "manual"); await flush();
-    const job = h.server.get(h.controller.engine.record.jobId);
+    const job = h.server.get(h.controller.executor.snapshot.current.jobId);
     h.controller.state.sources = [];
     h.controller.inspect(job.jobId);
     assert.match(visibleText(h.view.elements.result), /hfp/);
@@ -433,7 +471,7 @@ test("vector calculation submits on the first click and invalidates results when
     assert.equal(h.submits(),1);assert.equal(card.manualRequired,false);
     h.controller.request(card.id,"manual");await flush();assert.equal(h.submits(),1);
     assert.equal(h.view.cards.get(card.id).size.hidden,true);
-    assert.deepEqual(h.controller.engine.record.intent.area,{kind:"catalogSelection",catalogSelection:id});
+    assert.deepEqual(h.controller.executor.snapshot.recovery.intent.area,{kind:"catalogSelection",catalogSelection:id});
     await h.finish();assert.equal(card.current,true);
     assert.equal(h.view.cards.get(card.id).size.hidden,true);
     h.controller.setSelection(null,false);
@@ -582,16 +620,16 @@ test("dirty statistics sharing a source use one scan; different sources run sequ
     const h=fixture();await h.open();h.controller.setAutomatic(false);h.controller.addStatistic("count");await h.tick();
     h.controller.setAutomatic(true);const [a,b]=h.controller.state.statistics;
     h.controller.editStatistic(a.id,{expression:"max(a)"});h.controller.editStatistic(b.id,{expression:"count(a > 2)"});await h.tick();
-    assert.equal(h.submits(),1);assert.equal(h.controller.engine.record.intent.calculations.length,2);
+    assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.recovery.intent.calculations.length,2);
     await h.finish("ready",["22","8"]);assert.equal(a.result.row.value,"22");assert.equal(b.result.row.value,"8");
     h.controller.editStatistic(a.id,{expression:"min(a)"});h.controller.editStatistic(b.id,{source:resistance});await h.tick();
     assert.equal(h.submits(),2);await h.finish();assert.equal(h.submits(),3);
-    assert.equal(h.controller.engine.record.intent.source.itemId,"resistance");await h.finish();
+    assert.equal(h.controller.executor.snapshot.recovery.intent.source.itemId,"resistance");await h.finish();
 });
 test("duplicate statistic names are valid and are not sent in one duplicate-label request",async()=>{
     const h=fixture();await h.open();h.controller.setAutomatic(false);h.controller.addStatistic("mean");await h.tick();
     for(const card of h.controller.state.statistics) h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.engine.record.intent.calculations.length,1);await h.finish();assert.equal(h.submits(),2);await h.finish();
+    assert.equal(h.controller.executor.snapshot.recovery.intent.calculations.length,1);await h.finish();assert.equal(h.submits(),2);await h.finish();
 });
 test("edits cancel obsolete work and wait for terminal cancellation before replacement",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
@@ -648,8 +686,8 @@ test("uncertain submissions retain the same request identity during recovery",as
     const h=fixture();await h.open();const original=h.api.submitCalculation;let failed=false;
     h.api.submitCalculation=async submission=>{if(!failed){failed=true;h.requests.push(["uncertain",submission]);throw Error("Connection lost");}return original(submission);};
     const card=h.controller.state.statistics[0];h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.state.recoverable,true);const request=h.controller.engine.record.pending.requestId;
-    h.controller.engineHandlers.onRetry();await flush();assert.equal(h.requests.find(r=>r[0]==="submit")[1].requestId,request);
+    assert.equal(h.controller.state.recoverable,true);const request=h.requests.find(r=>r[0]==="uncertain")[1].requestId;
+    h.view.handlers.onRetry();await flush();assert.equal(h.requests.find(r=>r[0]==="submit")[1].requestId,request);
     await h.finish();assert.equal(card.current,true);
     assert.equal(card.result.stages,undefined);
 });
@@ -680,7 +718,7 @@ test("metadata from an obsolete formula is released before planning its replacem
     h.api.planCalculation=async intent=>{const plan=await original(intent);if(first){first=false;await response.promise;}return plan;};
     h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();
     h.controller.editStatistic(card.id,{expression:"max(a)"});await h.tick();assert.equal(h.submits(),0);
-    response.resolve();await flush();assert.equal(h.submits(),1);assert.equal(h.controller.engine.record.intent.calculations[0].expression,"max(a)");
+    response.resolve();await flush();assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.recovery.intent.calculations[0].expression,"max(a)");
     const operations=h.requests.map(r=>r[0]);assert.ok(operations.indexOf("discard")<operations.lastIndexOf("plan"));
 });
 test("unused-plan release failure pauses other automatic cards until an explicit retry",async()=>{
@@ -689,29 +727,29 @@ test("unused-plan release failure pauses other automatic cards until an explicit
     h.controller.chooseArea("whole");await h.tick();
     h.api.discardPlan=async()=>{throw Error("Release failed");};
     h.controller.chooseArea("selection");await h.tick();assert.equal(h.submits(),0);
-    assert.equal(h.controller.engine.blocked,true);assert.equal(a.error,true);
+    assert.equal(h.controller.executor.snapshot.admission,"manual");assert.equal(a.error,true);
     h.api.discardPlan=async()=>{};h.controller.request(b.id,"manual");await flush();assert.equal(h.submits(),1);
 });
 
 test("inspected history refreshes a running job without rewriting the editable cards",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    h.controller.request(card.id,"manual");await flush();const jobId=h.controller.engine.record.jobId;
+    h.controller.request(card.id,"manual");await flush();const jobId=h.controller.executor.snapshot.current.jobId;
     h.controller.inspect(jobId);assert.equal(h.controller.state.saved.status,"running");
     await h.finish();assert.equal(h.controller.state.saved.status,"ready");assert.equal(h.controller.state.statistics[0],card);
-    await h.controller.engine.jobAction(jobId,"delete");await flush();assert.equal(h.controller.state.saved,null);
+    await h.controller.executor.jobAction(jobId,"delete");await flush();assert.equal(h.controller.state.saved,null);
 });
 test("reload recovers a manual job into its card without admitting another calculation",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    h.controller.request(card.id,"manual");await flush();const id=h.controller.engine.record.jobId;h.controller.destroy();
+    h.controller.request(card.id,"manual");await flush();const id=h.controller.executor.snapshot.current.jobId;h.controller.destroy();
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id)},h.data);
-    await restored.controller.start();assert.equal(restored.submits(),0);assert.equal(restored.controller.engine.record.jobId,id);
+    await restored.controller.start();assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.current.jobId,id);
     const old=h.server.get(id);h.server.set(id,{...old,status:"ready",result:{url:"/api/processing/jobs/"+id+"/result",provenanceUrl:"/api/processing/jobs/"+id+"/provenance",rows:[{...old.calculations[0],value:"9",valueType:"float",state:"ok",aggregates:[]}]}});
     await restored.jobs.refresh();await flush();assert.equal(restored.controller.state.statistics[0].result.row.value,"9");assert.equal(restored.submits(),0);
     assert.equal(restored.controller.state.statistics[0].result.totalWaitSeconds,undefined);
 });
 test("reload cancels recovered automatic work and never resumes sampling on its own",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();const id=h.controller.engine.record.jobId;h.controller.destroy();
+    h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();const id=h.controller.executor.snapshot.current.jobId;h.controller.destroy();
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id),cancelJob:async id=>{const job={...h.server.get(id),status:"cancelled"};h.server.set(id,job);return job;}},h.data);
     await restored.controller.start();await flush();await restored.jobs.refresh();await flush();
     assert.equal(h.server.get(id).status,"cancelled");assert.equal(restored.submits(),0);assert.equal(restored.controller.state.statistics[0].result,null);
@@ -725,38 +763,38 @@ test("batch tuning invalidates the result without running, persists on repeats, 
     assert.equal(card.current,false);assert.equal(card.plan,null);assert.equal(h.submits(),1);
     assert.equal(card.valid,true);assert.equal(h.view.cards.get(card.id).root.classList.contains("is-previous"),true);
     h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.engine.record.intent.targetChunkPixels,65536);
+    assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,65536);
     await h.finish();
     h.controller.setSelection(box(78));await h.tick();
-    assert.equal(h.controller.engine.record.intent.targetChunkPixels,65536);
+    assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,65536);
     await h.finish();
     input.value="";input.dispatchEvent(new Event("change"));await flush();
     h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.engine.record.intent.targetChunkPixels,undefined);
+    assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,undefined);
     assert.equal(h.requests.filter(r=>r[0]==="plan").at(-1)[1].targetChunkPixels,undefined);
 });
 
 test("recovery preserves accepted batch settings without another submission",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.setChunkPixels(262144);h.controller.request(card.id,"manual");await flush();
-    const id=h.controller.engine.record.jobId;h.controller.destroy();
+    const id=h.controller.executor.snapshot.current.jobId;h.controller.destroy();
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id)},h.data);
     await restored.controller.start();
-    assert.equal(restored.submits(),0);assert.equal(restored.controller.engine.record.jobId,id);
+    assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.current.jobId,id);
     assert.equal(restored.controller.state.targetChunkPixels,262144);
     assert.equal(restored.view.extra["chunk-pixels"].value,"262144");
-    assert.equal(restored.controller.engine.intent().targetChunkPixels,262144);
+    assert.equal(restored.controller.executor.snapshot.recovery.intent.targetChunkPixels,262144);
 });
 
 test("changing batch size cancels obsolete work and waits before the next explicit calculation",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.setChunkPixels(65536);h.controller.request(card.id,"manual");await flush();
-    const oldIntent=h.controller.engine.record.intent;
+    const oldIntent=h.controller.executor.snapshot.recovery.intent;
     h.controller.setChunkPixels(262144);await flush();
     assert.equal(oldIntent.targetChunkPixels,65536);assert.ok(h.requests.some(r=>r[0]==="cancel"));
     h.controller.request(card.id,"manual");await flush();assert.equal(h.submits(),1);
     await h.finish("cancelled");await flush();
-    assert.equal(h.submits(),2);assert.equal(h.controller.engine.record.intent.targetChunkPixels,262144);
+    assert.equal(h.submits(),2);assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,262144);
 });
 
 test("performance details retain measured timings and source-work units in cards and history",async()=>{
