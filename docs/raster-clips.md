@@ -1,20 +1,10 @@
-# Raster clip jobs and downloads
+# Raster clips and downloads
 
-Tracking: parent [#328](https://github.com/springinnovate/eolab/issues/328), backend
-[#329](https://github.com/springinnovate/eolab/issues/329), UI integration
-[#330](https://github.com/springinnovate/eolab/issues/330).
-
-The Processing component exports one catalog-authorized, single-band numeric
-GeoTIFF at its **native resolution, CRS, affine grid, and datatype**. An explicit
-histogram rectangle or an immutable Catalog-vector selection is required. There is no implicit
-whole-raster export, user-supplied source path, arbitrary URL, GDAL command, or
-reprojection option. Map styling, histogram sampling resolution, WMS publication,
-GeoServer availability, and the viewer are not prerequisites.
-
-Processing also supports [single-raster calculations](raster-calculations.md).
-Both operations share owned job history, worker admission, and artifact lifecycle.
-The clip Downloads panel selects `raster.clip.v1` entries; calculation rows have
-their own API contract and a separately tracked interface.
+Download one single-band numeric GeoTIFF clipped to an explicit sampling box or
+filtered [vector selection](vector-sampling.md). The clip keeps the source's
+**native resolution, CRS, pixel grid and datatype**. Map colors and histogram
+sampling resolution do not change the exported pixels. Reprojection and implicit
+whole-raster exports are not offered.
 
 ## Browser workflow
 
@@ -43,79 +33,6 @@ request. No cookie, geometry, result file, or processing job is placed in a shar
 map link. Disabled session storage prevents submission with a clear explanation.
 The existing `/docs#/processing` API page also remains available.
 
-## API workflow
-
-All endpoints are below `/api/processing`. POST and DELETE requests require
-`X-EOLab-Processing: 1`. Browser mutations must originate from the same host;
-normal browser CORS rules and the custom header prevent cross-origin submission.
-JSON request bodies are limited to 16 KiB before parsing.
-
-The first request establishes a random `__Host-eolab-processing` cookie with
-Secure, HttpOnly, Path=/, and SameSite=Lax. **Use HTTPS and retain this cookie**:
-it is the download/session capability, not an account login. Only its hash is
-stored in PostgreSQL. Job IDs alone are insufficient to inspect, cancel, delete,
-or download a result. Sharing a map does not share processing jobs.
-
-1. `GET /jobs` establishes the session and lists up to 50 owned recent jobs.
-2. `POST /raster-clips/plan` validates a source and explicit selection and returns
-   a five-minute `planId`, native grid, estimated uncompressed bytes including
-   validity, resource limits, and expiration. Planning reads metadata and geometry;
-   it does not sample the data band or start a clip.
-
-   ```json
-   {
-     "collectionId": "eolab-mounted-geotiffs",
-     "itemId": "geotiff-0123456789abcdef01234567",
-     "selectedBounds": {
-       "west": 77.9, "south": 22.4, "east": 78.1, "north": 22.6
-     }
-   }
-   ```
-
-   For a Catalog vector, replace `selectedBounds` with `catalogSelection` from
-   `POST /api/vector-sampling/areas`. The descriptor contains no paths or geometry.
-   Bounds and catalog selections are mutually exclusive.
-3. `POST /raster-clips` with `{"planId":"...","requestId":"..."}` rechecks the
-   current raster and vector Catalog identities, then returns HTTP 202 and `jobId`.
-   Generate a 16–80 character client request key using letters, digits, `_`, or
-   `-`. **Retry an uncertain submission with the same plan and request ID.** It
-   returns the same job even after the original plan expires. Reusing a request
-   ID for another plan produces 409. Tombstones retain idempotency for seven days.
-4. Poll `GET /jobs/{jobId}`. Status is `queued`, `running`, `cancelling`, `ready`,
-   `failed`, `cancelled`, `interrupted`, `expired`, or `deleted`. Running progress
-   reports block counts while clipping and named phases during COG creation,
-   validation, and checksumming. It does not invent a finalization percentage.
-5. A ready result supplies `result.url`, `provenanceUrl`, filename, byte length,
-   SHA-256, and valid-pixel count. Navigate directly to the result URL to let the
-   browser download it without buffering the whole TIFF in JavaScript.
-   `GET` and `HEAD /jobs/{jobId}/result` provide an attachment, Content-Length,
-   checksum ETag, and single byte-range/If-Range support for resume. Multi-range
-   requests are rejected. The provenance endpoint returns an owned JSON attachment.
-6. `POST /jobs/{jobId}/cancel` cancels queued work immediately or requests native
-   process termination. `cancelling` retains the execution slot until the child
-   exits. `DELETE /jobs/{jobId}` revokes a terminal result and schedules cleanup;
-   cancel active jobs and wait before deleting them.
-
-Errors include a stable code and actionable detail. Admission/planning capacity
-uses 429, unavailable processing storage uses 503, a changed raster or vector source uses 409,
-and oversized clips use 413. `no_overlap` fails planning; `no_valid_data` fails
-the job without publishing a file. A closed browser connection cancels planning,
-but **does not cancel an already accepted job**. Recover accepted jobs with
-`GET /jobs` using the same cookie.
-
-For command-line review, save the above JSON as `plan.json` and keep a cookie jar:
-
-```sh
-curl -c clip-cookies.txt https://wwf-connectivity.ecoshard.org/api/processing/jobs
-curl -b clip-cookies.txt -c clip-cookies.txt -H 'X-EOLab-Processing: 1' \
-  --json @plan.json https://wwf-connectivity.ecoshard.org/api/processing/raster-clips/plan
-```
-
-Use a real catalog Item ID. Submit the returned `planId` in a separate JSON file,
-poll the job, then download the result with `curl -b clip-cookies.txt -o clip.tif
-<result URL>`. Cookie jars are private session capabilities and should not be
-committed, pasted into an issue, or shared with another user.
-
 ## Raster correctness
 
 The worker reauthorizes the Catalog Item at execution and checks the full scanner
@@ -130,7 +47,7 @@ CRS using the shared bounded-window mechanisms. The output is an integer native
 window with the existing conservative one-pixel envelope padding. Each intersecting
 native source block is decoded once, intersected with the window, masked, and
 written. Polygon components are unioned; holes are preserved unless another
-component covers them. The all-touched inclusion rule matches area sampling.
+component covers them. The mask includes cells touched by the selected geometry; numeric summaries instead use cell centers.
 The export does not use histogram overviews, percentiles, or approximate grids.
 
 The output preserves valid zero, signed nodata, scale, offset, units, band
@@ -147,27 +64,12 @@ Exported internal-mask COGs are downloads, not automatically published Catalog
 assets. Future re-ingestion of those files needs an explicit input-mask policy;
 this feature does not weaken the existing source reader to enable that path.
 
-## Storage, deployment, and limits
+## Storage and limits
 
-`processing-worker` uses the application image with the separate
-`python -m eolab_app.main processing-worker` command. Validated configuration and
-dependency wiring stay in the existing settings/composition boundary; the worker
-workflow reads no environment variables and creates no unrelated feature services.
-It has two CPUs, a 2 GiB memory/swap ceiling, and at most two GDAL threads. Source
-data remains mounted read-only. `processing-data` is a dedicated named volume,
-writable only by the worker and mounted read-only by the HTTP app; GeoServer and
-the Catalog scanner do not mount it. Set `EOLAB_PROCESSING_DATA_VOLUME_NAME` to an
-instance-specific name when multiple EOLab stacks share a Docker host. Keep this
-volume outside the source directory and preserve it across deployments.
-
-The worker applies `processing/schema.sql` idempotently before consuming jobs,
-using its own advisory lock and schema in the existing PostgreSQL database. It
-does not use or migrate pgSTAC tables. No new Redis or queue product is required.
-The HTTP app does not depend on processing startup for `/healthz`, catalog,
-histograms, or rendering. Processing requests return an actionable 503 until its
-schema/database is available.
-
-Initial fixed policy, shared by API and worker:
+Results expire 24 hours after completion. Keep the same browser session to inspect,
+cancel, delete or download your jobs; knowing a job ID is not sufficient.
+Downloads support resume. An accepted job can continue after the browser closes;
+recover it through History & exports. A failed job does not expose a partial TIFF.
 
 | Resource | Limit |
 | --- | --- |
@@ -184,129 +86,14 @@ Initial fixed policy, shared by API and worker:
 | Result lifetime | 24 hours after completion |
 | Transfers | 4 per result, 64 globally; renewable 120-second leases; 1-hour response ceiling |
 
-Disk admission reserves four times uncompressed output-plus-validity plus 32 MiB
-for staging, COG/overviews, and finalization. Completed jobs retain the actual TIFF
-size plus a conservative provenance allowance. Reservations remain until failed,
-cancelled, deleted, or expired files are successfully removed. Actual free disk
-and existing artifact bytes are checked before native work. Download leases keep
-cleanup away from in-flight transfers; disconnect/completion releases them, and
-an abandoned API instance's lease expires. New downloads cannot begin after TTL.
+Operators must preserve the separate Processing artifact volume and enough free
+disk space. The 20 GiB reservation budget is an admission limit, not a disk quota
+or allocated filesystem size. New jobs are refused when capacity is unavailable;
+a filesystem-full error fails the job instead of publishing a partial file.
+Active downloads delay cleanup within bounded transfer leases. See
+[deployment and operations](deployment-and-operations.md) for mounts and recovery.
 
-PostgreSQL transactions arbitrate the global queue and execution slot. Each
-attempt receives a fresh fencing token, renewable heartbeat lease, and immutable
-hard deadline. Normal worker shutdown stops and joins its native child and marks
-the job interrupted. After an abrupt worker/database failure, takeover waits until
-the previous hard deadline plus exit grace before starting another clip. This can
-delay the queue by up to about ten minutes, deliberately avoiding duplicate native
-work. Linux children also carry their own wall-clock alarm. Interrupted jobs are
-explicitly retryable by creating a new plan/job; partial TIFFs are never resumed.
-
-Processing owns `PROCESSING_ADVISORY_LOCK_ID = 7_610_329` in PostgreSQL's
-single-bigint advisory-lock namespace for this database. This is an assigned lock
-identifier, not a resource limit. Schema migration and shared admission, job-state,
-storage, and transfer decisions acquire it only for their short transactions;
-commit or rollback releases it. Native processing does not hold this lock. Keep
-the value stable across releases and operation types that share these budgets,
-including overlapping deployments. Other components in this database must use a
-different key. A future change to the key or key format requires a coordinated
-migration so old and new workers do not accidentally use independent locks.
-
-An attempt writes into private storage and closes/validates all output before an
-atomic same-volume directory rename. A still-current database fence is required
-to advertise it as ready. Cancellation or a stale worker cannot expose a partial
-file. Startup/periodic cleanup removes old orphan attempts and terminal job files
-after transfer leases end. It clears expired job specifications and plans,
-then retains only bounded-time idempotency tombstones. Historical accepted jobs
-with embedded polygon geometry remain executable and their completed results
-remain readable. New catalog-selection jobs retain only their small descriptor;
-see [persisted compatibility](vector-sampling.md#persisted-compatibility).
-
-## Architecture and extension boundary
-
-The browser **Downloads** component (`frontend/src/processing`) owns review,
-submission recovery, polling, and job actions. **Used by:** the browser composition
-root, which connects the existing dock and source/area entry points.
-**Depends on:** its Processing API client, per-tab pending-submission storage,
-and the neutral immutable selected-area values. **Coordinates with:** Map layers,
-histogram controls, and vector selection through root callbacks and immutable
-selection values. None of those peers imports Downloads or vice versa.
-
-The existing bounds validation and sampling-area normalization move into
-`frontend/src/selected-area.js`; raster geometry/statistics retain their existing
-exports. Sampling and clipping now share the same frozen box/catalog-descriptor values instead
-of duplicating validation. Backend services, APIs, queue/storage limits and
-rendering dependencies retain their existing owners. The dock adds only a tool
-descriptor and presentation methods. Remaining coupling is the intentional
-shared geographic selection contract and existing browser composition wiring.
-
-**Owner:** Processing (`models`, `service`, `worker`, `raster_clip`, storage ports
-and adapters). **Used by:** thin processing HTTP routes and the Downloads UI
-through that public API. **Depends on:** existing Catalog source-authorization
-port, neutral sampling-area reader, source identity/structure/native-block/grid
-mechanisms, bounded native process execution, and processing-owned PostgreSQL and
-artifact adapters. **Coordinates with:** analysis and Catalog-selection browser
-peers through composition. The kernel reads exact source polygons through the
-neutral reader; it never imports a histogram or rendering service. Catalog
-authorization remains outside storage/execution adapters.
-
-Job persistence consumes a `PreparedJobPlan`: operation-owned serialized input,
-a bounded public summary, and a storage reservation. The clip owner derives these
-from its validated source, area, and grid; the `JobStore` contract and PostgreSQL
-adapter do not parse raster fields or construct polygon selection summaries. Admission, leases,
-cancellation, and expiration are shared job responsibilities. The HTTP API still
-accepts only the explicitly supported raster-clip operation.
-
-`processing/models.py` owns reusable submission, job status/timestamps, progress,
-failure, download metadata, listing, storage values, and scheduling-limit models.
-`processing/clip_models.py` contains the native grid, area, source-fenced clip
-specification, clip request/plan, and raster-specific result details. Clip response
-models extend the shared job and download models; the list uses the same generic
-envelope. Future operations define their own validated inputs and result details
-and reuse the common lifecycle instead of duplicating it. No arbitrary operation
-payload or executable command is accepted by the public API. Box and historical accepted-job shapes remain readable; new catalog areas
-contain the small descriptor documented in [vector sampling](vector-sampling.md).
-
-`ProcessingService` exposes shared job lifecycle methods and explicit
-`plan_raster_clip` / `submit_raster_clip` commands. HTTP routes use job terminology
-for listing, cancellation, status, and downloads; only the operation commands and
-their raster-specific schemas refer to clips. `LeasedJobResponse` takes its media
-type from the owned artifact descriptor, preserving resumable delivery for other
-file formats. Retained results written before media types were recorded keep
-their TIFF content type. This does not add another executable operation or a
-generic operation-submission endpoint.
-
-Future operations can reuse job ownership, durable admission, execution fencing,
-and artifact delivery, but should introduce their own validated specifications,
-resource estimates, algorithms, and result contracts when a second operation is
-approved. This version deliberately has no user-defined code, arbitrary GDAL
-options, plugin registry, workflow graph, multiband/reprojection UI, or automatic
-publication. The remaining operational coupling is shared PostgreSQL, source
-storage, and host I/O; separate worker limits do not eliminate disk contention.
-
-## Verification
-
-Native GeoTIFF tests verify exact values, zeros/nodata, polygons and holes, rotated
-and projected grids, metadata, COGs/overviews/checksums, size/work refusal, and hard
-native cancellation. Real PostgreSQL boundary tests cover idempotent concurrent
-admission, raster and vector-source revalidation, global worker fencing, lease-loss
-recovery, queued/running/finalization cancellation, worker shutdown, owned session
-access, complete/range/HEAD downloads, expiration and transfer-safe cleanup.
-Import/deployment tests guard the architectural boundaries and read-only mounts.
-
-Use the automated [disposable PostgreSQL lane](processing-postgres-tests.md) to
-provision, run and remove an isolated test database:
-
-```sh
-python scripts/test_processing_postgres.py
-```
-
-For manual debugging only, supply an already-provisioned disposable database whose
-name begins `eolab_processing_test`:
-
-```sh
-python -m pytest --processing-dsn=postgresql://USER@localhost:5432/eolab_processing_test
-```
-
-Without that option, PostgreSQL-specific tests are skipped; native raster,
-route/composition, architecture, and existing feature tests still run. The database
-tests truncate only the Processing tables in the explicitly named test database.
+For scripted use, the deployed application's `/docs#/processing` page provides
+request schemas. Use HTTPS, retain the session cookie and retry uncertain
+submissions with the same plan/request key to avoid duplicate jobs. Cookie jars
+grant access to private results and must not be shared or committed.

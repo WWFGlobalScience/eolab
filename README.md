@@ -134,6 +134,10 @@ The browser also remembers the last valid map on that deployment. **Reset
 view** returns to an empty map and the configured starting position. **Undo
 reset** restores the immediately previous map.
 
+Shared links and the locally remembered map do not include sampling areas,
+histogram results, feature plots or processing jobs. They refer to the deployment's
+current Catalog, so missing or changed sources can prevent full restoration.
+
 ## Add your own data
 
 EOLab deployments read from a configured, read-only data directory.
@@ -165,37 +169,15 @@ original source directly. See [vector selections](docs/vector-sampling.md).
 Deployment owners can run EOLab with Docker Compose or Coolify. The concise
 [deployment and operations guide](docs/deployment-and-operations.md) covers the
 required passwords, read-only data mount, startup, scanning, verification, and
-resource controls. More detailed behavioral and architecture contracts live in
-the [`docs`](docs) directory.
+resource controls.
 
-## Development checks
+## Understanding analysis results
 
-Follow [AGENTS.md](AGENTS.md) for change scope, architecture, and verification
-requirements. From the repository root, create a Python 3.12 virtual environment
-with `python -m venv .venv`, activate it (`source .venv/bin/activate` on POSIX,
-or `.venv\Scripts\Activate.ps1` in PowerShell), and install the development extra:
-
-```console
-python -m pip install -e ".[dev]"
-```
-
-The development extra pins Black 26.5.1. `pyproject.toml` requires that version,
-targets Python 3.12 (the minimum supported Python and application image version),
-and uses 88-character lines with Black's stable default style. Verify the
-installation with the existing request-latency benchmark check:
-
-```console
-python -m black --check --no-cache tests/benchmark_request_latency.py
-git diff --check
-```
-
-For Python changes, use the same non-mutating Black command with explicit paths
-to the files in the issue's scope. `--check` reports formatting differences
-without rewriting files; `--no-cache` forces a fresh check. This targeted workflow
-does not establish a repository-wide formatting baseline. Report pre-existing
-formatting debt without reformatting unrelated code. Past verification results
-in `docs/` remain historical reports, not a requirement to rerun or rewrite
-their entire scope. Run the relevant tests and other checks required by
-AGENTS.md separately; Black does not replace them.
+- [Raster pixels and histograms](docs/raster-analysis.md): sampling and missing data.
+- [Comparing two rasters](docs/bivariate-raster.md): paired grids and histogram colors.
+- [Raster calculations](docs/raster-calculations.md): formulas, results and timing.
+- [Ground-area calculations](docs/ground-area-calculations.md): hectares and boundary fractions.
+- [Vector filters](docs/vector-filters.md) and [sampling selections](docs/vector-sampling.md).
+- [Raster clips](docs/raster-clips.md): exported values, masks and downloads.
 
 EOLab is open-source software under the [Apache License 2.0](LICENSE).

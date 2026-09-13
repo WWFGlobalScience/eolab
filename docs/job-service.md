@@ -1,8 +1,8 @@
-# Standalone Job service
+# Job service operation
 
-The `jobs` Compose service executes installed diagnostic and vector-outline
-operations. All map outline requests use this service;
-raster and Processing workloads remain unchanged. Open `/api/jobs/docs` to try it.
+The `jobs` Compose service executes diagnostic and vector-outline operations.
+Map sampling outlines use this service; raster calculations and clips use the
+separate Processing worker. Open `/api/jobs/docs` to try it.
 
 ## Configure a caller
 
@@ -11,8 +11,8 @@ For the Compose/Coolify stack, generate one private token with
 Set **`EOLAB_JOBS_TOKEN`** to that value. Compose supplies it to the app as
 `JOBS_TOKEN` and builds the Job service's `JOBS_CALLERS` entry for owner `eolab`
 from the same value. Enter the token only once; no outline-specific token or
-caller-map variable is needed in Coolify. Future EOLab operations can use this
-same caller identity. Both containers reject a blank or malformed token at startup.
+caller-map variable is needed in Coolify. Both containers reject a blank or
+malformed token at startup.
 
 When upgrading an existing deployment, replace its separate caller-map and
 outline-token settings with `EOLAB_JOBS_TOKEN`, then redeploy both services.
@@ -30,12 +30,6 @@ Each standalone caller's token must be a unique 32–256-character
 URL-safe string; at most 32 named callers are supported. Empty configuration
 leaves docs/health/discovery available but disables job access. Invalid
 configuration fails startup without printing submitted secrets.
-
-The Job service receives the entire caller map as one JSON-valued environment
-variable. `load_settings()` parses it at startup and hashes each token
-into `Settings.callers`. `create_app()` passes that same settings object to the
-manager and retains it for authentication. This is not a mutable global registry
-or an API users can edit; updating callers requires restarting the service.
 
 In Swagger, click **Authorize** and paste just the token. Each caller owns only
 its own jobs. Sharing a token means sharing ownership: this is not yet integrated
@@ -91,11 +85,8 @@ For failure, submit with another new key:
 
 This raises in the child; the job becomes `failed` with a safe error. Subsequent
 jobs still run. No traceback, credentials or input values are returned in errors.
-The runner writes exception tracebacks to the service's stderr (visible in Docker
-or Coolify logs); the public response remains generic. Stderr is inherited rather
-than captured in memory, and Compose rotates retained logs. Treat operator logs
-as private diagnostics; installed operations should not put sensitive values in
-exception messages. Traceback logging does not capture local variables.
+Exception tracebacks are available in Docker or Coolify logs; the public response
+remains generic. Treat operator logs as private diagnostics.
 `seconds` must be positive and at most 300 in delay mode, and zero/omitted in other
 modes. The default mode is `normal`.
 
@@ -117,8 +108,6 @@ Explicitly empty, malformed, nonfinite or out-of-range limits fail startup.
 Record capacity must exceed queue capacity, and default timeouts must not exceed
 the configured maximum. Request timeouts stay within that maximum. The diagnostic
 operation independently caps its requested delay at 300 seconds.
-The following are the default values, not fixed deployment settings:
-
 Startup also imposes policy ceilings of 10,000 retained records and one day for
 retention/deadlines. These guard against accidentally unbounded memory/scan work
 and very long-lived state; they are not measured safe capacities for every
@@ -151,156 +140,31 @@ and retained finished work. Choose actual limits for the container's resources.
 - Shutdown stops admission, cancels queued/running work and waits for cleanup.
   Hard container termination discards all ephemeral state.
 
-## API
+## Check the deployed service
 
-`API_VERSION` in `models.py` is the manually maintained Job service HTTP contract
-version, shared by health and OpenAPI. It is independent of EOLab's package
-version in `pyproject.toml` and the Git build revision; it does not select a route
-or imply a separately deployed release. This contract moved from 0.1.0 stubs to
-0.2.0 authenticated execution.
+Open `/api/jobs/docs` on the EOLab deployment for the current API and operation
+schemas. `/api/jobs/health` reports readiness and whether jobs are accepted;
+`/api/jobs/operations` lists installed operations. The events and artifact
+endpoints are currently stubs returning 501.
 
-Job-specific endpoints require bearer authentication. Wrong-owner IDs return the
-same **404** as missing jobs. Responses use `Cache-Control: no-store`.
+The Compose service runs one worker with one CPU and 2 GiB of memory. Do not
+increase replicas or Uvicorn workers: job state is currently in memory. Restarts
+lose these jobs and results. This differs from raster calculations and clips,
+which still use the durable Processing worker and its artifact volume.
 
-| Method | Path | Behavior |
-|---|---|---|
-| GET | `/api/jobs/health` | Public readiness, ephemeral mode, acceptsJobs |
-| GET | `/api/jobs/operations` | Public installed-operation schemas |
-| POST | `/api/jobs` | Submit/idempotent retry; 202 and status Location |
-| GET | `/api/jobs` | Owned listing; status filter, limit 1–100, cursor |
-| GET | `/api/jobs/{job_id}` | Authoritative current status |
-| PATCH | `/api/jobs/{job_id}` | Change queued priority |
-| POST | `/api/jobs/{job_id}/cancel` | Request cancellation |
-| GET | `/api/jobs/{job_id}/result` | Successful inline JSON; 409 otherwise |
-| DELETE | `/api/jobs/{job_id}` | Delete terminal state/result/key; 204 |
-| GET | `/api/jobs/{job_id}/events` | Owned-job check then 501; no SSE yet |
-| GET | `/api/jobs/{job_id}/artifacts/{artifact_id}` | Owned-job check then 501 |
-| GET | `/api/jobs/docs` | Public Swagger UI |
-| GET | `/api/jobs/openapi.json` | Public OpenAPI 0.2.0 |
+## Map outlines
 
-Listing is admission-ordered. Cursors refer to the last retained owned record and
-become invalid after it is deleted/expires. Pages reflect current state, not a
-frozen snapshot. No artifact files exist yet. The outline adapter uses bounded
-status polling; notification delivery will be designed separately.
+Outlines use `vector.outline.v1` through the Job service. Verify a filtered polygon
+selection after deployment: it should display an outline and still allow raster
+analysis. Jobs logs should show accepted work, a successful result read and cleanup.
+The outline requests allow 10 seconds in the queue and 15 seconds execution.
 
-Requests and subprocess inputs are bounded to 64 KiB before decoding;
-subprocess results are bounded to 512 KiB.
-The proxy retains its 1 MiB response bound and 10-second timeout: requests return
-state without holding HTTP connections through execution. Errors use the existing
-`{"error":{"code":"...","message":"..."}}` envelope.
+If outlines fail, check the app and jobs container logs, the shared token, Catalog
+connectivity at `http://stac-api:8080`, and the read-only `/scan-source` mount.
+Both services must receive the same source mount and credential. A mismatch in
+manually supplied credentials rejects outline requests. Missing or malformed app
+credentials prevent startup.
 
-## Ownership and architecture
-
-**Owner:** `services/jobs/job_service`. `app.py` owns HTTP/authentication;
-`manager.py` owns ephemeral state/admission/priority/lifecycle; `executor.py`
-owns subprocess cleanup and transport; `operations_registry.py` registers the diagnostic, whose algorithm and
-input/result models live together in `operations/diagnostic.py`. `runner.py` is a private child entry point, not an
-API accepting module names or paths.
-
-**Used by:** REST/Swagger through EOLab's proxy. **Depends on:** the existing web
-stack and Python standard-library processes. **Coordinates with:** Compose and
-the existing proxy. That HTTP edge now carries Authorization to the fixed
-`http://jobs:8080` endpoint. Cookies/arbitrary identity headers are not forwarded.
-The outline adapter uses the vector-to-Jobs execution edge. Registration
-imports the installed domain operation, which reuses existing source/outline
-functions and GIS dependencies. The scheduler never imports application services.
-No database connection is added; raster/Processing execution remains unchanged.
-
-The first version uses a fresh child per job for isolation/hard stopping; it does
-not prewarm native processes. Only installed code runs. Child environments omit
-caller credentials and other service secrets.
-The runner uses an absolute interpreter path, a fixed module directory and binary
-JSON, so PATH, PYTHONPATH and locale settings are not needed. Only Windows OS
-locations and the bytecode-write setting are retained. This avoids casually
-exposing caller/database credentials to algorithms; it is not a security sandbox.
-Neither installed operation spawns descendant processes. Outline work preserves
-source authorization and the existing 2 GiB native address-space ceiling. Docker
-is non-root, read-only, capability-dropped, one CPU and 2 GiB, with only the
-read-only source bind. Future operations that spawn children need process-tree
-handling before installation.
-
-## Local verification
-
-Set `JOBS_CALLERS`, then run:
-
-```sh
-python -m uvicorn job_service.app:create_app --factory --app-dir services/jobs --host 127.0.0.1 --port 8082 --workers 1
-```
-
-Or, with Docker and the same environment variable:
-
-```sh
-docker build --platform linux/amd64 -f services/jobs/Dockerfile -t eolab-jobs:diagnostic .
-docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --cpus 1 --memory 2g --mount type=bind,src=/your/source,dst=/scan-source,readonly --env JOBS_CALLERS -p 127.0.0.1:8082:8080 eolab-jobs:diagnostic
-```
-
-Open http://127.0.0.1:8082/api/jobs/docs and authorize. To smoke-test HTTP, set
-`JOBS_SMOKE_TOKEN` to one configured token and run
-`python services/jobs/smoke.py http://127.0.0.1:8082`.
-
-```sh
-python -m pytest tests/test_job_service.py tests/test_job_lifecycle.py
-python -m pytest tests/test_compose_configuration.py tests/test_application_boundaries.py
-```
-
-Tests cover real subprocesses, API/proxy composition, ownership, priority/FIFO,
-cancellation, deadlines, failure recovery and retention. The existing build
-workflow smoke-tests the container with temporary credentials. No new workflow
-or production deployment is introduced.
-
-
-## Vector map outlines
-
-`vector.outline.v1` accepts `{ "selection": <CatalogSelection> }`. Its result is
-`{ "geometry": <approximate FeatureCollection>, "bbox": [west,south,east,north] }`.
-The operation resolves the immutable descriptor against the internal Catalog,
-checks the mounted source signature, runs the bounded outline algorithm,
-then rechecks source/Catalog identity. Inputs never carry paths, URLs or
-complete geometry. The scheduler knows only the registered schema/function.
-
-Before upgrading, set the single `EOLAB_JOBS_TOKEN` described above, then restart
-both services. Compose wires it to both the app and the `eolab` Jobs caller.
-The app validates its internal `JOBS_TOKEN` setting and rejects an
-absent, blank or malformed token at startup (32–256 URL-safe characters required).
-It does not contact Jobs during startup; a credential mismatch in a manually
-configured deployment fails outline requests through Jobs authentication.
-This is a server credential,
-never browser settings.
-
-The execution-mode switch and local outline process have been removed. A Jobs
-failure is an outline failure, with no local fallback. Verify a filtered polygon
-outline in the deployed app before accepting the rollout. Rollback means deploying
-the previous compatible release and its configuration, not changing a mode switch.
-
-Only optional outline calls change: local selection, raster analysis and durable
-Processing remain independent. The adapter uses priority -10, 10 seconds waiting,
-15 seconds execution and bounded 100 ms status polling while the outline request
-is connected. This is temporary status observation using the existing Jobs API;
-no new SSE lifecycle is added. Cancellation recovers uncertain submissions with
-the same idempotency key before cancelling; terminal records are deleted. A
-cleanup outage is logged and Jobs deadlines/retention remain the backstop.
-
-The outline adapter composes the reusable Python `eolab_jobs.client.JobsClient`
-for bounded transport, observation and cancellation. It retains outline-specific
-inputs, priority, deadlines, result validation and error translation. The client
-imports no Jobs server, scheduler, operation registry or GIS code. The existing
-browser proxy still forwards individual requests; it does not own their job
-lifetimes and must not cancel/delete them when forwarding completes.
-See [Python Jobs client](jobs-client.md) for retention policy and diagnostic tests.
-
-The image now includes existing application modules and the reviewed application
-runtime wheels, including GIS libraries; no application server, GeoServer client
-or database connection is started by the operation. Reusing that resolution keeps
-packaging simple but includes some dependencies this operation does not use.
-The fixed Compose contracts are `http://stac-api:8080` and `/scan-source`, mounted
-read-only and verified by the existing startup guard. No source data is copied.
-Jobs health/diagnostic work does not require the Catalog to be online. The service
-gets 2 GiB rather than the diagnostic image's 256 MiB; it still executes one child
-at a time. The application two-child selection budget remains, so deployments
-can have two local vector selections plus one Jobs operation.
-
-Requests remain limited to 64 KiB. Inline process results are bounded at 512 KiB,
-allowing the existing 256 KiB compact GeoJSON display budget plus JSON spacing and
-envelope. Retained record count is unchanged; operators must budget memory for
-larger retained values if increasing it. Outline output is presentation-only and
-never substitutes for the exact original-source masks used in calculations.
+There is no local outline fallback. Outline failure does not block numeric
+analysis. Rollback requires a previous compatible release and its configuration,
+not a mode switch.

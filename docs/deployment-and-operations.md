@@ -9,7 +9,10 @@ The supplied Docker Compose stack runs:
 
 - the EOLab web application;
 - PostgreSQL with pgSTAC for persistent Catalog metadata;
-- GeoServer for bounded raster and vector rendering; and
+- the STAC API for Catalog queries;
+- GeoServer for raster and vector rendering;
+- a Processing worker for raster calculations and clip downloads;
+- a Job service for optional vector map outlines; and
 - one-time database migration and GeoServer initialization services.
 
 Source datasets are supplied through a read-only host bind mount. EOLab does
@@ -21,8 +24,8 @@ Prepare:
 
 1. a machine with Docker Compose, or a Coolify project that can deploy a Docker
    Compose repository;
-2. three different, long random secrets for PostgreSQL, the GeoServer
-   administrator, and the GeoServer keystore; and
+2. different, long random secrets for PostgreSQL, the GeoServer administrator,
+   the GeoServer keystore, and the Job service; and
 3. an absolute host directory containing the prepared datasets, readable by
    the application container.
 
@@ -46,6 +49,7 @@ of settings and defaults. At minimum, set:
 EOLAB_DATABASE_PASSWORD=<long random value>
 EOLAB_GEOSERVER_ADMIN_PASSWORD=<different long random value>
 EOLAB_GEOSERVER_MASTER_PASSWORD=<different long random value>
+EOLAB_JOBS_TOKEN=<different long random URL-safe value>
 EOLAB_SCAN_MOUNT_PATH=/absolute/host/path/to/data
 EOLAB_SCAN_PATHS_WITHIN_MOUNT=["."]
 EOLAB_SCAN_DISPLAY_PATH_PREFIX=Workshop data
@@ -62,12 +66,23 @@ numbers, hyphens, underscores, or periods. The master password must contain at
 least eight characters, have no surrounding whitespace, and differ from the
 administrator password.
 
+Generate the Jobs token with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` and set the single
+`EOLAB_JOBS_TOKEN` variable. Compose passes it to both the app and Job service.
+The app rejects absent, blank or malformed tokens at startup. Keep it private;
+see [Job service operation](job-service.md) for a manual diagnostic.
+
+Set nonblank `EOLAB_APP_TITLE` and `EOLAB_APP_SUBTITLE` values for the public
+application identity. In Coolify, use the `EOLAB_` variable names from the example;
+Compose maps them to the internal container names.
+
 Use distinct persistent volume names when several EOLab deployments share one
 Docker host:
 
 ```text
 EOLAB_DATABASE_VOLUME_NAME=my-workshop-pgstac
 EOLAB_GEOSERVER_DATA_VOLUME_NAME=my-workshop-geoserver
+EOLAB_PROCESSING_DATA_VOLUME_NAME=my-workshop-processing
 ```
 
 ## Deploy with Coolify
@@ -78,8 +93,8 @@ EOLAB_GEOSERVER_DATA_VOLUME_NAME=my-workshop-geoserver
    `EOLAB_SCAN_MOUNT_PATH` must be added manually because it is a bind-mount
    source rather than a container variable.
 4. Attach the public domain only to the `app` service at internal port `8000`,
-   for example `https://eolab.example.com:8000`. Do not expose the `geoserver`
-   service; EOLab publishes a restricted rendering route itself.
+   for example `https://eolab.example.com:8000`. Keep the other services private;
+   EOLab provides the public Catalog, rendering and Jobs API routes.
 5. In **Advanced**, enable **Include Source Commit in Build** (called **Source
    Commit Availability** in some Coolify versions). This lets the application
    display the deployed Git-derived version.
@@ -103,9 +118,6 @@ administration interface only on the same machine at
 
 ## First-run verification
 
-Before releasing a new image, follow [Application build inputs](application-build-inputs.md)
-to review its Python/native resolution and compare fresh Linux builds.
-
 After the application reports that its services are ready:
 
 1. Open **Status** and run **Scan directories** from the Catalog section.
@@ -119,6 +131,8 @@ After the application reports that its services are ready:
    repeated `GetMap` failures, queue saturation, or sustained heap pressure.
 7. Copy a map link and open it in another browser tab to verify shared-view
    restoration.
+8. Select a small filtered polygon, confirm its outline, and calculate a raster
+   mean. Create and download a small clip to verify the Processing artifact mount.
 
 Scanning is repeatable. It creates or updates stable Catalog Items for mounted
 datasets and removes Items whose required mounted files no longer exist. A
@@ -136,6 +150,12 @@ Catalog records and report an actionable message when rendering is unsupported.
 The scanner is metadata-oriented. It does not validate raster tiling,
 overviews, compression, decoded size, or GeoServer reader compatibility. Data
 preparation remains an upstream responsibility.
+
+GeoPackage and File Geodatabase containers can produce one Catalog item per
+spatial layer; nonspatial tables are skipped. A bad layer is reported separately
+when other layers can be cataloged. GeoJSON must be a FeatureCollection with
+WGS84 longitude/latitude coordinates; projected legacy CRS declarations are not
+silently reprojected.
 
 ## Capacity controls
 
@@ -162,20 +182,78 @@ disconnects, but an already-running GeoServer render may not stop immediately.
 Increasing concurrency beyond the storage and CPU available can make latency
 worse rather than better.
 
-Normal Leaflet raster and vector tiles use GeoWebCache's explicit EPSG:3857
-grid. Source rasters already stored in EPSG:3857 avoid reprojection on cache
-misses; GeoServer can still reproject other supported source CRSs into the
-same viewer grid. Feature inspection, selected-feature outlines, and composite
-renders are not marked as GeoWebCache tiles. The app retains successful final
-composite PNGs in a byte-bounded, process-local least-recently-used cache keyed
-by the content-addressed plan and normalized tile coordinates. Source and style
-currentness is checked before every cache lookup. The GeoWebCache directory is
-inside the persistent GeoServer volume, and the disk quota removes
-least-recently-used tiles when the configured limit is reached.
+Source rasters stored in EPSG:3857 avoid reprojection on cache misses; GeoServer
+can still reproject other supported CRSs. GeoWebCache tiles live in the persistent
+GeoServer volume and are removed least-recently-used first when its quota is
+reached. Composite map images use a separate process-local cache, cleared by an
+application restart. A new image does not invalidate old persisted tiles: after
+a rendering fix, truncate affected layers' GeoWebCache tiles if stale colors
+remain, including old NoData colors.
+
+See [clip limits](raster-clips.md#storage-and-limits),
+[calculation limits](raster-calculations.md#limits) and
+[Jobs limits](job-service.md#lifecycle-and-limits) for the separate processing budgets.
+
+## Processing storage and recovery
+
+The named Processing volume is mounted at `/processing-data`, writable by
+`processing-worker` and read-only in the app. Keep it outside the source mount.
+The 20 GiB reservation budget does not allocate or cap the underlying disk;
+monitor host/volume free space. Processing also requires a 2 GiB free-space floor.
+Deleting this volume loses result files even if their database records remain.
+Back up persistent database and result storage together when results must be kept.
+
+Deploy the app and Processing worker together. Current Catalog-vector jobs require
+worker claim protocol 5; older workers cannot claim them. Before rolling back to
+code that cannot read these job formats, finish or cancel the affected jobs and
+remove them through the supported API. Do not drop compatibility database triggers.
+An old unsubmitted upload plan can report `legacy_selection_plan`; choose a Catalog
+vector and make a new plan. Completed results retain their usual expiry.
+
+A graceful worker stop interrupts its active job. After an abrupt worker failure,
+the queue can wait about ten minutes for the previous execution deadline before
+starting another attempt. Interrupted jobs require a new plan/job; partial results
+are not resumed. App health and map exploration can remain available while
+Processing reports its database or storage unavailable.
+
+Job updates use same-origin server-sent events with a two-second polling fallback.
+Allow streaming through the reverse proxy without buffering. Losing that stream
+does not cancel accepted jobs. The stream reconnects periodically; polling still
+recovers updates if streaming is unavailable.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| App fails with a blank-setting error | Required Coolify variables, including title/subtitle and Jobs token; save and redeploy after editing. |
+| Scan progress says status is unavailable | Use **Retry status check**. A failed status request does not mean the server scan stopped; do not submit another scan just to recover observation. |
+| Raster reader or CRS rejection | Prepare a compatible georeferenced GeoTIFF upstream, rescan, and retry. |
+| Rendering connectivity/authentication error | GeoServer health and matching deployment credentials. |
+| Rendering configuration error | GeoServer initialization logs and workspace/layer resources; ambiguous partial resources are preserved for administrator inspection. |
+| Polygon outline unavailable | Jobs logs, token, Catalog connection and read-only source mount; numeric analysis is independent of the outline. |
+| Processing admission or disk-space refusal | Active jobs, result retention and free disk space; wait, cancel unnecessary work or delete finished exports. |
+| Source changed | Rescan the dataset and select it again; accepted jobs require unchanged original sources. |
+
+## Build information
+
+The application image targets Linux amd64 and Python 3.12. Pinned runtime wheels
+and their hashes are in `deployment/application-runtime-requirements.txt`; build
+tools are in `deployment/application-build-requirements.txt`.
+
+For a deployment report, retrieve the installed Python/native versions and build
+inputs without starting the app (replace `IMAGE` with the image being inspected):
+
+```sh
+docker run --rm --network none --entrypoint cat IMAGE /app/build-environment.json
+```
+
+Keep the deployed image and its Git revision for rollback. Recorded input hashes
+do not promise byte-identical images; OS package repositories can change between
+builds.
 
 ## Operations notes
 
-- Keep all three secrets out of browser-facing configuration and logs.
+- Keep all secrets out of browser-facing configuration and logs.
 - Verify the source mount from a running container with
   `grep ' /scan-source ' /proc/self/mountinfo`; the mount options should begin
   with `ro`.
@@ -183,18 +261,5 @@ least-recently-used tiles when the configured limit is reached.
   render concurrency.
 - Deleting the volume named by `EOLAB_DATABASE_VOLUME_NAME` permanently deletes
   the Catalog. Do this only when intentionally creating a new empty Catalog.
-- Catalog-vector selections read the original immutable mounted source. Both
-  the web application and Processing worker need the same read-only source mount.
-
-## Detailed contracts
-
-Use these documents when changing or troubleshooting a subsystem:
-
-- [Map rendering boundaries](map-rendering-boundaries.md)
-- [Raster publication and recovery](raster-publication.md)
-- [Raster analysis](raster-analysis.md)
-- [Bivariate raster comparison](bivariate-raster.md)
-- [Vector publication](vector-publication.md)
-- [Catalog-vector selections](vector-sampling.md)
-- [Saved map views](saved-map-views.md)
-- [Catalog dataset handlers](catalog-dataset-handlers.md)
+- Catalog-vector selections read the original mounted source. The web application,
+  Processing worker and Job service need the same read-only source mount.

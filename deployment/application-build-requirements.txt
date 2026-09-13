@@ -1,4 +1,4 @@
-# Linux x86_64 / CPython 3.12 wheels. See docs/application-build-inputs.md.
-# Explicit installer/backend selection; see the guide for provenance.
+# Linux x86_64 / CPython 3.12 wheels. See docs/deployment-and-operations.md#build-information.
+# Pinned installer/backend wheels; installation requires hashes.
 pip==25.0.1 --hash=sha256:c46efd13b6aa8279f33f2864459c8ce587ea6a1a59ee20de055868d8f7688f7f
 setuptools==84.0.0 --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670

@@ -1,160 +1,68 @@
-# Rendering-independent raster analysis
+# Raster pixels and histograms
 
-Raster statistics and exact point samples are catalog analysis operations. They
-do not depend on whether the selected raster is published to GeoServer, rendered
-through WMS, displayed through adaptive bounded visualization, or not rendered
-at all. The browser supplies only the scanner-owned Collection and Item
-identity plus an owned sampling-area choice or canonical WGS 84 point; it never
-supplies a filesystem path, source window, CRS, histogram size, or work limit.
+The pixel picker reads the raster value at a point. Histograms describe a
+distribution over the selected area. Both use Catalog source data, independently
+of map colors or whether GeoServer can draw the raster. Transparent valid pixels
+still count as data.
 
-`POST /api/raster-analysis/statistics` accepts exactly one of these areas:
+One map click can return both vector features and raster information. The click
+summary reports these separately and lets you switch between them. Automatic
+histograms use the top two visible rasters. Histogram results describe the sampling
+area, not just the clicked pixel or the features returned by feature inspection.
 
-- no area field, meaning the whole raster;
-- one canonical non-wrapping WGS 84 `selectedBounds` rectangle; or
-- one immutable `catalogSelection` descriptor issued by Catalog selection.
+## Choose an area
 
-The application resolves the current catalog Asset inside the configured
-read-only mount and checks its scanner source signature before and after the
-read. Statistics do not consult the published-layer registry, visualization
-eligibility, preview state, or GeoServer. Exact point sampling is a sibling
-operation under `/api/raster-analysis/pixels` and is likewise independent.
+Use **Sampling area** to choose a map box or a filtered
+[Catalog vector](vector-sampling.md). Use **Whole raster** for a global 1D
+distribution or **Whole overlap** for a [2D comparison](bivariate-raster.md).
+Polygon masks preserve holes and count overlapping features once.
 
-One map click supplies the same retained position to raster point sampling,
-histogram-area selection, and vector inspection. The raster owner samples at
-most the same top-two participants used by automatic histograms, displays each
-layer's numeric, no-data, outside-extent, loading, or unavailable state, and
-cancels superseded reads. In bivariate mode the current X/Y order labels the two
-values and updates immediately after an axis swap.
+The map box defaults to 200 km. Its slider and integer-kilometer input allow up
+to 14,152 km. This is a geometry limit: position-specific pole and date-line
+checks still apply. An unsupported selection leaves the previous box intact.
+Resizing retains the selected center.
 
-Pointer movement remains separate from retained click analysis. After a 200 ms
-dwell, one transient controller samples all visible rasters whose authoritative
-Catalog bounds contain the pointer, in top-first map order. Its Pixel picker
-follows the pointer, reports the WGS 84 latitude and longitude, supports copying
-the current tab-separated values, and can be hidden with Escape and restored
-with P or its on-map prompt. The controller caps the stack at 50 participants,
-runs two existing Catalog pixel requests at a time, publishes progressive
-immutable results, and aborts queued and in-flight work when the pointer moves,
-leaves the map, or starts a drag. This keeps the readout responsive without
-restoring the former unbounded per-movement probe; the backend pixel-read
-semaphore remains the global concurrency boundary.
+## Exact versus sampled results
 
-## Map box size
+A large sampling area does not mean every source pixel is read. EOLab reports
+which of these methods produced the histogram:
 
-The histogram box defaults to 200 km. Its logarithmic slider and exact integer
-kilometer input support local through continental selections, up to 14,152 km.
-That upper bound comes from the existing spherical box construction: the
-half-diagonal must stay below a quarter of Earth's circumference. It is a
-geometry limit, not a histogram performance budget. Position-specific pole and
-date-line checks still apply, and an unsupported selection leaves the previous
-box intact. Use **Whole raster** (1D) or **Whole overlap** (2D) for global scope.
-Resizing a selected box retains its clicked center, including after switching
-between retained 1D and 2D selections; large geodesic envelopes do not shift it.
+- **Exact bounded distribution:** reads the selected source envelope when its
+  edges are at most 512 pixels, it intersects at most 1,024 native blocks, and
+  decoded values plus validity need at most 64 MiB.
+- **Approximate sampled distribution:** uses one center observation per grid cell,
+  with at most 127 cells along the longest edge. It prefers a suitable embedded
+  COG overview. Without one, reading is limited to 16,129 native blocks and 9 GiB
+  cumulative decoded source work; only a bounded block is retained at a time.
 
-Both controls feed the same debounced sampling selection. A larger box does not
-increase the sample-grid or source-read budgets below. Histograms remain
-approximate when sampled; native-resolution clip downloads retain their own
-independent output-size, storage, and execution limits.
+These limits are fixed. A request that cannot fit them fails instead of starting
+an unrestricted read. Histogram polygon masks use all-touched inclusion on the
+chosen grid. A sampled distribution may miss small or rare features and its
+extremes need not be the full raster's extremes. Use native
+[raster calculations](raster-calculations.md) for counts, sums and ground area.
 
-## Bounded read policy
+## Reading the chart
 
-Every statistics request first produces one clipped, integral source-pixel
-envelope. WGS 84 bounds and catalog-selection polygon edges are densified before
-projection into the raster CRS. Catalog-selection polygons, holes, and
-MultiPolygons remain polygonal masks rather than being replaced by their
-bounding boxes; overlapping components are unioned so a cell cannot count
-twice. The response calls the selection an area, not a valid-data footprint.
+The 1D histogram has 64 bins. The x-axis shows raster values; the y-axis shows
+each bin's percentage of **valid sampled pixels**. Hover details give bin bounds
+and counts. Each chart has its own percentage scale, so equal bar heights on
+different charts do not necessarily represent equal percentages.
 
-EOLab then chooses one of two server-owned plans:
+NoData and non-finite values are excluded, not treated as zero. Units are shown
+only when provided by the raster's band metadata. Very large or small values may
+use scientific notation or a labeled axis offset. Suggested style ranges use
+the sampled 5th, 50th and 95th percentiles; styling does not alter source values.
 
-- `exactSourceWindow` reads the complete envelope when each edge is at most
-  512 source pixels, at most 1,024 native blocks intersect it, and decoded
-  band-one values plus validity require at most 64 MiB. The response is marked
-  `estimated: false`.
-- `sampleGrid` uses exactly one center observation per cell with at most 127
-  cells on the envelope's longest edge and an aspect-preserving shorter edge.
-  When the signed GeoTIFF has a suitable embedded overview, the sampler uses
-  the coarsest level that still contains the final grid and whose read buffer
-  is at most 512 pixels on each edge. Otherwise it reads at most 16,129 unique
-  full-resolution native blocks and at most 9 GiB of cumulative decoded source
-  work. The response is marked `estimated: true`.
+The analysis reader requires a supported single numeric band, valid CRS and
+affine georeferencing, and native block edges no larger than 1,024 pixels.
+Georeferencing, nodata and overviews must be embedded in the GeoTIFF. External
+masks/overviews/auxiliary files, alpha masks and per-dataset input masks are not
+accepted. Prepare a self-contained source upstream if those checks fail.
 
-The sample-grid limits are fixed ceilings, not browser controls. A request that
-cannot satisfy them fails before pixel I/O. Overview-backed reads use one
-bounded decimated window and center-sample it in memory. The fallback reads each
-admitted native block at most once without a broad `out_shape` read, a boundless
-read, or an arbitrary full-extent WMS request. The 9 GiB fallback limit measures
-cumulative decoded work; only one bounded native block is retained at a time.
+## Busy or unavailable results
 
-Paired 2D statistics apply the same overview preference independently to the X
-reference plan and the aligned Y positions. The native X-cell centers continue
-to own the geographic pairing, including across different source grids and
-CRSs. A paired source without a suitable overview retains the same bounded
-native-block fallback.
-
-Only one non-empty band with a supported scalar datatype and native block edges
-no larger than 1,024 pixels is accepted. CRS and affine georeferencing must be
-valid, and validity/georeferencing dependencies must be embedded in the signed
-GeoTIFF. External GDAL masks, overviews, auxiliary files, alpha masks, and
-per-dataset masks are rejected because they are outside that source signature.
-Nodata and non-finite values are excluded rather than converted to zero.
-
-## Distribution and provenance
-
-The service returns 64 fixed histogram bins, the sampled minimum and maximum,
-the 5th, 50th, and 95th percentiles, and a strictly ordered suggested color
-range. The UI labels a `sampleGrid` result as an approximate sampled
-distribution and an `exactSourceWindow` result as an exact bounded
-distribution. The histogram and color controls use this provenance instead of
-inferring accuracy from the active renderer.
-
-Whole-raster, rectangle, and catalog-vector selection use the same frontend
-adapter and request lifecycle. Hiding or failing to draw the optional vector
-outline changes only map presentation. Source/filter changes invalidate pending
-selection work. Clearing a selection never silently requests whole-raster work.
-
-## Cache, staleness, and cancellation
-
-Completed results use a process-local LRU and identical in-flight work is
-coalesced. Distinct in-flight computations are admitted only up to the
-configured statistics-read concurrency; another distinct identity receives a
-retryable capacity conflict until one admitted worker finishes. These conflicts
-use HTTP 409 with `detail.code = "statistics_capacity_busy"` and a human-readable
-`detail.message`; ordinary source/area conflicts retain their string detail.
-Cache identity
-includes Collection and Item, source signature, normalized sampling-area
-identity, algorithm version, geometry policy, and every fixed exact/sample-grid
-planning parameter. Raster and catalog-vector source identities are rechecked
-around reads and cache-hit returns.
-
-Each browser request has an abort signal and sequence identity, so an obsolete
-response cannot replace current viewer state. When the final waiter for one
-coalesced request disconnects, a thread-safe cancellation token stops work
-between native-block reads. GDAL may finish the current block before the
-dataset closes; canceled or stale work is never inserted into the cache.
-
-One per-viewer frontend queue serializes ordinary and paired histogram reads.
-Queued or retrying histograms remain loading. Superseding a sample, changing
-mode, hiding/removing a layer, or teardown cancels obsolete work; queued entries
-are removed immediately. An active loader retains the queue slot until it
-settles. Backend reads may outlive a canceled fetch, and other viewers may
-occupy server capacity, so only explicitly classified capacity conflicts are
-automatically retried: five delays of 250, 500, 1000, 2000, and 4000 ms.
-Cancellation clears the delay timer. If contention persists, the normal error
-state offers Retry; deterministic conflicts are not retried. The queue does
-not change backend concurrency, cache limits, point sampling, or map rendering.
-
-### Histogram presentation
-
-The 1D chart owns its SVG coordinate mapping and redraws against its measured
-container width, keeping all bins visible and axis text at a readable size.
-Its x-axis uses the returned histogram edges, including the padded domain for
-constant samples; units are shown only when the analyzed data asset explicitly
-supplies its first band's `raster:bands` unit. Tiny/large values use scientific
-notation, and narrowly spaced large values use a labeled offset.
-
-The y-axis starts at zero and shows each bin's percentage of valid sampled
-pixels, excluding nodata. Each chart has its own labeled percentage maximum;
-bar height alone is not a shared scale across different charts. Hover details
-retain exact counts and bin bounds. Resize observers are disconnected whenever
-a chart is replaced, cleared, or its controls are destroyed. These are display
-changes only: sampling, bin counts, and percentile calculations are unchanged.
+Moving or changing a selection cancels obsolete requests. An already-running
+native read may finish its current block before stopping. Capacity conflicts
+retry briefly; a persistent error offers **Retry**. A source changed since its
+Catalog scan must be rescanned. Failure to draw the optional vector outline does
+not invalidate its analysis area.
