@@ -20,7 +20,7 @@ DEFAULT_ENVIRONMENT = {
     "RASTER_STATISTICS_CACHE_ENTRIES": "32",
     "GEOSERVER_ADMIN_USER": "eolab",
     "GEOSERVER_ADMIN_PASSWORD": "valid-admin-password",
-    "VECTOR_OUTLINE_JOBS_TOKEN": "test-outline-" + "a" * 40,
+    "JOBS_TOKEN": "test-outline-" + "a" * 40,
     "SCAN_MOUNT_PATH": str(Path.cwd()),
     "SCAN_PATHS_WITHIN_MOUNT": '["."]',
     "SCAN_DISPLAY_PATH_PREFIX": "bigboi -- Z:\\bigbucket",

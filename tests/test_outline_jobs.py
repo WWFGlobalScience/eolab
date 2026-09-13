@@ -283,17 +283,17 @@ def test_explicit_configuration(
         configured_environment: Complete application settings fixture.
         version_file_path: Valid application version file.
     """
-    monkeypatch.delenv("VECTOR_OUTLINE_JOBS_TOKEN", raising=False)
-    with pytest.raises(ValueError, match="VECTOR_OUTLINE_JOBS_TOKEN"):
+    monkeypatch.delenv("JOBS_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="JOBS_TOKEN"):
         load_settings(version_file_path)
     for invalid in ("", "a" * 31, "a" * 257, "a" * 32 + " ", "a" * 32 + "/"):
-        monkeypatch.setenv("VECTOR_OUTLINE_JOBS_TOKEN", invalid)
-        with pytest.raises(ValueError, match="VECTOR_OUTLINE_JOBS_TOKEN"):
+        monkeypatch.setenv("JOBS_TOKEN", invalid)
+        with pytest.raises(ValueError, match="JOBS_TOKEN"):
             load_settings(version_file_path)
     token = "test-outline-" + "a" * 40
-    monkeypatch.setenv("VECTOR_OUTLINE_JOBS_TOKEN", token)
+    monkeypatch.setenv("JOBS_TOKEN", token)
     settings = load_settings(version_file_path)
-    assert settings.vector_outline_jobs_token == token
+    assert settings.jobs_token == token
     assert token not in repr(settings)
     assert token not in json.dumps(settings.as_public_dict())
 

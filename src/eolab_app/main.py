@@ -168,7 +168,7 @@ def create_app(
     vector_selection_reader = VectorSamplingService(
         vector_catalog, vector_source_resolver,
         OutlineJobs(
-            JobsClient(jobs_client, app_global_configuration.vector_outline_jobs_token)
+            JobsClient(jobs_client, app_global_configuration.jobs_token)
         ),
     )
     raster_pixel_service = RasterPixelService(

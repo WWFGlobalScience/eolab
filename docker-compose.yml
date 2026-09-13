@@ -208,9 +208,8 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      # JSON object mapping trusted caller names to unique random bearer tokens.
-      # Unset means health/docs work, but no jobs can be submitted.
-      JOBS_CALLERS: ${EOLAB_JOBS_CALLERS:-}
+      # The same EOLab credential is supplied to the app below.
+      JOBS_CALLERS: '{"eolab":"${EOLAB_JOBS_TOKEN-}"}'
       JOBS_QUEUE_CAPACITY: ${EOLAB_JOBS_QUEUE_CAPACITY-32}
       JOBS_RECORD_CAPACITY: ${EOLAB_JOBS_RECORD_CAPACITY-128}
       JOBS_RETENTION_SECONDS: ${EOLAB_JOBS_RETENTION_SECONDS-3600}
@@ -257,7 +256,7 @@ services:
         SOURCE_COMMIT: ${SOURCE_COMMIT:?SOURCE_COMMIT must identify the source revision}
     restart: unless-stopped
     environment:
-      - "VECTOR_OUTLINE_JOBS_TOKEN=${EOLAB_VECTOR_OUTLINE_JOBS_TOKEN-}"
+      - "JOBS_TOKEN=${EOLAB_JOBS_TOKEN-}"
       - "APP_TITLE=${EOLAB_APP_TITLE:-EOLab}"
       - "APP_SUBTITLE=${EOLAB_APP_SUBTITLE:-Explore, visualize, and analyze Earth observation data}"
       - "CATALOG_URL=${EOLAB_CATALOG_URL:-/stac}"

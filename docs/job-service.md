@@ -6,23 +6,33 @@ raster and Processing workloads remain unchanged. Open `/api/jobs/docs` to try i
 
 ## Configure a caller
 
-Generate a unique token per trusted caller with
+For the Compose/Coolify stack, generate one private token with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-Set **`EOLAB_JOBS_CALLERS`** in the Compose/Coolify deployment environment to a
-JSON object mapping stable caller names to their tokens:
+Set **`EOLAB_JOBS_TOKEN`** to that value. Compose supplies it to the app as
+`JOBS_TOKEN` and builds the Job service's `JOBS_CALLERS` entry for owner `eolab`
+from the same value. Enter the token only once; no outline-specific token or
+caller-map variable is needed in Coolify. Future EOLab operations can use this
+same caller identity. Both containers reject a blank or malformed token at startup.
+
+When upgrading an existing deployment, replace its separate caller-map and
+outline-token settings with `EOLAB_JOBS_TOKEN`, then redeploy both services.
+Caller names identify job ownership; restarting the current in-memory service
+discards its old jobs, results and idempotency keys.
+
+For standalone Docker or Python use outside this Compose stack, the Job service
+still accepts `JOBS_CALLERS` directly as a JSON map of caller names to tokens:
 
 ```json
 {"reviewer":"REPLACE_WITH_A_GENERATED_RANDOM_TOKEN"}
 ```
 
-Compose supplies this as `JOBS_CALLERS` inside the service. For standalone Docker
-or Python, set `JOBS_CALLERS` directly. Tokens must be unique 32–256-character
-URL-safe strings; at most 32 named callers are supported. Empty configuration
+Each standalone caller's token must be a unique 32–256-character
+URL-safe string; at most 32 named callers are supported. Empty configuration
 leaves docs/health/discovery available but disables job access. Invalid
 configuration fails startup without printing submitted secrets.
 
-The deployer sets the entire caller map as one JSON-valued environment variable,
-per service instance. `load_settings()` parses it at startup and hashes each token
+The Job service receives the entire caller map as one JSON-valued environment
+variable. `load_settings()` parses it at startup and hashes each token
 into `Settings.callers`. `create_app()` passes that same settings object to the
 manager and retains it for authentication. This is not a mutable global registry
 or an API users can edit; updating callers requires restarting the service.
@@ -248,12 +258,13 @@ checks the mounted source signature, runs the bounded outline algorithm,
 then rechecks source/Catalog identity. Inputs never carry paths, URLs or
 complete geometry. The scheduler knows only the registered schema/function.
 
-Before upgrading, set `EOLAB_VECTOR_OUTLINE_JOBS_TOKEN` to the same generated token
-as a dedicated caller in `EOLAB_JOBS_CALLERS`, then restart both services. Compose
-passes the token into the app as `VECTOR_OUTLINE_JOBS_TOKEN`. The app rejects an
+Before upgrading, set the single `EOLAB_JOBS_TOKEN` described above, then restart
+both services. Compose wires it to both the app and the `eolab` Jobs caller.
+The app validates its internal `JOBS_TOKEN` setting and rejects an
 absent, blank or malformed token at startup (32–256 URL-safe characters required).
-It does not contact Jobs during startup; a valid-looking but unregistered token
-fails outline requests through Jobs authentication. These are server credentials,
+It does not contact Jobs during startup; a credential mismatch in a manually
+configured deployment fails outline requests through Jobs authentication.
+This is a server credential,
 never browser settings.
 
 The execution-mode switch and local outline process have been removed. A Jobs
