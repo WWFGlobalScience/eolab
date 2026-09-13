@@ -92,12 +92,10 @@ class Settings:
         initial_longitude: Initial map-center longitude.
         initial_zoom: Initial map zoom level.
         processing_data_path: Persistent private clip volume shared with the worker.
-        vector_outline_execution: Migration switch: legacy runs outlines inside
-            the application's child process; jobs submits them to the Job service.
-            Retained for rollout/rollback until the legacy pathway is retired.
-        vector_outline_jobs_token: Server-only bearer credential identifying the
+        jobs_token: Server-only bearer credential identifying the
             application as a Jobs caller. Jobs uses that identity to restrict
             status, result, cancellation and deletion to the owning caller.
+            Required at application startup; never sent to the browser.
     """
 
     app_title: str
@@ -133,15 +131,14 @@ class Settings:
     initial_longitude: float
     initial_zoom: float
     processing_data_path: Path = Path("/processing-data").absolute()
-    vector_outline_execution: str = "legacy"
-    vector_outline_jobs_token: str = field(default="", repr=False)
+    jobs_token: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         """Validate the application settings contract.
 
         Raises:
-            ValueError: If a required text setting is blank or a map value is
-                outside its documented range.
+            ValueError: If required text is blank, the Jobs credential is invalid,
+                or a resource, path or map setting violates its contract.
         """
         required_text_settings = {
             "APP_TITLE": self.app_title,
@@ -158,12 +155,10 @@ class Settings:
             "BASEMAP_URL": self.basemap_url,
             "BASEMAP_ATTRIBUTION": self.basemap_attribution,
         }
-        if self.vector_outline_execution not in {"legacy", "jobs"}:
-            raise ValueError("VECTOR_OUTLINE_EXECUTION must be legacy or jobs")
-        if self.vector_outline_execution == "jobs" and re.fullmatch(
-            r"[A-Za-z0-9._~-]{32,256}", self.vector_outline_jobs_token
+        if re.fullmatch(
+            r"[A-Za-z0-9._~-]{32,256}", self.jobs_token
         ) is None:
-            raise ValueError("VECTOR_OUTLINE_JOBS_TOKEN must be a configured 32–256 character URL-safe Jobs credential")
+            raise ValueError("JOBS_TOKEN must be a configured 32–256 character URL-safe Jobs credential")
         for environment_variable_name, setting_value in required_text_settings.items():
             if not setting_value:
                 raise ValueError(f"{environment_variable_name} must not be blank")
@@ -338,8 +333,7 @@ def load_settings(
         raise ValueError("SCAN_PATHS_WITHIN_MOUNT must be a JSON array of paths")
 
     return Settings(
-        vector_outline_execution=os.environ.get("VECTOR_OUTLINE_EXECUTION", "legacy"),
-        vector_outline_jobs_token=os.environ.get("VECTOR_OUTLINE_JOBS_TOKEN", ""),
+        jobs_token=os.environ.get("JOBS_TOKEN", ""),
         app_title=os.environ["APP_TITLE"].strip(),
         app_subtitle=os.environ["APP_SUBTITLE"].strip(),
         app_version=version_file_path.read_text(encoding="utf-8").strip(),

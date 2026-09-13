@@ -24,8 +24,7 @@ from eolab_app.vector.errors import VectorConflictError, VectorFeatureError
 from eolab_app.vector.filters import (
     CatalogVectorFilterRequest,
 )
-from eolab_app.vector.geometry import geometry_process, GEOMETRY_READ_SECONDS
-from eolab_app.bounded_vector import summary_process
+from eolab_app.bounded_vector import READ_SECONDS, summary_process
 from eolab_app.vector.ports import VectorCatalog
 from eolab_app.vector.selection_source import resolve_selection
 from eolab_app.vector.sources import MountedVectorResolver
@@ -47,7 +46,9 @@ class VectorSamplingService:
         Args:
             catalog: Authoritative Catalog reader.
             resolver: Exact mounted vector source resolver.
-            outline_executor: Optional injected Jobs path; None retains local execution.
+            outline_executor: Jobs adapter supplied by application composition.
+                Omit for selection-only consumers; outline() then reports
+                unavailable without starting local display work.
         """
         self.catalog = catalog
         self.resolver = resolver
@@ -88,7 +89,7 @@ class VectorSamplingService:
         """Run one bounded native selection command without an unbounded queue.
 
         Args:
-            target: Fixed selection or outline process command.
+            target: Fixed selection-summary process command.
             resolved: Authorized source capability.
 
         Returns:
@@ -102,7 +103,7 @@ class VectorSamplingService:
         async with self._slots:
             try:
                 success, result = await run_bounded_process(
-                    target, (resolved,), GEOMETRY_READ_SECONDS
+                    target, (resolved,), READ_SECONDS
                 )
             except ProcessDeadlineError as error:
                 raise VectorConflictError(
@@ -144,11 +145,14 @@ class VectorSamplingService:
             Approximate FeatureCollection for map display only.
 
         Raises:
-            VectorConflictError: If display work is unavailable or over budget.
+            VectorConflictError: If no executor is supplied, or Jobs display work
+                is unavailable or over budget.
+            SelectionUnavailableError: If the source changed before or during work.
+            asyncio.CancelledError: After the executor's bounded cleanup.
         """
-        resolved = await self.resolve_for_sampling(selection)
-        if self._outline_executor is not None:
-            result = await self._outline_executor(selection)
-            await self.resolve_for_sampling(selection)
-            return result
-        return await self._run(geometry_process, resolved)
+        await self.resolve_for_sampling(selection)
+        if self._outline_executor is None:
+            raise VectorConflictError("The map outline executor is unavailable")
+        result = await self._outline_executor(selection)
+        await self.resolve_for_sampling(selection)
+        return result

@@ -139,13 +139,16 @@ owned Processing jobs with the existing session cookie. Removed upload intents
 cannot be restored as live browser selections.
 
 
-### Additive Jobs outline pathway
+### Jobs outline execution
 
-`VECTOR_OUTLINE_EXECUTION=jobs` injects the vector-owned Jobs adapter for outlines
-only. `legacy` (default) retains `geometry_process` and the existing shared local
-semaphore. Both paths use `selection_source.resolve_selection` and
-`geometry.build_outline`; there is no second geometry algorithm or selection
-storage. A remote outline never acquires a local selection slot. Jobs failure is
+Application composition always injects the vector-owned Jobs adapter for outlines.
+The registered operation uses `selection_source.resolve_selection` and
+`geometry.build_outline`; there is no local outline wrapper, second geometry
+algorithm or selection storage. Selection summaries retain their local process
+and two-slot semaphore, using the neutral source reader's `READ_SECONDS` deadline.
+Selection-only consumers may omit the outline executor; an outline call on such
+an instance reports unavailable instead of starting local work.
+A remote outline never acquires a local selection slot. Jobs failure is
 an optional-outline failure and does not authorize, gate or cancel analysis.
 See `docs/job-service.md` for caller credentials, source mount, deadlines and
 rollback. The existing outline HTTP response and disconnect handling are retained.

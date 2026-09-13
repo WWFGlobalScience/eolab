@@ -109,4 +109,6 @@ HTTP pool. **Coordinates with:** composition for credentials and pool shutdown.
 Issue #410 explicitly approves extraction with one production caller. The vector
 adapter retains domain policy. No service imports the client to schedule itself,
 and the client has no knowledge of vector/raster/rendering/browser siblings.
-The existing legacy outline pathway stays available until the separate #411 cleanup.
+Application outline requests use this Jobs client exclusively; selection summaries
+retain their independent local execution. See [Job service](job-service.md) for
+required caller credentials and deployment rollback.

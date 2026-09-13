@@ -167,12 +167,9 @@ def create_app(
     )
     vector_selection_reader = VectorSamplingService(
         vector_catalog, vector_source_resolver,
-        # Inject remote outline execution only for the migration's Jobs mode;
-        # None preserves the service's existing local child-process pathway.
         OutlineJobs(
-            JobsClient(jobs_client, app_global_configuration.vector_outline_jobs_token)
-        )
-        if app_global_configuration.vector_outline_execution == "jobs" else None,
+            JobsClient(jobs_client, app_global_configuration.jobs_token)
+        ),
     )
     raster_pixel_service = RasterPixelService(
         raster_source_authorizer,

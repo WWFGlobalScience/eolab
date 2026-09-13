@@ -1,4 +1,4 @@
-"""Exercise the additive outline path across Catalog, native and Jobs boundaries."""
+"""Exercise Jobs-only outlines across Catalog, native and HTTP boundaries."""
 
 import asyncio
 import json
@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx2
 import fiona
 import pytest
+from fastapi.testclient import TestClient
 from shapely.geometry import Polygon, box, mapping
 
 from eolab_app.catalog.geopackage import build_stac_items
@@ -23,6 +24,7 @@ from eolab_app.vector.geometry import build_outline
 from eolab_app.vector.outline_jobs import OutlineJobs
 from eolab_jobs.client import JobsClient
 from eolab_app.settings import load_settings
+from eolab_app.main import create_app
 from eolab_app.vector.outline_operation import OutlineInput
 from eolab_app.vector.sampling import VectorSamplingService
 from eolab_app.vector.sources import MountedVectorResolver
@@ -123,8 +125,8 @@ def outline_case(tmp_path: Path) -> tuple[CatalogSelection, dict[str, Any], str]
 
 
 @pytest.mark.parametrize("stale", [False, True])
-def test_registered_native_outline_matches_legacy(
-    outline_case: tuple,
+def test_registered_native_outline_preserves_algorithm_result(
+    outline_case: tuple[CatalogSelection, dict[str, Any], str],
     tmp_path: Path,
     stale: bool,
 ) -> None:
@@ -132,6 +134,11 @@ def test_registered_native_outline_matches_legacy(
 
     Only deployment endpoints are injected into the child; the submitted input
     remains the exact production path-free contract.
+
+    Args:
+        outline_case: Real source, authorized descriptor and algorithm output.
+        tmp_path: Source mount supplied to the native child.
+        stale: Submit an obsolete source signature instead of the current one.
     """
     selection, expected, url = outline_case
     if stale:
@@ -269,19 +276,123 @@ def test_explicit_configuration(
     configured_environment: None,
     version_file_path: Path,
 ) -> None:
-    """Validate opt-in and keep the Jobs credential out of public settings/repr."""
-    monkeypatch.delenv("VECTOR_OUTLINE_EXECUTION", raising=False)
-    assert load_settings(version_file_path).vector_outline_execution == "legacy"
-    monkeypatch.setenv("VECTOR_OUTLINE_EXECUTION", "jobs")
-    monkeypatch.delenv("VECTOR_OUTLINE_JOBS_TOKEN", raising=False)
-    with pytest.raises(ValueError):
+    """Require a private Jobs credential even without an execution-mode switch.
+
+    Args:
+        monkeypatch: Isolates credential mutations.
+        configured_environment: Complete application settings fixture.
+        version_file_path: Valid application version file.
+    """
+    monkeypatch.delenv("JOBS_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="JOBS_TOKEN"):
         load_settings(version_file_path)
+    for invalid in ("", "a" * 31, "a" * 257, "a" * 32 + " ", "a" * 32 + "/"):
+        monkeypatch.setenv("JOBS_TOKEN", invalid)
+        with pytest.raises(ValueError, match="JOBS_TOKEN"):
+            load_settings(version_file_path)
     token = "test-outline-" + "a" * 40
-    monkeypatch.setenv("VECTOR_OUTLINE_JOBS_TOKEN", token)
+    monkeypatch.setenv("JOBS_TOKEN", token)
     settings = load_settings(version_file_path)
-    assert settings.vector_outline_jobs_token == token
+    assert settings.jobs_token == token
     assert token not in repr(settings)
     assert token not in json.dumps(settings.as_public_dict())
+
+
+@pytest.mark.parametrize("outcome", ["success", "offline", "unauthorized", "stale"])
+def test_application_routes_outlines_only_through_jobs(
+    outline_case: tuple[CatalogSelection, dict[str, Any], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_environment: None,
+    version_file_path: Path,
+    outcome: str,
+) -> None:
+    """Keep default composition on Jobs and local selection independent.
+
+    Args:
+        outline_case: Real source, authorized selection and expected outline.
+        tmp_path: Mounted fixture root.
+        monkeypatch: Sets deployment configuration and guards local execution.
+        configured_environment: Complete app settings including private token.
+        version_file_path: Application version file.
+        outcome: Successful reply, outage, rejected credential or changed source.
+    """
+    selection, expected, catalog_url = outline_case
+    monkeypatch.setenv("CATALOG_INTERNAL_URL", catalog_url)
+    monkeypatch.setenv("SCAN_MOUNT_PATH", str(tmp_path))
+    calls: list[httpx2.Request] = []
+    job_id = str(uuid4())
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        """Substitute only remote Jobs HTTP, preserving the application's routing.
+
+        Args:
+            request: Authenticated lifecycle request from the actual Jobs client.
+
+        Returns:
+            Lifecycle response or an unavailable-service response.
+        """
+        calls.append(request)
+        assert request.headers["Authorization"] == "Bearer test-outline-" + "a" * 40
+        if outcome in {"offline", "unauthorized"}:
+            return httpx2.Response(503 if outcome == "offline" else 401)
+        if request.url.path.endswith("/result"):
+            if outcome == "stale":
+                source = tmp_path / "polygons.gpkg"
+                # Appending changes its signature without replacing the source.
+                with source.open("ab") as stream:
+                    stream.write(b"changed")
+            return httpx2.Response(200, json={"jobId": job_id, "value": expected})
+        if request.method == "DELETE":
+            return httpx2.Response(204)
+        return httpx2.Response(202, json={"jobId": job_id, "status": "succeeded"})
+
+    async def forbidden_local(*args: Any, **kwargs: Any) -> None:
+        """Fail if outline routing attempts local bounded-process execution.
+
+        Args:
+            args: Unexpected positional process arguments.
+            kwargs: Unexpected keyword process arguments.
+
+        Raises:
+            AssertionError: Always; local outlines have been removed.
+        """
+        raise AssertionError("Outline requested a local process")
+
+    app = create_app(version_file_path, jobs_transport=httpx2.MockTransport(respond))
+    with TestClient(app) as client:
+        with monkeypatch.context() as guard:
+            guard.setattr(
+                "eolab_app.vector.sampling.run_bounded_process", forbidden_local
+            )
+            response = client.post(
+                "/api/vector-sampling/outline",
+                json=selection.model_dump(mode="json", by_alias=True),
+            )
+        assert calls, "The application's outline route did not call Jobs"
+        submitted = json.loads(calls[0].content)
+        assert submitted["operation"] == "vector.outline.v1"
+        assert submitted["inputs"]["selection"] == selection.model_dump(
+            mode="json", by_alias=True
+        )
+        if outcome == "success":
+            assert response.status_code == 200, response.text
+            assert response.json() == json.loads(json.dumps(expected))
+        else:
+            assert response.status_code == 409, response.text
+        if outcome != "stale":
+            previous_calls = len(calls)
+            selected = client.post(
+                "/api/vector-sampling/areas",
+                json={
+                    "collectionId": selection.collection_id,
+                    "itemId": selection.item_id,
+                    "filter": selection.filter.model_dump(mode="json"),
+                },
+            )
+            assert selected.status_code == 200, selected.text
+            assert selected.json()["matched"] == 1
+            assert len(calls) == previous_calls
 
 
 def test_remote_outlines_do_not_gate_selection(

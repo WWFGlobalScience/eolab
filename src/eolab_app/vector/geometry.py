@@ -1,49 +1,22 @@
-"""Separate bounded native commands for selection metadata and map outlines."""
+"""Bounded display-outline algorithm used by the registered Jobs operation."""
 
 from typing import Any
 
 from eolab_app.bounded_vector import (
     polygon_features,
     selection_summary,
-    READ_SECONDS,
     _limit_memory,
 )
-from eolab_app.catalog_selection import (
-    ResolvedCatalogSelection,
-    SelectionUnavailableError,
-)
-from eolab_app.execution.bounded_process import ProcessResultWriter
+from eolab_app.catalog_selection import ResolvedCatalogSelection
 from eolab_app.vector.display_geometry import display_geometry
-
-GEOMETRY_READ_SECONDS = READ_SECONDS
-
-
-def geometry_process(
-    writer: ProcessResultWriter, resolved: ResolvedCatalogSelection
-) -> None:
-    """Build an approximate outline independently of numeric analysis admission.
-
-    Args:
-        writer: Supervisor-owned result channel.
-        resolved: Authorized original source and predicate.
-    """
-    try:
-        writer.put((True, build_outline(resolved)))
-    except Exception:
-        writer.put(
-            (
-                False,
-                "The map outline could not be drawn within its display budget",
-            )
-        )
 
 
 def build_outline(resolved: ResolvedCatalogSelection) -> dict[str, Any]:
     """Read matching polygons and simplify them into a map display outline.
 
-    Both the local process and the Job service call this algorithm. Polygons
-    are read from the original dataset one at a time; the input does not hold
-    their coordinates. The simplified result is for drawing, not analysis.
+    The Job service calls this algorithm. Polygons are read from the original
+    dataset one at a time; the input does not hold their coordinates.
+    The simplified result is for drawing, not analysis.
 
     Args:
         resolved: Server-resolved dataset path, native layer name, attribute

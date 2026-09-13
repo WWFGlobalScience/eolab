@@ -100,6 +100,22 @@ def test_native_read_never_falls_back_after_zero_matches(
         selection_summary(replace(source, where='"selected" = 123'))
 
 
+def test_selection_only_service_cannot_launch_local_outline(
+    source: ResolvedCatalogSelection,
+) -> None:
+    """Omitting the Jobs adapter never revives the removed local outline path.
+
+    Args:
+        source: Real valid source that the former local path could outline.
+    """
+    catalog = FixtureCatalog(
+        ResolvedVectorSource("mounted", "geopackage", source.path, "data", "polygons")
+    )
+    service = VectorSamplingService(catalog, catalog)
+    with pytest.raises(VectorConflictError, match="executor is unavailable"):
+        asyncio.run(service.outline(source.selection))
+
+
 def test_actual_feature_and_coordinate_budgets(
     source: ResolvedCatalogSelection, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -93,6 +93,20 @@ def test_compose_and_environment_template_cover_limits() -> None:
         assert f"EOLAB_{name}=" in example
 
 
+def test_compose_shares_one_eolab_credential() -> None:
+    """Wire the app and service to one deployment input, with no duplicate key."""
+    root = Path(__file__).parents[1]
+    compose = (root / "docker-compose.yml").read_text()
+    example = (root / ".env.example").read_text()
+    jobs, app = compose.split("  jobs:\n", 1)[1].split("  app:\n", 1)
+    assert 'JOBS_CALLERS: \'{"eolab":"${EOLAB_JOBS_TOKEN-}"}\'' in jobs
+    assert '"JOBS_TOKEN=${EOLAB_JOBS_TOKEN-}"' in app
+    assert example.count("EOLAB_JOBS_TOKEN=") == 1
+    for obsolete in ("EOLAB_JOBS_CALLERS", "EOLAB_VECTOR_OUTLINE_JOBS_TOKEN"):
+        assert obsolete not in compose
+        assert obsolete not in example
+
+
 def test_injected_settings_do_not_read_unrelated_host_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

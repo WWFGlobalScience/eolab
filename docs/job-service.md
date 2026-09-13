@@ -1,28 +1,38 @@
 # Standalone Job service
 
 The `jobs` Compose service executes installed diagnostic and vector-outline
-operations. Optional outline migration is explicitly enabled per deployment;
+operations. All map outline requests use this service;
 raster and Processing workloads remain unchanged. Open `/api/jobs/docs` to try it.
 
 ## Configure a caller
 
-Generate a unique token per trusted caller with
+For the Compose/Coolify stack, generate one private token with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-Set **`EOLAB_JOBS_CALLERS`** in the Compose/Coolify deployment environment to a
-JSON object mapping stable caller names to their tokens:
+Set **`EOLAB_JOBS_TOKEN`** to that value. Compose supplies it to the app as
+`JOBS_TOKEN` and builds the Job service's `JOBS_CALLERS` entry for owner `eolab`
+from the same value. Enter the token only once; no outline-specific token or
+caller-map variable is needed in Coolify. Future EOLab operations can use this
+same caller identity. Both containers reject a blank or malformed token at startup.
+
+When upgrading an existing deployment, replace its separate caller-map and
+outline-token settings with `EOLAB_JOBS_TOKEN`, then redeploy both services.
+Caller names identify job ownership; restarting the current in-memory service
+discards its old jobs, results and idempotency keys.
+
+For standalone Docker or Python use outside this Compose stack, the Job service
+still accepts `JOBS_CALLERS` directly as a JSON map of caller names to tokens:
 
 ```json
 {"reviewer":"REPLACE_WITH_A_GENERATED_RANDOM_TOKEN"}
 ```
 
-Compose supplies this as `JOBS_CALLERS` inside the service. For standalone Docker
-or Python, set `JOBS_CALLERS` directly. Tokens must be unique 32–256-character
-URL-safe strings; at most 32 named callers are supported. Empty configuration
+Each standalone caller's token must be a unique 32–256-character
+URL-safe string; at most 32 named callers are supported. Empty configuration
 leaves docs/health/discovery available but disables job access. Invalid
 configuration fails startup without printing submitted secrets.
 
-The deployer sets the entire caller map as one JSON-valued environment variable,
-per service instance. `load_settings()` parses it at startup and hashes each token
+The Job service receives the entire caller map as one JSON-valued environment
+variable. `load_settings()` parses it at startup and hashes each token
 into `Settings.callers`. `create_app()` passes that same settings object to the
 manager and retains it for authentication. This is not a mutable global registry
 or an API users can edit; updating callers requires restarting the service.
@@ -191,7 +201,7 @@ API accepting module names or paths.
 stack and Python standard-library processes. **Coordinates with:** Compose and
 the existing proxy. That HTTP edge now carries Authorization to the fixed
 `http://jobs:8080` endpoint. Cookies/arbitrary identity headers are not forwarded.
-The additive outline adapter adds a vector-to-Jobs execution edge. Registration
+The outline adapter uses the vector-to-Jobs execution edge. Registration
 imports the installed domain operation, which reuses existing source/outline
 functions and GIS dependencies. The scheduler never imports application services.
 No database connection is added; raster/Processing execution remains unchanged.
@@ -239,20 +249,28 @@ workflow smoke-tests the container with temporary credentials. No new workflow
 or production deployment is introduced.
 
 
-## Optional vector outline migration (#408)
+## Vector map outlines
 
 `vector.outline.v1` accepts `{ "selection": <CatalogSelection> }`. Its result is
 `{ "geometry": <approximate FeatureCollection>, "bbox": [west,south,east,north] }`.
 The operation resolves the immutable descriptor against the internal Catalog,
-checks the mounted source signature, runs the same outline kernel as the legacy
-path, then rechecks source/Catalog identity. Inputs never carry paths, URLs or
+checks the mounted source signature, runs the bounded outline algorithm,
+then rechecks source/Catalog identity. Inputs never carry paths, URLs or
 complete geometry. The scheduler knows only the registered schema/function.
 
-Compose keeps `EOLAB_VECTOR_OUTLINE_EXECUTION=legacy` by default. Set it to `jobs`
-and set `EOLAB_VECTOR_OUTLINE_JOBS_TOKEN` to a token already configured for a
-dedicated caller in `EOLAB_JOBS_CALLERS` to exercise the new pathway. These are
-server credentials, never browser settings. Switch back to `legacy` and redeploy
-to roll back. A Jobs failure never silently starts local outline work.
+Before upgrading, set the single `EOLAB_JOBS_TOKEN` described above, then restart
+both services. Compose wires it to both the app and the `eolab` Jobs caller.
+The app validates its internal `JOBS_TOKEN` setting and rejects an
+absent, blank or malformed token at startup (32–256 URL-safe characters required).
+It does not contact Jobs during startup; a credential mismatch in a manually
+configured deployment fails outline requests through Jobs authentication.
+This is a server credential,
+never browser settings.
+
+The execution-mode switch and local outline process have been removed. A Jobs
+failure is an outline failure, with no local fallback. Verify a filtered polygon
+outline in the deployed app before accepting the rollout. Rollback means deploying
+the previous compatible release and its configuration, not changing a mode switch.
 
 Only optional outline calls change: local selection, raster analysis and durable
 Processing remain independent. The adapter uses priority -10, 10 seconds waiting,
@@ -268,7 +286,7 @@ inputs, priority, deadlines, result validation and error translation. The client
 imports no Jobs server, scheduler, operation registry or GIS code. The existing
 browser proxy still forwards individual requests; it does not own their job
 lifetimes and must not cancel/delete them when forwarding completes.
-See [Python Jobs client](jobs-client.md) for retention policy and a diagnostic demo.
+See [Python Jobs client](jobs-client.md) for retention policy and diagnostic tests.
 
 The image now includes existing application modules and the reviewed application
 runtime wheels, including GIS libraries; no application server, GeoServer client
@@ -278,8 +296,8 @@ The fixed Compose contracts are `http://stac-api:8080` and `/scan-source`, mount
 read-only and verified by the existing startup guard. No source data is copied.
 Jobs health/diagnostic work does not require the Catalog to be online. The service
 gets 2 GiB rather than the diagnostic image's 256 MiB; it still executes one child
-at a time. The old application two-child budget remains, so combined deployments
-can now have two local vector selections plus one Jobs operation.
+at a time. The application two-child selection budget remains, so deployments
+can have two local vector selections plus one Jobs operation.
 
 Requests remain limited to 64 KiB. Inline process results are bounded at 512 KiB,
 allowing the existing 256 KiB compact GeoJSON display budget plus JSON spacing and

@@ -155,3 +155,13 @@ def test_jobs_client_has_no_application_server_or_operation_dependencies() -> No
     assert "eolab_jobs.client" in imported_modules(
         APPLICATION_SOURCE / "vector" / "outline_jobs.py"
     )
+
+
+def test_outline_algorithm_is_not_a_local_execution_dependency() -> None:
+    """Keep local selection execution separate from the Jobs outline algorithm."""
+    assert "eolab_app.vector.geometry" not in imported_modules(
+        APPLICATION_SOURCE / "vector" / "sampling.py"
+    )
+    assert "eolab_app.execution.bounded_process" not in imported_modules(
+        APPLICATION_SOURCE / "vector" / "geometry.py"
+    )
