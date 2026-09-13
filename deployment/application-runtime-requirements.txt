@@ -1,4 +1,4 @@
-# Linux x86_64 / CPython 3.12 wheels. See docs/application-build-inputs.md.
+# Linux x86_64 / CPython 3.12 wheels. See docs/deployment-and-operations.md#build-information.
 # Generated from the deployed resolution; review changes before building.
 affine==3.0.1 --hash=sha256:cda3b303325e7bf2bf34817e68753a0d1c4cacbdd451fe67c4878dc2ecbaa540
 annotated_doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
