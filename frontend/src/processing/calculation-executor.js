@@ -95,7 +95,7 @@ export class CalculationExecutor {
      * Called by Recover / retry; a lost submission response keeps its request key.
      * @return {Promise<void>} Current progress without creating a new calculation request.
      */
-    async retry() { this.#retryRequired = false; await this.#processNextStep(); }
+    async retry() { this.#retryRequired = false; await this.#advanceExecution(); }
 
     /** Resume observing the job or submission recovered from session storage.
      * The caller requests any cancellation before start; recovery itself does not choose a policy.
@@ -109,7 +109,7 @@ export class CalculationExecutor {
             catch (error) { this.#executionStatus.message = error.message; this.#retryRequired = true; this.#notifyListeners(); }
         }
         await this.jobs.refresh();
-        await this.#processNextStep();
+        await this.#advanceExecution();
     }
 
     /** Drop a requested calculation that has not reached submission yet.
@@ -124,7 +124,7 @@ export class CalculationExecutor {
         this.#queuePlanRelease();
         if (target?.plan) this.plansToRelease.add(target.plan.planId);
         if (!this.#savedSubmission) this.#executionStatus.phase = "idle";
-        if (this.plansToRelease.size) void this.#processNextStep();
+        if (this.plansToRelease.size) void this.#advanceExecution();
     }
 
     /** Save the cancellation request before contacting the server.
@@ -139,7 +139,7 @@ export class CalculationExecutor {
         this.#savedSubmission.cancelRequested = true;
         try { this.storage.write(this.#savedSubmission); }
         catch (error) { this.#executionStatus.message = error.message; }
-        void this.#processNextStep();
+        void this.#advanceExecution();
     }
 
     /** Remove the prepared plan and queue its server release.
@@ -192,7 +192,7 @@ export class CalculationExecutor {
         this.#executionStatus.phase = "waiting";
         this.#executionStatus.message = "Preparing calculation…";
         this.#notifyListeners();
-        void this.#processNextStep();
+        void this.#advanceExecution();
     }
 
     /** Submit the currently prepared plan on the caller's explicit instruction.
@@ -223,7 +223,7 @@ export class CalculationExecutor {
         this.#executionStatus.plan = null;
         this.#plannedCalculation = null;
         this.#planTiming = null;
-        void this.#processNextStep();
+        void this.#advanceExecution();
     }
 
     /** Cancel pending and submitted work; preserve cancellation across reloads. @return {void} */
@@ -235,14 +235,15 @@ export class CalculationExecutor {
     }
 
     /**
-     * Perform the next planning, submission, cancellation or completion step.
+     * Advance the calculation through planning, submission, cancellation and completion.
+     * These are the fixed job lifecycle operations, not user-defined processing steps.
      * Session storage preserves unfinished submission details across reloads.
      * Reusing a request key after a lost response prevents duplicate jobs. Waiting
      * until cancellation finishes prevents the replacement from overlapping the
      * old job. Return while a job runs; the shared job observer calls back later.
-     * @return {Promise<void>} Completion of the currently possible API steps.
+     * @return {Promise<void>} Completion of the API operations that can proceed now.
      */
-    async #processNextStep() {
+    async #advanceExecution() {
         if (this.#isAdvancing || this.destroyed || this.#retryRequired) return;
         this.#isAdvancing = true;
         try {
@@ -352,11 +353,11 @@ export class CalculationExecutor {
             // Finish the old plan request and its cleanup before processing a replacement.
             if (!this.#retryRequired && !this.destroyed && !this.#savedSubmission &&
                 (this.#pendingCalculation || this.plansToRelease.size)) {
-                queueMicrotask(() => void this.#processNextStep());
+                queueMicrotask(() => void this.#advanceExecution());
             }
         }
-        if (this.#savedSubmission?.pending && !this.#retryRequired) await this.#processNextStep();
-        else if (this.#pendingCalculation && !this.#retryRequired) await this.#processNextStep();
+        if (this.#savedSubmission?.pending && !this.#retryRequired) await this.#advanceExecution();
+        else if (this.#pendingCalculation && !this.#retryRequired) await this.#advanceExecution();
     }
 
     /** Consume shared progress without replacing current result with an older job. @return {void} */
@@ -368,7 +369,7 @@ export class CalculationExecutor {
         }
         if (this.#savedSubmission?.jobId) {
             this.#executionStatus.currentJob = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.currentJob;
-            if (!this.#isAdvancing) void this.#processNextStep();
+            if (!this.#isAdvancing) void this.#advanceExecution();
         }
         this.#notifyListeners();
     }
