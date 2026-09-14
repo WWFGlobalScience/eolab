@@ -3,6 +3,12 @@ import { calculationIntent, chunkPixels } from "./calculation-session.js";
 import { CalculationExecutor } from "./calculation-executor.js";
 import { catalogSelectionsEqual, normalizeRasterSamplingArea } from "../selected-area.js";
 
+/** Execution status received from CalculationExecutor's onChange callback.
+ * The JSDoc import refers to the field definitions in calculation-executor.js
+ * for documentation and editor type checking; it does not load code at runtime.
+ * @typedef {import("./calculation-executor.js").CalculationExecutionSnapshot} CalculationExecutionSnapshot
+ */
+
 export const AUTOMATIC_CALCULATION_LIMITS = Object.freeze({ nativeBlocks: 128, decodedBytes: 64 * 1024 * 1024, geometryCells: 25000 });
 export const STATISTIC_PRESETS = Object.freeze({
     mean: { label: "Mean", expression: "mean(a)" }, sum: { label: "Sum", expression: "sum(a)" },
@@ -396,7 +402,7 @@ export class SummaryStatisticsController {
     /** Decide whether a prepared batch may run and apply progress to its cards.
      * Automatic updates must pass this owner's size policy; explicit Calculate
      * requests already authorize execution. Only this owner interprets the trigger.
-     * @param {import("./calculation-executor.js").CalculationExecutionSnapshot} execution Progress, remaining work and last completed job from one executor update.
+     * @param {CalculationExecutionSnapshot} execution Progress, remaining work and last completed job from one executor update.
      * @return {void}
      */
     receive(execution) {
