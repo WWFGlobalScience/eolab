@@ -467,14 +467,14 @@ export class SummaryStatisticsController {
                 const displayed = this.now();
                 result.totalWaitSeconds = Math.max(0, displayed - result.requestStarted) / 1000;
                 const trace = result.stageTrace;
-                if (trace && [trace.planningStarted, trace.planningFinished, trace.submissionStarted, trace.submissionFinished].every(Number.isFinite)
-                    && result.requestStarted <= trace.planningStarted && trace.planningFinished <= trace.submissionStarted) {
+                if (trace && [trace.planningStartedAtMs, trace.planningFinishedAtMs, trace.submissionStartedAtMs, trace.submissionFinishedAtMs].every(Number.isFinite)
+                    && result.requestStarted <= trace.planningStartedAtMs && trace.planningFinishedAtMs <= trace.submissionStartedAtMs) {
                     result.stages = {
-                        beforePlanningSeconds: (trace.planningStarted - result.requestStarted) / 1000,
-                        planningSeconds: (trace.planningFinished - trace.planningStarted) / 1000,
-                        beforeSubmissionSeconds: (trace.submissionStarted - trace.planningFinished) / 1000,
-                        submissionSeconds: (trace.submissionFinished - trace.submissionStarted) / 1000,
-                        afterSubmissionSeconds: (displayed - trace.submissionFinished) / 1000,
+                        beforePlanningSeconds: (trace.planningStartedAtMs - result.requestStarted) / 1000,
+                        planningSeconds: (trace.planningFinishedAtMs - trace.planningStartedAtMs) / 1000,
+                        beforeSubmissionSeconds: (trace.submissionStartedAtMs - trace.planningFinishedAtMs) / 1000,
+                        submissionSeconds: (trace.submissionFinishedAtMs - trace.submissionStartedAtMs) / 1000,
+                        afterSubmissionSeconds: (displayed - trace.submissionFinishedAtMs) / 1000,
                         planReused: trace.planReused, serverPlan: trace.serverPlan,
                     };
                 }

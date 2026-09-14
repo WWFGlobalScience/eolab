@@ -26,7 +26,8 @@ function identity(value) { return JSON.stringify(value); }
  * @property {Object|null} current Current authoritative job snapshot.
  * @property {Object|null} result Last completed result, retained during replacement.
  * @property {Readonly<Object>|null} resultIntent Intent that produced the result.
- * @property {Object|null} resultTiming Browser stage timestamps for that result.
+ * @property {Object|null} resultTiming Planning/submission timestamps in browser-clock milliseconds
+ * plus the server planning measurements; the summary computes elapsed durations.
  * @property {ReadonlyArray<Object>} jobs Calculation history from the shared observer.
  * @property {string} historyError Shared history retrieval error.
  */
@@ -57,7 +58,7 @@ export class CalculationExecutor {
      * @param {function(Object|null):void} [dependencies.onActivity] Sends the working sampling area (or null) to composition for its activity indicator.
      * @param {function():string} [dependencies.requestId] Idempotency key factory.
      * @param {function(Object,Readonly<Object>):boolean} [dependencies.canAutoSubmit] Caller-owned automatic admission policy.
-     * @param {function():number} [dependencies.now] Monotonic browser clock.
+     * @param {function():number} [dependencies.now] Monotonic timestamp in milliseconds, normally performance.now().
      */
     constructor({ api, jobs, storage, onChange, onActivity = () => {},
         requestId = () => crypto.randomUUID(), canAutoSubmit = () => true,
@@ -229,9 +230,9 @@ export class CalculationExecutor {
                 this.#notifyListeners();
                 let job;
                 try {
-                    if (this.trace) this.trace.submissionStarted = this.now();
+                    if (this.trace) this.trace.submissionStartedAtMs = this.now();
                     job = await this.api.submitCalculation(this.#savedSubmission.pending);
-                    if (this.trace) this.trace.submissionFinished = this.now();
+                    if (this.trace) this.trace.submissionFinishedAtMs = this.now();
                 }
                 catch (error) {
                     this.trace = null; // An uncertain/retried submission has no complete stage trace.
@@ -291,11 +292,12 @@ export class CalculationExecutor {
             // Aborting fetch cannot acknowledge native cleanup, and can lose the
             // ID of a plan already committed behind a proxy. Keep this bounded
             // request connected, then release a superseded result before reuse.
-            const planningStarted = this.now();
+            // Monotonic browser timestamps in milliseconds, not dates or durations.
+            const planningStartedAtMs = this.now();
             const planReused = !!target.plan;
             try { plan = target.plan ?? await this.api.planCalculation(target.intent); }
             catch (error) { if (target !== this.#pendingCalculation || error.name === "AbortError") return; throw error; }
-            const planningFinished = this.now();
+            const planningFinishedAtMs = this.now();
             if (target !== this.#pendingCalculation || this.destroyed) {
                 this.plansToRelease.add(plan.planId);
                 await this.#releasePlans();
@@ -315,7 +317,7 @@ export class CalculationExecutor {
                 pending: { planId: plan.planId, requestId: this.requestId() }, jobId: null };
             this.storage.write(record);
             this.#savedSubmission = record;
-            this.trace = { planningStarted, planningFinished, planReused, serverPlan: plan.timing ?? null };
+            this.trace = { planningStartedAtMs, planningFinishedAtMs, planReused, serverPlan: plan.timing ?? null };
             this.#pendingCalculation = null;
         } catch (error) {
             this.#retryRequired = true;
