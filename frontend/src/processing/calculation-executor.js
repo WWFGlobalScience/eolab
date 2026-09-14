@@ -3,13 +3,16 @@ import { ACTIVE_JOB_STATES } from "./jobs.js";
 import { ProcessingRequestError } from "./api.js";
 import { calculationIntent } from "./calculation-session.js";
 
-/** Stable comparison of public intents. @param {Object|null} value Intent. @return {string} Identity. */
+/** Compare calculation settings without relying on object identity.
+ * @param {Object|null} value Raster, area and formula settings.
+ * @return {string} Serialized comparison key.
+ */
 function identity(value) { return JSON.stringify(value); }
 
 /**
- * Execution status delivered to the statistics owner. Snapshots never expose the
- * mutable submission record, pending target, or scheduler flags. Job and plan
- * payloads are read-only API values; the snapshot and recovery projection are frozen.
+ * Progress sent to the statistics controller. The saved submission and scheduler
+ * fields stay private. The snapshot and unfinished-calculation description are
+ * frozen; consumers also treat the enclosed job and plan API values as read-only.
  * @typedef {Object} CalculationExecutionSnapshot
  * @property {boolean} isIdle No calculation or API step remains in progress. This can follow
  * success, cancellation, failure, or a plan waiting for confirmation; it does not mean success.
@@ -18,7 +21,7 @@ function identity(value) { return JSON.stringify(value); }
  * @property {{calculation:Readonly<Object>,automatic:boolean,cancelRequested:boolean}|null} unfinishedCalculation
  * Description of a submission still being tracked in this tab. Used to restore cards
  * after reload, including lost submission responses. Null when nothing needs resuming.
- * @property {boolean} recoverable Explicit retry can resume uncertain accepted work.
+ * @property {boolean} recoverable A saved submission needs Recover / retry after an API or storage failure.
  * @property {string} phase Execution phase, independent of editor validation.
  * @property {string} message Execution feedback.
  * @property {Object|null} plan Server plan held until the user clicks Calculate.
@@ -54,7 +57,7 @@ export class CalculationExecutor {
      * @param {Object} dependencies Execution dependencies.
      * @param {import("./api.js").ProcessingApiClient} dependencies.api Processing transport.
      * @param {import("./jobs.js").ProcessingJobs} dependencies.jobs Shared job observer.
-     * @param {import("./calculation-session.js").CalculationSessionStorage} dependencies.storage Durable per-tab recovery.
+     * @param {import("./calculation-session.js").CalculationSessionStorage} dependencies.storage Saves unfinished submissions across reloads in this tab.
      * @param {function(CalculationExecutionSnapshot):void} dependencies.onChange Updates the owning statistics controller with execution progress.
      * @param {function(Object|null):void} [dependencies.onActivity] Sends the working sampling area (or null) to composition for its activity indicator.
      * @param {function():string} [dependencies.requestId] Idempotency key factory.
@@ -79,6 +82,7 @@ export class CalculationExecutor {
     get snapshot() {
         const isIdle = !this.#savedSubmission && !this.#pendingCalculation && !this.#isAdvancing &&
             (this.#retryRequired || this.plansToRelease.size === 0);
+        // The existing session-storage format calls the calculation settings "intent".
         const unfinishedCalculation = this.#savedSubmission ? Object.freeze({ calculation: this.#savedSubmission.intent,
             automatic: this.#savedSubmission.automatic, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
         return Object.freeze({ ...this.#executionStatus, jobs: Object.freeze([...this.#executionStatus.jobs]),
@@ -178,7 +182,7 @@ export class CalculationExecutor {
         if (this.destroyed) return;
         const snapshot = calculationIntent(calculation);
         if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#notifyListeners(); return; }
-        // Repeated manual actions cannot create two jobs for the same intent.
+        // Repeated Calculate clicks cannot create two jobs for the same settings.
         if (!automatic && ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
             (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot)))) return;
         const plan = this.#executionStatus.plan && identity(snapshot) === identity(this.#confirmationCalculation) ? this.#executionStatus.plan : null;
@@ -236,7 +240,7 @@ export class CalculationExecutor {
                     if (this.trace) this.trace.submissionFinishedAtMs = this.now();
                 }
                 catch (error) {
-                    this.trace = null; // An uncertain/retried submission has no complete stage trace.
+                    this.trace = null; // A lost response prevents measuring the complete submission interval.
                     if (error instanceof ProcessingRequestError && error.status >= 400 && error.status < 500 && error.status !== 408) {
                         this.storage.clear(); this.#savedSubmission = null;
                     }
@@ -332,7 +336,7 @@ export class CalculationExecutor {
             if (this.destroyed) await this.#releasePlans().catch(() => {});
             this.#isAdvancing = false;
             this.#notifyListeners();
-            // Newest intent waits for both old metadata and acknowledged cleanup.
+            // Finish the old plan request and its cleanup before processing a replacement.
             if (!this.#retryRequired && !this.destroyed && !this.#savedSubmission &&
                 (this.#pendingCalculation || this.plansToRelease.size)) {
                 queueMicrotask(() => void this.#processNextStep());
