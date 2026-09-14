@@ -35,7 +35,7 @@ export function calculationIntent(value) {
 export class CalculationSessionStorage {
     /** @param {Storage|null} storage Browser sessionStorage. */
     constructor(storage) { this.storage = storage; }
-    /** Recover a validated record; never resume follow mode automatically. @return {Object|null} Owned workflow. */
+    /** Recover validated execution data and caller context without choosing whether to cancel. @return {Object|null} Owned workflow. */
     read() {
         try {
             const text = this.storage?.getItem(KEY);
@@ -48,13 +48,20 @@ export class CalculationSessionStorage {
             if (!(value.releasePlanId === undefined || value.releasePlanId === null || ID.test(value.releasePlanId))) return null;
             return { intent: calculationIntent(value.intent), jobId: value.jobId, pending: value.pending,
                 releasePlanId: value.releasePlanId ?? null,
-                automatic: value.automatic, cancelRequested: value.cancelRequested || value.automatic };
+                context: Object.freeze({ automatic: value.automatic }), cancelRequested: value.cancelRequested };
         } catch { return null; }
     }
-    /** Persist before submission/cancellation. @param {Object} record Workflow. @return {void} */
+    /** Persist execution data using the existing v1 record format.
+     * The statistics owner supplies automatic/manual recovery metadata as context.
+     * This adapter maps it to the legacy automatic field without applying policy.
+     * @param {Object} record Execution data and optional caller context.
+     * @return {void}
+     * @throws {Error} If storage is unavailable, full, or the record exceeds its bound.
+     */
     write(record) {
         if (!this.storage) throw new Error("Browser session storage is needed for recoverable calculations.");
-        const text = JSON.stringify(record);
+        const { context, ...execution } = record;
+        const text = JSON.stringify({ ...execution, automatic: context?.automatic ?? false });
         if (text.length > 16384) throw new Error("Calculation recovery information is too large.");
         this.storage.setItem(KEY, text);
     }
