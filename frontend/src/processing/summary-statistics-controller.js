@@ -67,21 +67,22 @@ export class SummaryStatisticsController {
     key(card) { return JSON.stringify([sourceKey(card.source), card.expression.trim(), this.state.area, this.state.targetChunkPixels]); }
     get isActive() { return this.state.active && !this.destroyed; }
 
-    /** Restore cards from the execution recovery projection without automatic admission.
+    /** Restore cards for a submission saved before reload, then resume tracking that job.
+     * Automatic jobs are cancelled on reload; this does not start a new calculation.
      * @return {Promise<void>} Recovery progress.
      */
     async start() {
-        const record = this.executor.snapshot.recovery;
-        if (record) {
-            this.state.targetChunkPixels = record.intent.targetChunkPixels ?? null;
-            this.state.area = this.state.selectedArea = record.intent.area;
-            this.state.areaChoice = record.intent.area.kind === "wholeRaster" ? "whole" : record.intent.area.kind === "catalogSelection" ? "vector" : "selection";
-            this.state.sources = [record.intent.source];
-            this.state.statistics = record.intent.calculations.map(value => {
-                const card = this.makeStatistic(value, record.intent.source); card.valid = true; return card;
+        const unfinished = this.executor.snapshot.unfinishedCalculation;
+        if (unfinished) {
+            this.state.targetChunkPixels = unfinished.calculation.targetChunkPixels ?? null;
+            this.state.area = this.state.selectedArea = unfinished.calculation.area;
+            this.state.areaChoice = unfinished.calculation.area.kind === "wholeRaster" ? "whole" : unfinished.calculation.area.kind === "catalogSelection" ? "vector" : "selection";
+            this.state.sources = [unfinished.calculation.source];
+            this.state.statistics = unfinished.calculation.calculations.map(value => {
+                const card = this.makeStatistic(value, unfinished.calculation.source); card.valid = true; return card;
             });
-            this.batch = { automatic: record.automatic, obsolete: record.cancelRequested,
-                intent: record.intent, cards: this.state.statistics.map(card => ({ id: card.id, key: this.key(card) })) };
+            this.batch = { automatic: unfinished.automatic, obsolete: unfinished.cancelRequested,
+                intent: unfinished.calculation, cards: this.state.statistics.map(card => ({ id: card.id, key: this.key(card) })) };
         }
         await this.executor.start();
         this.receive(this.executor.snapshot);
@@ -355,7 +356,7 @@ export class SummaryStatisticsController {
      */
     pump() {
         const execution = this.executor.snapshot;
-        if (this.destroyed || this.batch || !execution.settled) return;
+        if (this.destroyed || this.batch || !execution.isIdle) return;
         const eligible = this.state.statistics.filter(card => card.requested && card.valid && !card.checking && card.source && this.state.area &&
             (["manual", "review"].includes(card.requested) || (this.isActive && this.state.automatic)));
         const first = eligible[0];
@@ -403,7 +404,7 @@ export class SummaryStatisticsController {
         }
         const batch = this.batch;
         if (batch) {
-            const settled = execution.settled;
+            const isIdle = execution.isIdle;
             const job = execution.result;
             const matching = !batch.obsolete && same(execution.resultIntent, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
             batch.cards.forEach((entry, index) => {
@@ -414,20 +415,20 @@ export class SummaryStatisticsController {
                     card.progress = execution.current?.progress ?? null;
                     card.error = execution.phase === "error";
                     if (execution.plan) card.plan = execution.plan;
-                    if (settled && matching && job.result?.rows[index]) {
+                    if (isIdle && matching && job.result?.rows[index]) {
                         card.result = { key: entry.key, row: job.result.rows[index], job, source: batch.intent.source, area: batch.intent.area,
                             requestStarted: entry.requestStarted, stageTrace: execution.resultTiming };
                         card.message = "Up to date";
-                    } else if (settled && execution.manualRequired) {
+                    } else if (isIdle && execution.manualRequired) {
                         card.manualRequired = true;
                         card.message = "Ready to calculate · explicit confirmation needed";
-                    } else if (settled && !matching) {
+                    } else if (isIdle && !matching) {
                         card.error = execution.phase === "error" || !batch.obsolete;
                     }
                 }
-                if (settled) { card.pending = false; card.progress = null; }
+                if (isIdle) { card.pending = false; card.progress = null; }
             });
-            if (settled) { this.batch = null; this.schedulePump(); }
+            if (isIdle) { this.batch = null; this.schedulePump(); }
         }
         this.render();
     }

@@ -11,10 +11,13 @@ function identity(value) { return JSON.stringify(value); }
  * mutable submission record, pending target, or scheduler flags. Job and plan
  * payloads are read-only API values; the snapshot and recovery projection are frozen.
  * @typedef {Object} CalculationExecutionSnapshot
- * @property {boolean} settled No accepted or pending work remains on this lane.
+ * @property {boolean} isIdle No calculation or API step remains in progress. This can follow
+ * success, cancellation, failure, or a plan waiting for confirmation; it does not mean success.
  * @property {"busy"|"manual"|"ready"} admission Busy includes cancellation/recovery;
  * manual requires an explicit new request after failure; ready permits automatic work.
- * @property {{intent:Readonly<Object>,automatic:boolean,cancelRequested:boolean}|null} recovery Persisted work for restoring cards.
+ * @property {{calculation:Readonly<Object>,automatic:boolean,cancelRequested:boolean}|null} unfinishedCalculation
+ * Description of a submission still being tracked in this tab. Used to restore cards
+ * after reload, including lost submission responses. Null when nothing needs resuming.
  * @property {boolean} recoverable Explicit retry can resume uncertain accepted work.
  * @property {string} phase Execution phase, independent of editor validation.
  * @property {string} message Execution feedback.
@@ -68,17 +71,17 @@ export class CalculationExecutor {
         this.unsubscribe = jobs.subscribe(() => this.#receiveJobs());
     }
 
-    /** Read a coherent status without exposing mutable scheduling state.
+    /** Read progress and whether work remains, without exposing mutable scheduler fields.
      * @return {CalculationExecutionSnapshot} Current execution snapshot.
      */
     get snapshot() {
-        const settled = !this.#savedSubmission && !this.#pendingCalculation && !this.#isAdvancing &&
+        const isIdle = !this.#savedSubmission && !this.#pendingCalculation && !this.#isAdvancing &&
             (this.#retryRequired || this.plansToRelease.size === 0);
-        const recovery = this.#savedSubmission ? Object.freeze({ intent: this.#savedSubmission.intent,
+        const unfinishedCalculation = this.#savedSubmission ? Object.freeze({ calculation: this.#savedSubmission.intent,
             automatic: this.#savedSubmission.automatic, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
         return Object.freeze({ ...this.#executionStatus, jobs: Object.freeze([...this.#executionStatus.jobs]),
-            settled, admission: !settled ? "busy" : this.#retryRequired ? "manual" : "ready",
-            recovery, recoverable: !!this.#savedSubmission && this.#retryRequired });
+            isIdle, admission: !isIdle ? "busy" : this.#retryRequired ? "manual" : "ready",
+            unfinishedCalculation, recoverable: !!this.#savedSubmission && this.#retryRequired });
     }
 
     /** Resume the same durable request or retry acknowledged plan cleanup.

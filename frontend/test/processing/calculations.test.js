@@ -75,23 +75,23 @@ test("execution snapshots remain busy through cancellation and replacement admis
     await h.run(true);
     const accepted = h.controller.snapshot;
     assert.equal(accepted.admission, "busy");
-    assert.equal(accepted.settled, false);
-    assert.equal(accepted.recovery.cancelRequested, false);
+    assert.equal(accepted.isIdle, false);
+    assert.equal(accepted.unfinishedCalculation.cancelRequested, false);
     assert.ok(Object.isFrozen(accepted));
-    assert.ok(Object.isFrozen(accepted.recovery));
-    assert.equal(accepted.recovery.pending, undefined, "submission identity stays private");
+    assert.ok(Object.isFrozen(accepted.unfinishedCalculation));
+    assert.equal(accepted.unfinishedCalculation.pending, undefined, "submission identity stays private");
     assert.equal(accepted.record, undefined);
     assert.equal(accepted.desired, undefined);
     const offset = h.snapshots.length;
     h.click(80);
     await flush();
-    assert.equal(h.controller.snapshot.recovery.cancelRequested, true);
-    assert.equal(accepted.recovery.cancelRequested, false, "prior snapshots cannot change underneath a consumer");
+    assert.equal(h.controller.snapshot.unfinishedCalculation.cancelRequested, true);
+    assert.equal(accepted.unfinishedCalculation.cancelRequested, false, "prior snapshots cannot change underneath a consumer");
     await h.finish("cancelled");
-    assert.ok(h.snapshots.slice(offset).every(state => !state.settled && state.admission === "busy"));
+    assert.ok(h.snapshots.slice(offset).every(state => !state.isIdle && state.admission === "busy"));
     await h.finish();
     assert.equal(h.controller.snapshot.admission, "ready");
-    assert.equal(h.controller.snapshot.settled, true);
+    assert.equal(h.controller.snapshot.isIdle, true);
     assert.deepEqual(h.controller.snapshot.resultIntent.area, box(80));
     assert.equal(initial.result, null);
 });
@@ -101,7 +101,7 @@ test("failed submission retains exclusive admission until explicit recovery", as
     h.api.submitCalculation = async submission => { await submit(submission); throw Error("Response lost"); };
     await h.run(false);
     assert.equal(h.controller.snapshot.admission, "busy");
-    assert.equal(h.controller.snapshot.settled, false);
+    assert.equal(h.controller.snapshot.isIdle, false);
     assert.equal(h.controller.snapshot.recoverable, true);
     h.click(80); await flush();
     assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 1);
@@ -123,8 +123,8 @@ test("intent is copied before asynchronous planning and no editor validation is 
     input.area.selectedBounds.west = 80;
     pending.resolve(); await flush();
     assert.equal(h.requests.some(([kind]) => kind === "validate"), false);
-    assert.equal(h.controller.snapshot.recovery.intent.calculations[0].expression, "mean(a)");
-    assert.deepEqual(h.controller.snapshot.recovery.intent.area, box(77));
+    assert.equal(h.controller.snapshot.unfinishedCalculation.calculation.calculations[0].expression, "mean(a)");
+    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area, box(77));
 });
 
 test("failed cancellation keeps the accepted job exclusive until recovery acknowledges it", async () => {
@@ -134,7 +134,7 @@ test("failed cancellation keeps the accepted job exclusive until recovery acknow
     h.click(80); await flush();
     assert.equal(h.controller.snapshot.recoverable, true);
     assert.equal(h.controller.snapshot.admission, "busy");
-    assert.equal(h.controller.snapshot.recovery.cancelRequested, true);
+    assert.equal(h.controller.snapshot.unfinishedCalculation.cancelRequested, true);
     assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 1);
     h.api.cancelJob = cancel;
     await h.controller.retry(); await flush();
@@ -150,7 +150,7 @@ test("superseding an uncertain automatic submission persists cancellation before
     h.api.submitCalculation = async submission => { await submit(submission); throw Error("Response lost"); };
     await h.run(true);
     h.click(80); await flush();
-    assert.equal(h.controller.snapshot.recovery.cancelRequested, true);
+    assert.equal(h.controller.snapshot.unfinishedCalculation.cancelRequested, true);
     h.api.submitCalculation = submit;
     await h.controller.retry(); await flush();
     assert.equal(h.controller.snapshot.current.status, "cancelling");
@@ -165,7 +165,7 @@ test("double Calculate during size checking admits only one manual job", async (
     response.resolve(); await flush();
     assert.equal(h.requests.filter(r => r[0] === "plan").length, 1);
     assert.equal(h.requests.filter(r => r[0] === "submit").length, 1);
-    assert.equal(h.controller.snapshot.recovery.automatic, false);
+    assert.equal(h.controller.snapshot.unfinishedCalculation.automatic, false);
 
 });
 
@@ -186,7 +186,7 @@ test("follow clicks cancel old work and retain only the latest area until cancel
     assert.equal(h.activity.at(-1),null);
     await h.finish("cancelled");
     assert.equal(h.requests.filter(r=>r[0]==="submit").length,2);
-    assert.deepEqual(h.controller.snapshot.recovery.intent.area,box(79));
+    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
     await h.finish();assert.deepEqual(h.view.state.resultIntent.area,box(79));
 });
 
@@ -199,7 +199,7 @@ test("a stale plan resolving after a newer box never submits and does not strand
     h.api.planCalculation=original;h.click(79);await h.tick(650);
     assert.equal(signal?.aborted ?? false, false);old.resolve({planId:"z".repeat(32)});await flush();
     assert.equal(h.requests.filter(r=>r[0]==="submit").length,2);
-    assert.deepEqual(h.controller.snapshot.recovery.intent.area,box(79));
+    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
 });
 
 test("superseded HTTP planning drains before replacement and releases its returned identity", async () => {
@@ -232,7 +232,7 @@ test("superseded HTTP planning drains before replacement and releases its return
     };
     await flush();
     assert.equal(h.requests.filter(r=>r[0]==='submit').length,1);
-    assert.deepEqual(h.controller.snapshot.recovery.intent.area,box(80));
+    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(80));
 });
 
 test("completed plan release is acknowledged before a replacement uses the last owner slot", async () => {
@@ -268,7 +268,7 @@ test("failed unused-plan cleanup is retained and retried before explicit replace
     fail=false;h.click(79);await h.tick(650);
     assert.equal(h.controller.snapshot.admission !== "manual",true);
     assert.equal(h.requests.filter(r=>r[0]==='submit').length,1);
-    assert.deepEqual(h.controller.snapshot.recovery.intent.area,box(79));
+    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
 });
 
 test("destroy releases completed and late planning results without submitting", async () => {
@@ -291,7 +291,7 @@ test("click during submission cancels its eventual accepted job before admitting
     assert.equal(h.storage.read().cancelRequested,true);
     acceptance.resolve();await flush();assert.equal(h.view.state.current.status,"cancelling");
     h.api.submitCalculation=original;await h.finish("cancelled");
-    assert.deepEqual(h.controller.snapshot.recovery.intent.area,box(79));
+    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
 });
 
 test("uncertain submission persists its key and superseded cancellation through reload", async () => {
@@ -301,7 +301,7 @@ test("uncertain submission persists its key and superseded cancellation through 
     h.controller.destroy();h.api.submitCalculation=original;
     const recovered=new CalculationExecutor(h.options);await recovered.start();await flush();
     const submissions=h.requests.filter(r=>r[0]==="submit");assert.deepEqual(submissions[0][1],submissions[1][1]);
-    assert.equal(recovered.snapshot.recovery.cancelRequested,true);assert.equal(h.server.get(saved.pending.planId).status,"cancelling");
+    assert.equal(recovered.snapshot.unfinishedCalculation.cancelRequested,true);assert.equal(h.server.get(saved.pending.planId).status,"cancelling");
 });
 
 
@@ -383,7 +383,7 @@ test("stopping planning releases its late result and settles the execution lane"
     const response=deferred();const h=fixture({planCalculation:()=>response.promise});
     await h.review();h.controller.stop();
     response.resolve({planId:"x".repeat(32)});await flush();
-    assert.equal(h.view.state.phase,"idle");assert.equal(h.view.state.plan,null);assert.equal(h.view.state.settled,true);
+    assert.equal(h.view.state.phase,"idle");assert.equal(h.view.state.plan,null);assert.equal(h.view.state.isIdle,true);
 });
 
 
@@ -432,7 +432,7 @@ test("server rejection of a reused plan does not submit a replacement or accept 
     h.api.submitCalculation=async()=>{throw new ProcessingRequestError("The raster changed. Create a new plan.",409);};
     h.controller.executeIntent(h.intent());await flush();
     assert.equal(h.requests.filter(r=>r[0]==="plan").length,1);
-    assert.equal(h.controller.snapshot.recovery,null);
+    assert.equal(h.controller.snapshot.unfinishedCalculation,null);
     assert.equal(h.controller.snapshot.admission,"manual");
     assert.match(h.view.state.message,/raster changed/);
 });

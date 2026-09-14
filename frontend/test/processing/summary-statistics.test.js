@@ -146,7 +146,7 @@ for (const [name, bbox, confirmations] of [
             selection.view.handlers.onConfirm(); await h.tick();
         }
         assert.equal(h.submits(), 1);
-        assert.deepEqual(h.controller.executor.snapshot.recovery.intent.area.catalogSelection, CATALOG_SELECTION);
+        assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area.catalogSelection, CATALOG_SELECTION);
         assert.equal(h.controller.isActive, true);
         selection.view.handlers.onConfirm(); await h.tick();
         assert.equal(h.submits(), 1, "A repeated confirmation cannot resubmit");
@@ -177,8 +177,8 @@ test("applied vector action runs configured valid statistics once even with auto
     h.controller.addStatistic("custom"); await h.tick();
     h.controller.setVectorSamplingArea({ selection: CATALOG_SELECTION, label: "Canada" }, true); await h.tick();
     assert.equal(h.submits(), 1);
-    assert.equal(h.controller.executor.snapshot.recovery.intent.calculations.length, 1);
-    assert.deepEqual(h.controller.executor.snapshot.recovery.intent.area.catalogSelection, CATALOG_SELECTION);
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.calculations.length, 1);
+    assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area.catalogSelection, CATALOG_SELECTION);
     await h.finish(); assert.equal(h.controller.state.statistics[0].current, true);
     assert.equal(h.controller.state.statistics[1].result, null);
 });
@@ -212,7 +212,7 @@ test("late vector plans are released before the newest applied area is submitted
     h.controller.setVectorSelectionState({ analysis: true, phase: "reading", message: "Replacement" });
     h.controller.setVectorSamplingArea({ selection: { ...CATALOG_SELECTION, itemId: "second" }, label: "Second" }, true); await h.tick();
     assert.equal(h.submits(), 0); wait.resolve(); await flush();
-    assert.equal(h.submits(), 1); assert.equal(h.controller.executor.snapshot.recovery.intent.area.catalogSelection.itemId, "second");
+    assert.equal(h.submits(), 1); assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.area.catalogSelection.itemId, "second");
     const operations = h.requests.map(row => row[0]);
     assert.ok(operations.indexOf("discard") < operations.lastIndexOf("plan"));
 });
@@ -471,7 +471,7 @@ test("vector calculation submits on the first click and invalidates results when
     assert.equal(h.submits(),1);assert.equal(card.manualRequired,false);
     h.controller.request(card.id,"manual");await flush();assert.equal(h.submits(),1);
     assert.equal(h.view.cards.get(card.id).size.hidden,true);
-    assert.deepEqual(h.controller.executor.snapshot.recovery.intent.area,{kind:"catalogSelection",catalogSelection:id});
+    assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area,{kind:"catalogSelection",catalogSelection:id});
     await h.finish();assert.equal(card.current,true);
     assert.equal(h.view.cards.get(card.id).size.hidden,true);
     h.controller.setSelection(null,false);
@@ -620,16 +620,16 @@ test("dirty statistics sharing a source use one scan; different sources run sequ
     const h=fixture();await h.open();h.controller.setAutomatic(false);h.controller.addStatistic("count");await h.tick();
     h.controller.setAutomatic(true);const [a,b]=h.controller.state.statistics;
     h.controller.editStatistic(a.id,{expression:"max(a)"});h.controller.editStatistic(b.id,{expression:"count(a > 2)"});await h.tick();
-    assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.recovery.intent.calculations.length,2);
+    assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.calculations.length,2);
     await h.finish("ready",["22","8"]);assert.equal(a.result.row.value,"22");assert.equal(b.result.row.value,"8");
     h.controller.editStatistic(a.id,{expression:"min(a)"});h.controller.editStatistic(b.id,{source:resistance});await h.tick();
     assert.equal(h.submits(),2);await h.finish();assert.equal(h.submits(),3);
-    assert.equal(h.controller.executor.snapshot.recovery.intent.source.itemId,"resistance");await h.finish();
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.source.itemId,"resistance");await h.finish();
 });
 test("duplicate statistic names are valid and are not sent in one duplicate-label request",async()=>{
     const h=fixture();await h.open();h.controller.setAutomatic(false);h.controller.addStatistic("mean");await h.tick();
     for(const card of h.controller.state.statistics) h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.executor.snapshot.recovery.intent.calculations.length,1);await h.finish();assert.equal(h.submits(),2);await h.finish();
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.calculations.length,1);await h.finish();assert.equal(h.submits(),2);await h.finish();
 });
 test("edits cancel obsolete work and wait for terminal cancellation before replacement",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
@@ -718,7 +718,7 @@ test("metadata from an obsolete formula is released before planning its replacem
     h.api.planCalculation=async intent=>{const plan=await original(intent);if(first){first=false;await response.promise;}return plan;};
     h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();
     h.controller.editStatistic(card.id,{expression:"max(a)"});await h.tick();assert.equal(h.submits(),0);
-    response.resolve();await flush();assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.recovery.intent.calculations[0].expression,"max(a)");
+    response.resolve();await flush();assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.calculations[0].expression,"max(a)");
     const operations=h.requests.map(r=>r[0]);assert.ok(operations.indexOf("discard")<operations.lastIndexOf("plan"));
 });
 test("unused-plan release failure pauses other automatic cards until an explicit retry",async()=>{
@@ -763,14 +763,14 @@ test("batch tuning invalidates the result without running, persists on repeats, 
     assert.equal(card.current,false);assert.equal(card.plan,null);assert.equal(h.submits(),1);
     assert.equal(card.valid,true);assert.equal(h.view.cards.get(card.id).root.classList.contains("is-previous"),true);
     h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,65536);
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,65536);
     await h.finish();
     h.controller.setSelection(box(78));await h.tick();
-    assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,65536);
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,65536);
     await h.finish();
     input.value="";input.dispatchEvent(new Event("change"));await flush();
     h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,undefined);
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,undefined);
     assert.equal(h.requests.filter(r=>r[0]==="plan").at(-1)[1].targetChunkPixels,undefined);
 });
 
@@ -783,18 +783,18 @@ test("recovery preserves accepted batch settings without another submission",asy
     assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.current.jobId,id);
     assert.equal(restored.controller.state.targetChunkPixels,262144);
     assert.equal(restored.view.extra["chunk-pixels"].value,"262144");
-    assert.equal(restored.controller.executor.snapshot.recovery.intent.targetChunkPixels,262144);
+    assert.equal(restored.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,262144);
 });
 
 test("changing batch size cancels obsolete work and waits before the next explicit calculation",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.setChunkPixels(65536);h.controller.request(card.id,"manual");await flush();
-    const oldIntent=h.controller.executor.snapshot.recovery.intent;
+    const oldIntent=h.controller.executor.snapshot.unfinishedCalculation.calculation;
     h.controller.setChunkPixels(262144);await flush();
     assert.equal(oldIntent.targetChunkPixels,65536);assert.ok(h.requests.some(r=>r[0]==="cancel"));
     h.controller.request(card.id,"manual");await flush();assert.equal(h.submits(),1);
     await h.finish("cancelled");await flush();
-    assert.equal(h.submits(),2);assert.equal(h.controller.executor.snapshot.recovery.intent.targetChunkPixels,262144);
+    assert.equal(h.submits(),2);assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,262144);
 });
 
 test("performance details retain measured timings and source-work units in cards and history",async()=>{
