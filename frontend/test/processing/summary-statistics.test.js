@@ -384,7 +384,8 @@ test("histogram action opens and runs all valid configured cards without Calcula
     h.controller.editStatistic(sum.id, { source: resistance });
     h.controller.editStatistic(invalid.id, { expression: "bad(a)" });
     const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8");
-    const callback = main.match(/onCalculateRequested: ([^\n]+),/)[1];
+    const callback = main.slice(main.indexOf("onCalculateRequested: ") + "onCalculateRequested: ".length,
+        main.indexOf(",\n        onSamplingAreaChange:"));
     const action = new Function("calculations", "clipSource", `return (${callback});`)(h.controller, item => item);
     h.controller.setActive(false);
     action(source, box(80)); action(source, box(80));
@@ -407,7 +408,7 @@ test("histogram action opens and runs all valid configured cards without Calcula
 test("a histogram explicitly replaces a whole-raster scope with its previously selected box", async () => {
     const h = fixture(); await h.open(); h.controller.setAutomatic(false);
     h.controller.chooseArea("whole"); await h.tick();
-    h.controller.summarizeArea(source, box(77)); await h.tick();
+    h.controller.open(source, box(77)); h.controller.calculateSelection(true); await h.tick();
     assert.equal(h.submits(), 1);
     assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area, box(77));
     h.controller.destroy();
@@ -417,7 +418,7 @@ test("explicit histogram actions still submit larger areas through existing serv
     const h = fixture(); await h.open(); h.controller.setAutomatic(false);
     const plan = h.api.planCalculation;
     h.api.planCalculation = async intent => ({ ...await plan(intent), grid: { ...grid, nativeBlocks: 1000 } });
-    h.controller.summarizeArea(source, { kind: "wholeRaster" }); await h.tick();
+    h.controller.open(source, { kind: "wholeRaster" }); h.controller.calculateSelection(true); await h.tick();
     assert.equal(h.submits(), 1);
     assert.equal(h.requests.filter(([kind]) => kind === "plan").length, 1);
     h.controller.destroy();
@@ -456,10 +457,10 @@ test("no-area guidance preserves missing raster, invalid formula and vector sele
 test("a new histogram action cancels old manual work before replacing it and rejects its late value", async () => {
     const h = fixture(); await h.open(); h.controller.setAutomatic(false);
     const card = h.controller.state.statistics[0], row = h.view.cards.get(card.id);
-    h.controller.summarizeArea(source, box(77)); await h.tick(); await h.finish("ready", ["10"]);
-    h.controller.summarizeArea(source, box(78)); await h.tick();
+    h.controller.open(source, box(77)); h.controller.calculateSelection(true); await h.tick(); await h.finish("ready", ["10"]);
+    h.controller.open(source, box(78)); h.controller.calculateSelection(true); await h.tick();
     h.controller.setActive(false);
-    h.controller.summarizeArea(source, box(79)); await h.tick();
+    h.controller.open(source, box(79)); h.controller.calculateSelection(true); await h.tick();
     assert.equal(h.requests.filter(([kind]) => kind === "cancel").length, 1);
     assert.equal(h.submits(), 2, "replacement waits for cancellation acknowledgement");
     assert.equal(row.root.classList.contains("is-previous"), true);

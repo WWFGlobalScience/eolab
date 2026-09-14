@@ -128,25 +128,6 @@ export class SummaryStatisticsController {
         this.render();
     }
 
-    /** Open a histogram's area and execute the configured statistics as an explicit action.
-     * Keep other cards' raster bindings, validate formulas, and cancel superseded work
-     * before admitting replacement batches. Repeated clicks coalesce while work is pending.
-     * @param {Object} source Catalog raster bound to the first statistic.
-     * @param {Object|null} area Histogram sampling area; null waits for map selection.
-     * @return {void}
-     */
-    summarizeArea(source, area) {
-        this.open(source, area);
-        this.state.saved = null;
-        if (this.batch?.cards.some(entry => {
-            const card = this.state.statistics.find(item => item.id === entry.id);
-            return !card || entry.key !== this.key(card);
-        })) this.invalidateBatch();
-        for (const card of this.state.statistics) this.request(card.id, "manual");
-        if (!this.state.statistics.length) this.view.focusAddStatistic?.();
-        this.render();
-    }
-
     setActive(active) {
         if (this.state.active === active) return;
         this.state.active = active;
@@ -182,8 +163,7 @@ export class SummaryStatisticsController {
         this.changeArea(this.state.selectedArea, false);
         if (calculate) {
             this.open();
-            for (const card of this.state.statistics) this.request(card.id, "manual");
-            if (!this.state.statistics.length) this.view.focusAddStatistic?.();
+            this.calculateSelection(true);
         }
         this.render();
     }
@@ -259,9 +239,26 @@ export class SummaryStatisticsController {
         }
         this.render();
     }
-    calculateSelection() {
-        if (!this.isActive || !this.state.automatic || this.state.areaChoice !== "selection" || this.state.area?.kind !== "selectedArea") return;
-        for (const card of this.state.statistics) this.request(card.id, "automatic", true);
+    /** Queue the configured cards for the current area through the existing executor.
+     * Map clicks follow automatic-update policy. Explicit histogram or accepted vector
+     * actions authorize manual submission, cancel superseded work, and show live cards.
+     * Formula validation and server planning apply to both paths; absent areas wait.
+     * @param {boolean} [explicit=false] Whether the user explicitly requested calculation.
+     * @return {void}
+     */
+    calculateSelection(explicit = false) {
+        if (!this.isActive) return;
+        if (!explicit && (!this.state.automatic || this.state.areaChoice !== "selection" || this.state.area?.kind !== "selectedArea")) return;
+        if (explicit) {
+            this.state.saved = null;
+            if (this.batch?.cards.some(entry => {
+                const card = this.state.statistics.find(item => item.id === entry.id);
+                return !card || entry.key !== this.key(card);
+            })) this.invalidateBatch();
+            if (!this.state.statistics.length) this.view.focusAddStatistic?.();
+        }
+        for (const card of this.state.statistics) this.request(card.id, explicit ? "manual" : "automatic", !explicit);
+        this.render();
     }
 
     editStatistic(id, change, automatic = true) {
