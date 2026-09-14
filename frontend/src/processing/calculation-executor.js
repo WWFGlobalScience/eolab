@@ -21,7 +21,7 @@ function identity(value) { return JSON.stringify(value); }
  * @property {boolean} recoverable Explicit retry can resume uncertain accepted work.
  * @property {string} phase Execution phase, independent of editor validation.
  * @property {string} message Execution feedback.
- * @property {Object|null} plan Review requiring explicit authorization.
+ * @property {Object|null} plan Server plan held until the user clicks Calculate.
  * @property {boolean} manualRequired Automatic policy requires confirmation.
  * @property {Object|null} current Current authoritative job snapshot.
  * @property {Object|null} result Last completed result, retained during replacement.
@@ -115,7 +115,7 @@ export class CalculationExecutor {
     discardPendingCalculation() {
         const target = this.#pendingCalculation;
         this.#pendingCalculation = null;
-        this.#discardReview();
+        this.#queueConfirmationPlanRelease();
         if (target?.plan) this.plansToRelease.add(target.plan.planId);
         if (!this.#savedSubmission) this.#executionStatus.phase = "idle";
         if (this.#savedSubmission?.automatic) this.#requestCancellation();
@@ -137,16 +137,21 @@ export class CalculationExecutor {
         void this.#processNextStep();
     }
 
-    /** Retain obsolete plan identities until the server acknowledges release. @return {void} */
-    #discardReview() {
+    /** Remove the plan awaiting Calculate confirmation and queue its server release.
+     * Keep its ID in plansToRelease so a failed DELETE can be retried. This method
+     * only queues cleanup; releasePlans() performs the request and removes the ID
+     * after success. Called when that calculation changes or the executor closes.
+     * @return {void}
+     */
+    #queueConfirmationPlanRelease() {
         const plan = this.#executionStatus.plan;
         this.#executionStatus.plan = null;
         this.#confirmationCalculation = null;
         if (plan) this.plansToRelease.add(plan.planId);
     }
 
-    /** Drain unused plans on the executor's planning lane.
-     * A failed release retains its identity for the next explicit attempt.
+    /** Ask Processing to discard every queued unused plan before planning again.
+     * Keep a plan ID until its DELETE succeeds so failure cannot silently lose cleanup.
      * @return {Promise<void>} Completion after every queued release is acknowledged.
      * @throws {Error} If Processing cannot acknowledge a plan release.
      */
@@ -368,7 +373,7 @@ export class CalculationExecutor {
      */
     destroy() {
         this.destroyed = true;
-        this.#discardReview();
+        this.#queueConfirmationPlanRelease();
         if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
         this.#pendingCalculation = null;
         this.unsubscribe(); this.onActivity(null);
