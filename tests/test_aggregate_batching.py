@@ -406,7 +406,9 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
         kernel.GroundArea, "weights", measured(kernel.GroundArea.weights, "weights", 5)
     )
     monkeypatch.setattr(
-        kernel.Calculation, "update", measured(kernel.Calculation.update, "reduce", 7)
+        kernel.Calculation,
+        "process_tile",
+        measured(kernel.Calculation.process_tile, "reduce", 7),
     )
     result = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
     assert result.rows == expected.rows

@@ -25,7 +25,7 @@ def calculate(expression: str, data: list, valid: list | None = None) -> dict:
     masks = np.isfinite(values) if valid is None else np.array(valid, dtype=bool)
     calculation = Calculation(compile_expression(expression, "a"))
     for block, mask in zip(np.array_split(values, 2), np.array_split(masks, 2)):
-        calculation.update(block, mask)
+        calculation.process_tile(block, mask)
     return calculation.result()
 
 
