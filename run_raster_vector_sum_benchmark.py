@@ -146,7 +146,7 @@ def run_benchmark(raster: Path, vector: Path, layer: str) -> dict[str, Any]:
     print("Planning native raster reads...", file=sys.stderr, flush=True)
     grid = plan_aggregate(raster, signature, area, calculations, "a", limits)
     planned = time.perf_counter()
-    spec = AggregateSpec(
+    calculation_plan = AggregateSpec(
         sources={
             "a": CatalogRasterRequest(
                 collectionId="eolab-mounted-geotiffs",
@@ -164,7 +164,12 @@ def run_benchmark(raster: Path, vector: Path, layer: str) -> dict[str, Any]:
     )
     with tempfile.TemporaryDirectory(prefix="eolab-sum-benchmark-") as directory:
         execution_started = time.perf_counter()
-        artifact = create_aggregate(raster, spec, Path(directory), limits)
+        artifact = create_aggregate(
+            raster,
+            calculation_plan=calculation_plan,
+            directory=Path(directory),
+            limits=limits,
+        )
         execution_finished = time.perf_counter()
         # Keep numerical semantics/counts and provenance in the report; the
         # kernel's temporary CSV/progress/provenance files are cleaned up.
