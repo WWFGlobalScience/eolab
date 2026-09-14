@@ -727,7 +727,7 @@ test("unused-plan release failure pauses other automatic cards until an explicit
     h.controller.chooseArea("whole");await h.tick();
     h.api.discardPlan=async()=>{throw Error("Release failed");};
     h.controller.chooseArea("selection");await h.tick();assert.equal(h.submits(),0);
-    assert.equal(h.controller.executor.snapshot.admission,"manual");assert.equal(a.error,true);
+    assert.equal(h.controller.executor.snapshot.admission,"retry");assert.equal(a.error,true);
     h.api.discardPlan=async()=>{};h.controller.request(b.id,"manual");await flush();assert.equal(h.submits(),1);
 });
 
@@ -753,6 +753,56 @@ test("reload cancels recovered automatic work and never resumes sampling on its 
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id),cancelJob:async id=>{const job={...h.server.get(id),status:"cancelled"};h.server.set(id,job);return job;}},h.data);
     await restored.controller.start();await flush();await restored.jobs.refresh();await flush();
     assert.equal(h.server.get(id).status,"cancelled");assert.equal(restored.submits(),0);assert.equal(restored.controller.state.statistics[0].result,null);
+});
+
+test("the summary rechecks automatic size policy when a plan expires before submission", async () => {
+    const h = fixture(); await h.open();
+    const originalPlan = h.api.planCalculation;
+    let plans = 0;
+    h.api.planCalculation = async calculation => {
+        const plan = await originalPlan(calculation);
+        return ++plans === 1 ? plan : { ...plan, grid: { ...grid, nativeBlocks: 1000 } };
+    };
+    const submit = h.controller.executor.submit.bind(h.controller.executor);
+    let first = true;
+    h.controller.executor.submit = (id, context) => {
+        if (first) { first = false; h.controller.executor.snapshot.plan.expiresAt = "2000-01-01"; }
+        submit(id, context);
+    };
+    h.controller.calculateSelection(); await h.tick();
+    const card = h.controller.state.statistics[0];
+    assert.equal(plans, 2);
+    assert.equal(h.submits(), 0);
+    assert.equal(card.manualRequired, true);
+    h.controller.request(card.id, "manual"); await flush();
+    assert.equal(plans, 2, "confirmation reuses the refreshed plan");
+    assert.equal(h.submits(), 1);
+});
+
+test("the summary cancels a recovered automatic submission whose response was lost", async () => {
+    const h = fixture(); await h.open();
+    const submit = h.api.submitCalculation;
+    h.api.submitCalculation = async request => { await submit(request); throw Error("Response lost"); };
+    h.controller.calculateSelection(); await h.tick();
+    const saved = JSON.parse([...h.data.values()][0]);
+    assert.ok(saved.pending);
+    assert.equal(saved.automatic, true);
+    assert.equal(saved.cancelRequested, false);
+    h.controller.destroy();
+    const submissions = [];
+    const restored = fixture({
+        listJobs: async () => [...h.server.values()], getJob: async id => h.server.get(id),
+        submitCalculation: async request => { submissions.push(request); return h.server.get(saved.pending.planId); },
+        cancelJob: async id => {
+            const record = JSON.parse([...h.data.values()][0]);
+            assert.equal(record.cancelRequested, true, "the UI persists cancellation before transport");
+            const job = { ...h.server.get(id), status: "cancelled" }; h.server.set(id, job); return job;
+        },
+    }, h.data);
+    await restored.controller.start(); await flush(); await restored.jobs.refresh(); await flush();
+    assert.deepEqual(submissions, [saved.pending]);
+    assert.equal(h.server.get(saved.pending.planId).status, "cancelled");
+    assert.equal(restored.controller.state.statistics[0].result, null);
 });
 
 test("batch tuning invalidates the result without running, persists on repeats, and can return to legacy", async()=>{

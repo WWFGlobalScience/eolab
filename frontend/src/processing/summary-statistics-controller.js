@@ -48,7 +48,6 @@ export class SummaryStatisticsController {
         this.state.statistics.push(this.makeStatistic(STATISTIC_PRESETS.mean));
         this.executor = new CalculationExecutor({ api, jobs, storage: dependencies.storage,
             onActivity: dependencies.onActivity, requestId: dependencies.requestId, now,
-            canRunAutomatically: canAutomaticallyCalculate,
             onChange: snapshot => this.receive(snapshot),
         });
         view.bind({ onOpen: () => this.open(), onClose: () => this.close(), onEditArea,
@@ -88,9 +87,10 @@ export class SummaryStatisticsController {
             this.state.statistics = unfinished.calculation.calculations.map(value => {
                 const card = this.makeStatistic(value, unfinished.calculation.source); card.valid = true; return card;
             });
-            this.batch = { automatic: unfinished.automatic, obsolete: unfinished.cancelRequested,
+            this.batch = { automatic: unfinished.context?.automatic ?? false, obsolete: unfinished.cancelRequested || !!unfinished.context?.automatic,
                 intent: unfinished.calculation, cards: this.state.statistics.map(card => ({ id: card.id, key: this.key(card) })) };
         }
+        if (unfinished?.context?.automatic) this.executor.stop();
         await this.executor.start();
         this.receive(this.executor.snapshot);
     }
@@ -368,7 +368,7 @@ export class SummaryStatisticsController {
             (["manual", "review"].includes(card.requested) || (this.isActive && this.state.automatic)));
         const first = eligible[0];
         if (!first) return;
-        if (execution.admission === "manual" && first.requested === "automatic") {
+        if (execution.admission === "retry" && first.requested === "automatic") {
             for (const card of eligible) { card.requested = null; card.error = true; card.message = "Calculation paused after an error · Calculate to retry"; }
             this.render(); return;
         }
@@ -385,11 +385,13 @@ export class SummaryStatisticsController {
         this.batch = { intent, previousJobId: execution.completedJob?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Checking calculation size…"; }
-        this.executor.execute(intent, this.batch.automatic);
+        this.executor.prepare(intent);
         this.render();
     }
 
-    /** Apply execution progress to the batch that owns it, including terminal results.
+    /** Decide whether a prepared batch may run and apply progress to its cards.
+     * Automatic updates must pass this owner's size policy; explicit Calculate
+     * requests already authorize execution. Only this owner interprets the trigger.
      * @param {import("./calculation-executor.js").CalculationExecutionSnapshot} execution Progress, remaining work and last completed job from one executor update.
      * @return {void}
      */
@@ -411,6 +413,13 @@ export class SummaryStatisticsController {
         }
         const batch = this.batch;
         if (batch) {
+            const prepared = execution.isIdle && execution.phase !== "error" && execution.plan &&
+                !batch.obsolete && same(execution.plannedCalculation, batch.intent);
+            const needsConfirmation = prepared && batch.automatic && !canAutomaticallyCalculate(execution.plan, batch.intent);
+            if (prepared && !needsConfirmation) {
+                this.executor.submit(execution.plan.planId, Object.freeze({ automatic: batch.automatic }));
+                return;
+            }
             const isIdle = execution.isIdle;
             const job = execution.completedJob; // Numeric rows are inside job.result, not the job metadata.
             const matching = !batch.obsolete && same(execution.completedCalculation, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
@@ -426,7 +435,7 @@ export class SummaryStatisticsController {
                         card.result = { key: entry.key, row: job.result.rows[index], job, source: batch.intent.source, area: batch.intent.area,
                             requestStarted: entry.requestStarted, stageTrace: execution.completedTimings };
                         card.message = "Up to date";
-                    } else if (isIdle && execution.manualRequired) {
+                    } else if (isIdle && needsConfirmation) {
                         card.manualRequired = true;
                         card.message = "Ready to calculate · explicit confirmation needed";
                     } else if (isIdle && !matching) {

@@ -16,16 +16,16 @@ function identity(value) { return JSON.stringify(value); }
  * @typedef {Object} CalculationExecutionSnapshot
  * @property {boolean} isIdle No calculation or API step remains in progress. This can follow
  * success, cancellation, failure, or a plan waiting for confirmation; it does not mean success.
- * @property {"busy"|"manual"|"ready"} admission Busy includes cancellation/recovery;
- * manual requires an explicit new request after failure; ready permits automatic work.
- * @property {{calculation:Readonly<Object>,automatic:boolean,cancelRequested:boolean}|null} unfinishedCalculation
+ * @property {"busy"|"retry"|"ready"} admission Busy includes cancellation/recovery;
+ * retry requires an explicit new request after failure; ready permits work.
+ * @property {{calculation:Readonly<Object>,context:Readonly<Object>|null,cancelRequested:boolean}|null} unfinishedCalculation
  * Description of a submission still being tracked in this tab. Used to restore cards
  * after reload, including lost submission responses. Null when nothing needs resuming.
  * @property {boolean} recoverable A saved submission needs Recover / retry after an API or storage failure.
  * @property {string} phase Execution phase, independent of editor validation.
  * @property {string} message Execution feedback.
- * @property {Object|null} plan Server plan held until the user clicks Calculate.
- * @property {boolean} manualRequired Automatic policy requires confirmation.
+ * @property {Object|null} plan Prepared server plan awaiting a submit instruction.
+ * @property {Readonly<Object>|null} plannedCalculation Settings that produced the prepared plan.
  * @property {Object|null} currentJob Job being tracked, including its ID, status and progress.
  * @property {Object|null} completedJob Last successfully completed job, retained during replacement.
  * Contains jobId/status/source metadata; its result property contains values and export URLs.
@@ -50,8 +50,10 @@ export class CalculationExecutor {
     #isAdvancing = false;
     /** A failed step needs an explicit retry or, when no job remains, a new request. @type {boolean} */
     #retryRequired = false;
-    /** Calculation matching the plan held for the user's Calculate confirmation. @type {Readonly<Object>|null} */
-    #confirmationCalculation = null;
+    /** Calculation matching the prepared plan. @type {Readonly<Object>|null} */
+    #plannedCalculation = null;
+    /** Timing of the prepared plan, carried into submission. @type {Object|null} */
+    #planTiming = null;
 
     /** Connect execution providers without an editor or DOM dependency.
      * @param {Object} dependencies Execution dependencies.
@@ -61,14 +63,13 @@ export class CalculationExecutor {
      * @param {function(CalculationExecutionSnapshot):void} dependencies.onChange Updates the owning statistics controller with execution progress.
      * @param {function(Object|null):void} [dependencies.onActivity] Sends the working sampling area (or null) to composition for its activity indicator.
      * @param {function():string} [dependencies.requestId] Idempotency key factory.
-     * @param {function(Object,Readonly<Object>):boolean} [dependencies.canRunAutomatically] Given a plan and calculation, returns whether an edit/map update may submit without a Calculate click.
      * @param {function():number} [dependencies.now] Monotonic timestamp in milliseconds, normally performance.now().
      */
     constructor({ api, jobs, storage, onChange, onActivity = () => {},
-        requestId = () => crypto.randomUUID(), canRunAutomatically = () => true,
+        requestId = () => crypto.randomUUID(),
         now = () => performance.now() }) {
-        Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, canRunAutomatically, now });
-        this.#executionStatus = { plan: null, phase: "idle", message: "", manualRequired: false,
+        Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, now });
+        this.#executionStatus = { plan: null, phase: "idle", message: "",
             completedJob: null, completedCalculation: null, completedTimings: null, currentJob: null, jobs: [], historyError: "" };
         this.#savedSubmission = storage.read();
         this.plansToRelease = new Set();
@@ -84,10 +85,10 @@ export class CalculationExecutor {
             (this.#retryRequired || this.plansToRelease.size === 0);
         // The existing session-storage format calls the calculation settings "intent".
         const unfinishedCalculation = this.#savedSubmission ? Object.freeze({ calculation: this.#savedSubmission.intent,
-            automatic: this.#savedSubmission.automatic, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
+            context: this.#savedSubmission.context, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
         return Object.freeze({ ...this.#executionStatus, jobs: Object.freeze([...this.#executionStatus.jobs]),
-            isIdle, admission: !isIdle ? "busy" : this.#retryRequired ? "manual" : "ready",
-            unfinishedCalculation, recoverable: !!this.#savedSubmission && this.#retryRequired });
+            isIdle, admission: !isIdle ? "busy" : this.#retryRequired ? "retry" : "ready",
+            unfinishedCalculation, plannedCalculation: this.#plannedCalculation, recoverable: !!this.#savedSubmission && this.#retryRequired });
     }
 
     /** Retry a failed step using the saved submission or pending plan-release IDs.
@@ -97,7 +98,7 @@ export class CalculationExecutor {
     async retry() { this.#retryRequired = false; await this.#processNextStep(); }
 
     /** Resume observing the job or submission recovered from session storage.
-     * Storage marks recovered automatic jobs for cancellation; manual jobs continue.
+     * The caller requests any cancellation before start; recovery itself does not choose a policy.
      * @return {Promise<void>} Initial job refresh and any submission/cancellation steps.
      */
     async start() {
@@ -114,17 +115,15 @@ export class CalculationExecutor {
     /** Drop a requested calculation that has not reached submission yet.
      * The statistics controller calls this when the area or execution settings
      * change. Stop and replacement requests also use it to discard older work.
-     * Release any unused plan and cancel an already-submitted automatic job.
-     * A submitted manual job continues unless stop() or execute() replaces it.
+     * Release unused plans. Submitted work continues until the caller invokes stop().
      * @return {void}
      */
     discardPendingCalculation() {
         const target = this.#pendingCalculation;
         this.#pendingCalculation = null;
-        this.#queueConfirmationPlanRelease();
+        this.#queuePlanRelease();
         if (target?.plan) this.plansToRelease.add(target.plan.planId);
         if (!this.#savedSubmission) this.#executionStatus.phase = "idle";
-        if (this.#savedSubmission?.automatic) this.#requestCancellation();
         if (this.plansToRelease.size) void this.#processNextStep();
     }
 
@@ -143,16 +142,17 @@ export class CalculationExecutor {
         void this.#processNextStep();
     }
 
-    /** Remove the plan awaiting Calculate confirmation and queue its server release.
+    /** Remove the prepared plan and queue its server release.
      * Keep its ID in plansToRelease so a failed DELETE can be retried. This method
      * only queues cleanup; releasePlans() performs the request and removes the ID
      * after success. Called when that calculation changes or the executor closes.
      * @return {void}
      */
-    #queueConfirmationPlanRelease() {
+    #queuePlanRelease() {
         const plan = this.#executionStatus.plan;
         this.#executionStatus.plan = null;
-        this.#confirmationCalculation = null;
+        this.#plannedCalculation = null;
+        this.#planTiming = null;
         if (plan) this.plansToRelease.add(plan.planId);
     }
 
@@ -169,40 +169,64 @@ export class CalculationExecutor {
         }
     }
 
-    /** Request execution of a raster calculation, replacing older pending work.
-     * The statistics controller supplies a raster, area, formulas and optional
-     * batch size after checking formula syntax. Copy those settings so edits cannot
-     * change an in-progress request; retain any matching confirmation plan.
-     * @param {Object} calculation Raster source, sampling area, labeled formulas and optional targetChunkPixels.
-     * @param {boolean} [automatic=false] True for an edit/map-triggered update; false for an explicit Calculate action.
-     * @return {void}
-     * @throws {TypeError} If the calculation settings violate the input contract.
+    /** Prepare a calculation without submitting a job; replace older pending work.
+     * Copy validated settings and reuse only a matching, unexpired plan. The caller
+     * decides whether to submit the returned plan or wait for user confirmation.
+     * A different calculation waits for cancellation of any submitted predecessor.
+     * @param {Object} calculation Raster, area, formulas and optional targetChunkPixels.
+     * @return {void} Progress and the prepared plan arrive through onChange.
+     * @throws {TypeError} If calculation settings violate the input contract.
      */
-    execute(calculation, automatic = false) {
+    prepare(calculation) {
         if (this.destroyed) return;
         const snapshot = calculationIntent(calculation);
         if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#notifyListeners(); return; }
-        // Repeated Calculate clicks cannot create two jobs for the same settings.
-        if (!automatic && ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
-            (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot)))) return;
-        const plan = this.#executionStatus.plan && identity(snapshot) === identity(this.#confirmationCalculation) ? this.#executionStatus.plan : null;
+        if ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
+            (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot))) return;
+        const plan = this.#executionStatus.plan && identity(snapshot) === identity(this.#plannedCalculation) ? this.#executionStatus.plan : null;
         if (plan) this.#executionStatus.plan = null;
         this.discardPendingCalculation();
         this.#retryRequired = false;
-        this.#executionStatus.manualRequired = false;
-        this.#pendingCalculation = { intent: snapshot, plan, automatic };
+        this.#pendingCalculation = { intent: snapshot, plan };
         this.#requestCancellation();
         this.#executionStatus.phase = "waiting";
-        this.#executionStatus.message = automatic
-            ? this.#isAdvancing && !this.#savedSubmission
-                ? "Waiting for the previous calculation check to finish…"
-                : "Waiting for the latest sampling box…"
-            : "Preparing calculation…";
+        this.#executionStatus.message = "Preparing calculation…";
         this.#notifyListeners();
         void this.#processNextStep();
     }
 
-    /** Cancel this calculation; a later map click is a new explicit request. @return {void} */
+    /** Submit the currently prepared plan on the caller's explicit instruction.
+     * Stale plan IDs do nothing. Expired plans are prepared again and returned to
+     * the caller for a new decision; they are never submitted without that decision.
+     * Persist the request key before transport so a lost response cannot duplicate work.
+     * @param {string} planId ID from the current plan snapshot.
+     * @param {Readonly<Object>|null} [context=null] Caller-owned recovery metadata; execution never interprets it.
+     * @return {void} Submission progress or a storage error arrives through onChange.
+     */
+    submit(planId, context = null) {
+        const plan = this.#executionStatus.plan;
+        if (this.destroyed || !plan || !this.snapshot.isIdle || this.#retryRequired || plan?.planId !== planId) return;
+        if (Date.parse(plan.expiresAt) <= Date.now()) { this.prepare(this.#plannedCalculation); return; }
+        const record = { intent: this.#plannedCalculation, context: context && Object.freeze({ ...context }), cancelRequested: false,
+            pending: { planId, requestId: this.requestId() }, jobId: null };
+        try { this.storage.write(record); }
+        catch (error) {
+            this.#retryRequired = true;
+            this.#executionStatus.phase = "error";
+            this.#executionStatus.message = error.message;
+            this.#queuePlanRelease();
+            this.#notifyListeners();
+            return;
+        }
+        this.#savedSubmission = record;
+        this.trace = this.#planTiming;
+        this.#executionStatus.plan = null;
+        this.#plannedCalculation = null;
+        this.#planTiming = null;
+        void this.#processNextStep();
+    }
+
+    /** Cancel pending and submitted work; preserve cancellation across reloads. @return {void} */
     stop() {
         this.discardPendingCalculation();
         this.#requestCancellation();
@@ -309,23 +333,12 @@ export class CalculationExecutor {
                 return;
             }
             target.plan = plan;
-            // Automatic updates must meet the caller's size/scope policy. A manual
-            // Calculate already confirms this work; server resource limits still apply.
-            if (target.automatic && !this.canRunAutomatically(plan, target.intent)) {
-                this.#executionStatus.plan = plan;
-                this.#confirmationCalculation = target.intent;
-                this.#executionStatus.manualRequired = true;
-                this.#pendingCalculation = null;
-                this.#executionStatus.phase = "idle";
-                this.#executionStatus.message = "Large or explicit area · Calculate to update.";
-                return;
-            }
-            const record = { intent: target.intent, automatic: target.automatic, cancelRequested: false,
-                pending: { planId: plan.planId, requestId: this.requestId() }, jobId: null };
-            this.storage.write(record);
-            this.#savedSubmission = record;
-            this.trace = { planningStartedAtMs, planningFinishedAtMs, planReused, serverPlan: plan.timing ?? null };
+            this.#executionStatus.plan = plan;
+            this.#plannedCalculation = target.intent;
+            this.#planTiming = { planningStartedAtMs, planningFinishedAtMs, planReused, serverPlan: plan.timing ?? null };
             this.#pendingCalculation = null;
+            this.#executionStatus.phase = "idle";
+            this.#executionStatus.message = "Calculation prepared.";
         } catch (error) {
             this.#retryRequired = true;
             if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
@@ -394,7 +407,7 @@ export class CalculationExecutor {
      */
     destroy() {
         this.destroyed = true;
-        this.#queueConfirmationPlanRelease();
+        this.#queuePlanRelease();
         if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
         this.#pendingCalculation = null;
         this.unsubscribe(); this.onActivity(null);
