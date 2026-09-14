@@ -88,7 +88,7 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}) {
         onOpen:()=>controller.setActive(true),onClose(){},onEditArea(){},requestId:()=>`request-${String(jobSerial).padStart(16,"0")}`});
     const tick = async (delay = 700) => { const due=[...timers.entries()].filter(([,t])=>t.delay===delay);for(const[id,t]of due){timers.delete(id);t.fn();}await flush(); };
     const finish = async (status="ready", values=["12.5"]) => {
-        const old=server.get(controller.executor.snapshot.current.jobId);
+        const old=server.get(controller.executor.snapshot.currentJob.jobId);
         const result=status==="ready"?{url:`/api/processing/jobs/${old.jobId}/result`,provenanceUrl:`/api/processing/jobs/${old.jobId}/provenance`,rows:old.calculations.map((row,i)=>({...row,value:values[i]??values[0],valueType:"float",state:"ok",aggregates:[{function:"mean",matchedPixels:8,validPixels:8,invalidArithmeticPixels:0}]}))}:null;
         server.set(old.jobId,{...old,status,result,error:status==="failed"?{detail:"Scan failed"}:null});
         await jobs.refresh();await flush();
@@ -309,7 +309,7 @@ test("saved results retain typed empty and arithmetic explanations", async () =>
 test("saved jobs show progress and failure safely when their Catalog label is unavailable", async () => {
     const h = fixture(); await h.open(); const card = h.controller.state.statistics[0];
     h.controller.request(card.id, "manual"); await flush();
-    const job = h.server.get(h.controller.executor.snapshot.current.jobId);
+    const job = h.server.get(h.controller.executor.snapshot.currentJob.jobId);
     h.controller.state.sources = [];
     h.controller.inspect(job.jobId);
     assert.match(visibleText(h.view.elements.result), /hfp/);
@@ -733,23 +733,23 @@ test("unused-plan release failure pauses other automatic cards until an explicit
 
 test("inspected history refreshes a running job without rewriting the editable cards",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    h.controller.request(card.id,"manual");await flush();const jobId=h.controller.executor.snapshot.current.jobId;
+    h.controller.request(card.id,"manual");await flush();const jobId=h.controller.executor.snapshot.currentJob.jobId;
     h.controller.inspect(jobId);assert.equal(h.controller.state.saved.status,"running");
     await h.finish();assert.equal(h.controller.state.saved.status,"ready");assert.equal(h.controller.state.statistics[0],card);
     await h.controller.executor.jobAction(jobId,"delete");await flush();assert.equal(h.controller.state.saved,null);
 });
 test("reload recovers a manual job into its card without admitting another calculation",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    h.controller.request(card.id,"manual");await flush();const id=h.controller.executor.snapshot.current.jobId;h.controller.destroy();
+    h.controller.request(card.id,"manual");await flush();const id=h.controller.executor.snapshot.currentJob.jobId;h.controller.destroy();
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id)},h.data);
-    await restored.controller.start();assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.current.jobId,id);
+    await restored.controller.start();assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.currentJob.jobId,id);
     const old=h.server.get(id);h.server.set(id,{...old,status:"ready",result:{url:"/api/processing/jobs/"+id+"/result",provenanceUrl:"/api/processing/jobs/"+id+"/provenance",rows:[{...old.calculations[0],value:"9",valueType:"float",state:"ok",aggregates:[]}]}});
     await restored.jobs.refresh();await flush();assert.equal(restored.controller.state.statistics[0].result.row.value,"9");assert.equal(restored.submits(),0);
     assert.equal(restored.controller.state.statistics[0].result.totalWaitSeconds,undefined);
 });
 test("reload cancels recovered automatic work and never resumes sampling on its own",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();const id=h.controller.executor.snapshot.current.jobId;h.controller.destroy();
+    h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();const id=h.controller.executor.snapshot.currentJob.jobId;h.controller.destroy();
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id),cancelJob:async id=>{const job={...h.server.get(id),status:"cancelled"};h.server.set(id,job);return job;}},h.data);
     await restored.controller.start();await flush();await restored.jobs.refresh();await flush();
     assert.equal(h.server.get(id).status,"cancelled");assert.equal(restored.submits(),0);assert.equal(restored.controller.state.statistics[0].result,null);
@@ -777,10 +777,10 @@ test("batch tuning invalidates the result without running, persists on repeats, 
 test("recovery preserves accepted batch settings without another submission",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.setChunkPixels(262144);h.controller.request(card.id,"manual");await flush();
-    const id=h.controller.executor.snapshot.current.jobId;h.controller.destroy();
+    const id=h.controller.executor.snapshot.currentJob.jobId;h.controller.destroy();
     const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async id=>h.server.get(id)},h.data);
     await restored.controller.start();
-    assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.current.jobId,id);
+    assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.currentJob.jobId,id);
     assert.equal(restored.controller.state.targetChunkPixels,262144);
     assert.equal(restored.view.extra["chunk-pixels"].value,"262144");
     assert.equal(restored.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,262144);

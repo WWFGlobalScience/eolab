@@ -60,7 +60,7 @@ function fixture(overrides = {}, data = new Map()) {
     };
     const tick = async delay => { const due=[...timers.entries()].filter(([,item])=>item.delay===delay); for(const [key,item]of due){timers.delete(key);item.fn();}await flush(); };
     const finish = async (status="ready",value="12.5") => {
-        const old=server.get(controller.snapshot.current.jobId);
+        const old=server.get(controller.snapshot.currentJob.jobId);
         server.set(old.jobId,{...old,status,result:status==="ready"?{url:`/api/processing/jobs/${old.jobId}/result`,provenanceUrl:`/api/processing/jobs/${old.jobId}/provenance`,rows:[{label:"Mean",expression:"mean(a)",value,valueType:"float",state:"ok",aggregates:[{function:"mean",matchedPixels:8,validPixels:8,invalidArithmeticPixels:0}]}]}:null});
         await jobs.refresh(); await flush();
     };
@@ -92,8 +92,8 @@ test("execution snapshots remain busy through cancellation and replacement admis
     await h.finish();
     assert.equal(h.controller.snapshot.admission, "ready");
     assert.equal(h.controller.snapshot.isIdle, true);
-    assert.deepEqual(h.controller.snapshot.resultIntent.area, box(80));
-    assert.equal(initial.result, null);
+    assert.deepEqual(h.controller.snapshot.completedCalculation.area, box(80));
+    assert.equal(initial.completedJob, null);
 });
 
 test("failed submission retains exclusive admission until explicit recovery", async () => {
@@ -153,9 +153,9 @@ test("superseding an uncertain automatic submission persists cancellation before
     assert.equal(h.controller.snapshot.unfinishedCalculation.cancelRequested, true);
     h.api.submitCalculation = submit;
     await h.controller.retry(); await flush();
-    assert.equal(h.controller.snapshot.current.status, "cancelling");
+    assert.equal(h.controller.snapshot.currentJob.status, "cancelling");
     await h.finish("cancelled");
-    assert.equal(h.controller.snapshot.result, null);
+    assert.equal(h.controller.snapshot.completedJob, null);
 });
 
 test("double Calculate during size checking admits only one manual job", async () => {
@@ -171,11 +171,11 @@ test("double Calculate during size checking admits only one manual job", async (
 
 test("explicit Run freezes intent, publishes measured progress and inline result", async () => {
     const h=fixture();await h.run(false);
-    assert.equal(h.view.state.current.progress.totalBlocks,4);
+    assert.equal(h.view.state.currentJob.progress.totalBlocks,4);
     assert.deepEqual(h.activity.at(-1),box(77));
     h.controller.discardPendingCalculation();assert.equal(h.requests.filter(r=>r[0]==="cancel").length,0);
-    await h.finish();assert.equal(h.view.state.result.result.rows[0].value,"12.5");
-    assert.deepEqual(h.view.state.resultIntent.area,box(77));assert.equal(h.storage.read(),null);
+    await h.finish();assert.equal(h.view.state.completedJob.result.rows[0].value,"12.5");
+    assert.deepEqual(h.view.state.completedCalculation.area,box(77));assert.equal(h.storage.read(),null);
     assert.equal(h.activity.at(-1),null);
 });
 
@@ -187,7 +187,7 @@ test("follow clicks cancel old work and retain only the latest area until cancel
     await h.finish("cancelled");
     assert.equal(h.requests.filter(r=>r[0]==="submit").length,2);
     assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
-    await h.finish();assert.deepEqual(h.view.state.resultIntent.area,box(79));
+    await h.finish();assert.deepEqual(h.view.state.completedCalculation.area,box(79));
 });
 
 test("a stale plan resolving after a newer box never submits and does not strand the latest box", async () => {
@@ -289,7 +289,7 @@ test("click during submission cancels its eventual accepted job before admitting
     h.controller.execute(h.intent(),true);await flush();
     h.click(79);await h.tick(650);
     assert.equal(h.storage.read().cancelRequested,true);
-    acceptance.resolve();await flush();assert.equal(h.view.state.current.status,"cancelling");
+    acceptance.resolve();await flush();assert.equal(h.view.state.currentJob.status,"cancelling");
     h.api.submitCalculation=original;await h.finish("cancelled");
     assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
 });
@@ -307,21 +307,21 @@ test("uncertain submission persists its key and superseded cancellation through 
 
 
 test("a completed superseded job cannot replace the prior visible result", async () => {
-    const h=fixture();await h.run(true);await h.finish("ready","1");const result=h.view.state.result;
+    const h=fixture();await h.run(true);await h.finish("ready","1");const result=h.view.state.completedJob;
     h.click(78);await h.tick(650);
     h.click(79);await h.finish("ready","999");
-    assert.equal(h.view.state.result.jobId,result.jobId);
-    assert.deepEqual(h.view.state.resultIntent.area,box(77));
+    assert.equal(h.view.state.completedJob.jobId,result.jobId);
+    assert.deepEqual(h.view.state.completedCalculation.area,box(77));
 });
 
 
 
 test("capacity refusal pauses follow and errors preserve the last visible result", async () => {
-    const h=fixture();await h.run(true);await h.finish();const result=h.view.state.result;
+    const h=fixture();await h.run(true);await h.finish();const result=h.view.state.completedJob;
     h.api.planCalculation=async()=>{throw new ProcessingRequestError("Native work limit",422);};
     h.click(79);await h.tick(650);
     assert.equal(h.view.state.phase,"error");assert.equal(h.controller.snapshot.admission,"manual");
-    assert.equal(h.view.state.result,result);assert.match(h.view.state.message,/Native work limit/);
+    assert.equal(h.view.state.completedJob,result);assert.match(h.view.state.message,/Native work limit/);
 });
 
 for (const [kind, code, message] of [
@@ -333,7 +333,7 @@ for (const [kind, code, message] of [
         const h = fixture();
         await h.run(true);
         await h.finish();
-        const previous = h.view.state.result;
+        const previous = h.view.state.completedJob;
         const client = new ProcessingApiClient(async url => url.endsWith("/jobs")
             ? { ok: true, json: async () => ({ jobs: [] }) }
             : { ok: false, status: 413, json: async () => ({ detail: { code, message } }) });
@@ -343,7 +343,7 @@ for (const [kind, code, message] of [
 
         assert.equal(h.controller.snapshot.admission, "manual");
         assert.equal(h.view.state.message, `${message} Click Calculate or select a new sampling box to retry.`);
-        assert.equal(h.view.state.result, previous);
+        assert.equal(h.view.state.completedJob, previous);
         assert.equal(h.requests.filter(request => request[0] === "submit").length, 1);
     });
 }
@@ -415,7 +415,7 @@ test("card confirmation reuses only an unexpired plan for the complete reviewed 
         const reused=Object.keys(change).length===0;
         assert.equal(h.requests.filter(r=>r[0]==="plan").length,reused?1:2);
         assert.equal(h.storage.read().pending,null);
-        await h.finish(); assert.equal(h.controller.snapshot.resultTiming.planReused,reused);
+        await h.finish(); assert.equal(h.controller.snapshot.completedTimings.planReused,reused);
         assert.equal(h.requests.find(r=>r[0]==="submit")[1].planId===reviewed.planId,reused);
         assert.ok(h.requests.some(r=>r[0]==="discard"&&r[1]===reviewed.planId));
     }
@@ -423,7 +423,7 @@ test("card confirmation reuses only an unexpired plan for the complete reviewed 
     const expired=h.controller.snapshot.plan;expired.expiresAt="2000-01-01";
     h.controller.execute(h.intent());await flush();
     assert.equal(h.requests.filter(r=>r[0]==="plan").length,2);
-    await h.finish(); assert.equal(h.controller.snapshot.resultTiming.planReused,false);
+    await h.finish(); assert.equal(h.controller.snapshot.completedTimings.planReused,false);
     assert.ok(h.requests.findIndex(r=>r[0]==="discard"&&r[1]===expired.planId)<h.requests.findIndex(r=>r[0]==="submit"));
 });
 

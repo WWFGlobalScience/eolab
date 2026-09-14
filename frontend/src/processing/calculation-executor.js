@@ -23,10 +23,11 @@ function identity(value) { return JSON.stringify(value); }
  * @property {string} message Execution feedback.
  * @property {Object|null} plan Server plan held until the user clicks Calculate.
  * @property {boolean} manualRequired Automatic policy requires confirmation.
- * @property {Object|null} current Current authoritative job snapshot.
- * @property {Object|null} result Last completed result, retained during replacement.
- * @property {Readonly<Object>|null} resultIntent Intent that produced the result.
- * @property {Object|null} resultTiming Planning/submission timestamps in browser-clock milliseconds
+ * @property {Object|null} currentJob Job being tracked, including its ID, status and progress.
+ * @property {Object|null} completedJob Last successfully completed job, retained during replacement.
+ * Contains jobId/status/source metadata; its result property contains values and export URLs.
+ * @property {Readonly<Object>|null} completedCalculation Calculation settings that produced completedJob.
+ * @property {Object|null} completedTimings Planning/submission timestamps in browser-clock milliseconds
  * plus the server planning measurements; the summary computes elapsed durations.
  * @property {ReadonlyArray<Object>} jobs Calculation history from the shared observer.
  * @property {string} historyError Shared history retrieval error.
@@ -65,7 +66,7 @@ export class CalculationExecutor {
         now = () => performance.now() }) {
         Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, canRunAutomatically, now });
         this.#executionStatus = { plan: null, phase: "idle", message: "", manualRequired: false,
-            result: null, resultIntent: null, resultTiming: null, current: null, jobs: [], historyError: "" };
+            completedJob: null, completedCalculation: null, completedTimings: null, currentJob: null, jobs: [], historyError: "" };
         this.#savedSubmission = storage.read();
         this.plansToRelease = new Set();
         this.destroyed = false;
@@ -256,7 +257,7 @@ export class CalculationExecutor {
             if (this.#savedSubmission?.jobId) {
                 const job = this.jobs.jobs.find(item => item.jobId === this.#savedSubmission.jobId);
                 if (!job) { await this.jobs.refresh(); return; }
-                this.#executionStatus.current = job;
+                this.#executionStatus.currentJob = job;
                 if (ACTIVE_JOB_STATES.has(job.status)) {
                     this.#executionStatus.phase = this.#savedSubmission.cancelRequested ? "cancelling" : job.status;
                     this.#executionStatus.message = this.#savedSubmission.cancelRequested ? "Cancelling calculation…" : "";
@@ -264,8 +265,8 @@ export class CalculationExecutor {
                     return;
                 }
                 if (job.status === "ready" && !this.#savedSubmission.cancelRequested) {
-                    this.#executionStatus.result = job; this.#executionStatus.resultIntent = this.#savedSubmission.intent;
-                    this.#executionStatus.resultTiming = this.trace ?? null;
+                    this.#executionStatus.completedJob = job; this.#executionStatus.completedCalculation = this.#savedSubmission.intent;
+                    this.#executionStatus.completedTimings = this.trace ?? null;
                     this.#executionStatus.message = "Calculation complete.";
                 } else if (["failed", "interrupted"].includes(job.status) && !this.#savedSubmission.cancelRequested) {
                     this.#executionStatus.message = job.error?.detail ?? "Calculation interrupted. Click Calculate to try again.";
@@ -273,7 +274,7 @@ export class CalculationExecutor {
                     this.#executionStatus.message = this.#pendingCalculation ? "Waiting for the latest sampling box…" : "Calculation cancelled.";
                 }
                 this.jobs.tracked.delete(job.jobId);
-                this.storage.clear(); this.#savedSubmission = null; this.#executionStatus.current = null;
+                this.storage.clear(); this.#savedSubmission = null; this.#executionStatus.currentJob = null;
                 this.trace = null;
                 this.#executionStatus.phase = "idle";
             }
@@ -345,11 +346,11 @@ export class CalculationExecutor {
     #receiveJobs() {
         this.#executionStatus.jobs = this.jobs.jobs.filter(job => job.operation === "raster.aggregate.v1");
         this.#executionStatus.historyError = this.jobs.error;
-        if (this.#executionStatus.result) {
-            this.#executionStatus.result = this.jobs.jobs.find(job => job.jobId === this.#executionStatus.result.jobId) ?? this.#executionStatus.result;
+        if (this.#executionStatus.completedJob) {
+            this.#executionStatus.completedJob = this.jobs.jobs.find(job => job.jobId === this.#executionStatus.completedJob.jobId) ?? this.#executionStatus.completedJob;
         }
         if (this.#savedSubmission?.jobId) {
-            this.#executionStatus.current = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.current;
+            this.#executionStatus.currentJob = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.currentJob;
             if (!this.#isAdvancing) void this.#processNextStep();
         }
         this.#notifyListeners();

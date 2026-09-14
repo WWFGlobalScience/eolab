@@ -382,7 +382,7 @@ export class SummaryStatisticsController {
         const intent = calculationIntent({ source: first.source, area: this.state.area,
             targetChunkPixels: this.state.targetChunkPixels,
             calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
-        this.batch = { intent, previousJobId: execution.result?.jobId, automatic: first.requested !== "manual", obsolete: false,
+        this.batch = { intent, previousJobId: execution.completedJob?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Checking calculation size…"; }
         this.executor.execute(intent, this.batch.automatic);
@@ -412,19 +412,19 @@ export class SummaryStatisticsController {
         const batch = this.batch;
         if (batch) {
             const isIdle = execution.isIdle;
-            const job = execution.result;
-            const matching = !batch.obsolete && same(execution.resultIntent, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
+            const job = execution.completedJob; // Numeric rows are inside job.result, not the job metadata.
+            const matching = !batch.obsolete && same(execution.completedCalculation, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
             batch.cards.forEach((entry, index) => {
                 const card = this.state.statistics.find(item => item.id === entry.id);
                 if (!card) return;
                 if (!batch.obsolete && this.key(card) === entry.key) {
-                    card.message = execution.message || (execution.current?.status === "running" ? "Calculating…" : "Waiting to calculate…");
-                    card.progress = execution.current?.progress ?? null;
+                    card.message = execution.message || (execution.currentJob?.status === "running" ? "Calculating…" : "Waiting to calculate…");
+                    card.progress = execution.currentJob?.progress ?? null;
                     card.error = execution.phase === "error";
                     if (execution.plan) card.plan = execution.plan;
                     if (isIdle && matching && job.result?.rows[index]) {
                         card.result = { key: entry.key, row: job.result.rows[index], job, source: batch.intent.source, area: batch.intent.area,
-                            requestStarted: entry.requestStarted, stageTrace: execution.resultTiming };
+                            requestStarted: entry.requestStarted, stageTrace: execution.completedTimings };
                         card.message = "Up to date";
                     } else if (isIdle && execution.manualRequired) {
                         card.manualRequired = true;
