@@ -19,7 +19,10 @@ from eolab_app.processing.aggregate_models import (
     RasterAggregateLimits,
 )
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.raster_aggregate import create_aggregate, plan_aggregate
+from eolab_app.processing.raster_aggregate import (
+    calculate_raster_statistics_for_area,
+    plan_aggregate,
+)
 import eolab_app.processing.raster_aggregate as kernel
 from eolab_app.raster.models import CatalogRasterRequest
 from eolab_app.raster.source_identity import RasterSourceIdentity
@@ -99,7 +102,7 @@ def test_native_values_not_overviews_scale_or_histogram_statistics(
         return reader(dataset, window)
 
     monkeypatch.setattr(kernel, "read_native_raster_block", observed)
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     selected = values[values != -9999]
     expected = [
         selected.sum(),
@@ -166,7 +169,7 @@ def test_aoi_hole_center_inclusion_on_rotated_and_projected_grids(
     )
     area = AggregateArea(kind="aoi", bounds=bounds, geometries=(geometry,))
     spec = make_spec(path, ["count(a)", "sum(a)"], area)
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert artifact.rows[0]["value"] == "60"
     assert (
         float(artifact.rows[1]["value"])
@@ -186,12 +189,12 @@ def test_bounds_center_policy_missing_values_and_zero(tmp_path: Path) -> None:
         transform=from_origin(0, 3, 1, 1),
     )
     area = AggregateArea(kind="bounds", bounds=(0.6, 0.6, 2.9, 2.9))
-    artifact = create_aggregate(
+    artifact = calculate_raster_statistics_for_area(
         path, make_spec(path, ["count(a)", "sum(a)"], area), tmp_path, LIMITS
     )
     assert artifact.rows[0]["value"] == "3"
     assert float(artifact.rows[1]["value"]) == 8
-    artifact = create_aggregate(
+    artifact = calculate_raster_statistics_for_area(
         path, make_spec(path, ["count(a)", "min(a)"]), tmp_path, LIMITS
     )
     assert artifact.rows[0]["value"] == "8"
@@ -233,10 +236,10 @@ def test_metadata_admission_signature_fence_and_csv_text(
             )
         }
     )
-    create_aggregate(path, spec, tmp_path, LIMITS)
+    calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert "'=IMPORTXML(1)" in (tmp_path / "result.csv").read_text()
     with rasterio.open(path, "r+") as dataset:
         dataset.write(np.zeros((100, 100), dtype="uint8"), 1)
     with pytest.raises(ProcessingError) as error:
-        create_aggregate(path, spec, tmp_path, LIMITS)
+        calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert error.value.code == "source_changed"

@@ -99,7 +99,9 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
     warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
     from eolab_app.processing.clip_models import ClipArea, ClipSpec, RasterClipLimits
     from eolab_app.processing.raster_clip import plan_clip, create_clip
-    from eolab_app.processing.raster_aggregate import create_aggregate
+    from eolab_app.processing.raster_aggregate import (
+        calculate_raster_statistics_for_area,
+    )
     from eolab_app.raster.models import CatalogRasterRequest
     from eolab_app.raster.source_identity import RasterSourceIdentity
     from eolab_app.raster.statistics import read_raster_statistics
@@ -187,7 +189,9 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
     )
     output = tmp_path / "summary"
     output.mkdir()
-    artifact = create_aggregate(path, spec, output, RasterAggregateLimits())
+    artifact = calculate_raster_statistics_for_area(
+        path, spec, output, RasterAggregateLimits()
+    )
     assert float(artifact.rows[0]["value"]) == np.count_nonzero(masks[False])
     assert float(artifact.rows[1]["value"]) == values[masks[False]].sum()
 

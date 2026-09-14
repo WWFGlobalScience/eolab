@@ -23,7 +23,7 @@ from rasterio.transform import from_origin
 
 from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.raster_aggregate import create_aggregate
+from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 from test_raster_aggregates import make_spec, LIMITS
 
 
@@ -125,7 +125,7 @@ def measure(path: Path, output: Path, case: str, target: int | None) -> dict:
             "planSeconds": time.perf_counter() - start,
         }
     plan_seconds = time.perf_counter() - start
-    result = create_aggregate(path, spec, output, LIMITS)
+    result = calculate_raster_statistics_for_area(path, spec, output, LIMITS)
     return {
         "planSeconds": plan_seconds,
         "estimatedMemoryBytes": spec.grid.estimatedMemoryBytes,

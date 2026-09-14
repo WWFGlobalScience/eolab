@@ -119,7 +119,7 @@ def test_batched_native_results_and_durable_metrics(tmp_path, monkeypatch, targe
         "max(a)-min(a)",
         "sum(a / (a-a))",
     ]
-    baseline = kernel.create_aggregate(
+    baseline = kernel.calculate_raster_statistics_for_area(
         path, make_spec(path, expressions), tmp_path, LIMITS
     )
     spec = make_spec(path, expressions, target_chunk_pixels=target)
@@ -145,7 +145,7 @@ def test_batched_native_results_and_durable_metrics(tmp_path, monkeypatch, targe
         "write_progress",
         lambda directory, phase, done, total: progress.append((done, total)),
     )
-    result = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
+    result = kernel.calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     for left, right in zip(baseline.rows, result.rows, strict=True):
         assert left["aggregates"] == right["aggregates"]
         assert left["state"] == right["state"]
@@ -220,7 +220,9 @@ def test_polygon_masks_weights_and_mixed_statistics_across_batch_sizes(
         if crs == "EPSG:32632":
             assert spec.grid.execution.evaluationWidth <= 64
             assert spec.grid.execution.evaluationHeight <= 64
-        results.append(kernel.create_aggregate(path, spec, tmp_path, LIMITS))
+        results.append(
+            kernel.calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+        )
     for result in results[1:]:
         for left, right in zip(results[0].rows, result.rows, strict=True):
             assert left["aggregates"] == right["aggregates"]
@@ -265,7 +267,7 @@ def test_memory_plan_recheck_and_legacy_worker_contract(tmp_path, monkeypatch):
             }
         )
         with pytest.raises(ProcessingError, match="plan"):
-            kernel.create_aggregate(path, changed, tmp_path, LIMITS)
+            kernel.calculate_raster_statistics_for_area(path, changed, tmp_path, LIMITS)
     assert prepare_aggregate_job(spec, LIMITS).minimum_claim_version == 4
     original = make_spec(path, ["sum(a)"])
     old_json = original.model_dump(mode="json", by_alias=True)
@@ -273,7 +275,7 @@ def test_memory_plan_recheck_and_legacy_worker_contract(tmp_path, monkeypatch):
     old = AggregateSpec.model_validate(old_json)
     assert old.model_dump(mode="json", by_alias=True) == old_json
     assert prepare_aggregate_job(old, LIMITS).minimum_claim_version == 2
-    result = kernel.create_aggregate(path, old, tmp_path, LIMITS)
+    result = kernel.calculate_raster_statistics_for_area(path, old, tmp_path, LIMITS)
     assert float(result.rows[0]["value"]) == 2048**2
 
 
@@ -316,7 +318,9 @@ def test_large_polygon_boundary_counts_do_not_depend_on_tile_width(
         spec = make_spec(
             path, ["areaha(a>10)", "count(a>10)"], area, target_chunk_pixels=target
         )
-        result = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
+        result = kernel.calculate_raster_statistics_for_area(
+            path, spec, tmp_path, LIMITS
+        )
         if baseline is None:
             baseline = result.rows
         for expected, actual in zip(baseline, result.rows, strict=True):
@@ -353,7 +357,7 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
     )
     area = AggregateArea(kind="aoi", bounds=tuple(bounds), geometries=(polygon,))
     spec = make_spec(path, ["sum(a)", "areaha(a>0)"], area, target_chunk_pixels=target)
-    expected = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
+    expected = kernel.calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     clock = [0.0]
     calls = {"read": 0, "mask": 0, "weights": 0, "reduce": 0}
 
@@ -410,7 +414,7 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
         "process_tile",
         measured(kernel.Calculation.process_tile, "reduce", 7),
     )
-    result = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
+    result = kernel.calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert result.rows == expected.rows
     metrics = result.performance
     stages = metrics["stages"]

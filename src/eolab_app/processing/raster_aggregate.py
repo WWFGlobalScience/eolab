@@ -318,7 +318,7 @@ def stable_selection_mask(
     return mask
 
 
-def create_aggregate(
+def calculate_raster_statistics_for_area(
     path: Path,
     calculation_plan: AggregateSpec,
     directory: Path,
@@ -327,8 +327,9 @@ def create_aggregate(
     """Calculate summary statistics for a selected area of a raster.
 
     Read the raster in blocks, exclude nodata pixels and pixels outside the
-    selected area, and evaluate the expressions in spec. Write the results
-    to CSV and record the inputs and calculation details in a provenance file.
+    selected area, and evaluate the expressions in calculation_plan. Write the
+    results to CSV and record the inputs and calculation details in a
+    provenance file.
 
     Args:
         path: Path to the input raster.
@@ -601,7 +602,7 @@ def aggregate_process_target(
         if operation == "plan":
             value = plan_aggregate(*arguments)
         elif operation == "calculate":
-            value = create_aggregate(*arguments)
+            value = calculate_raster_statistics_for_area(*arguments)
         else:
             raise ValueError("Unsupported calculation operation")
         queue.put(("ok", value))

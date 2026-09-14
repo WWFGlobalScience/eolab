@@ -42,7 +42,10 @@ from eolab_app.processing.aggregate_models import (
     NamedCalculation,
     RasterAggregateLimits,
 )
-from eolab_app.processing.raster_aggregate import create_aggregate, plan_aggregate
+from eolab_app.processing.raster_aggregate import (
+    calculate_raster_statistics_for_area,
+    plan_aggregate,
+)
 from eolab_app.raster.models import CatalogRasterRequest
 from eolab_app.raster.source_identity import RasterSourceIdentity
 from eolab_app.vector.models import ResolvedVectorSource
@@ -164,7 +167,7 @@ def run_benchmark(raster: Path, vector: Path, layer: str) -> dict[str, Any]:
     )
     with tempfile.TemporaryDirectory(prefix="eolab-sum-benchmark-") as directory:
         execution_started = time.perf_counter()
-        artifact = create_aggregate(
+        artifact = calculate_raster_statistics_for_area(
             raster,
             calculation_plan=calculation_plan,
             directory=Path(directory),

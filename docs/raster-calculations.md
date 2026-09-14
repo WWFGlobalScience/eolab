@@ -203,8 +203,8 @@ The defaults use the 2018 human-footprint COG in
 `D:/easy_to_find_data_i_always_use/countries_without_antarctica.gpkg`.
 The script selects `iso3 == PER OR iso3 == BRA`, requires exactly two features,
 and calls the application's `selection_summary`, `plan_aggregate`, and
-`create_aggregate` for `sum(a)`. It uses the native pixel grid, source validity
-mask, cell-center polygon inclusion, normal work limits and default read/tile
+`calculate_raster_statistics_for_area` for `sum(a)`. It uses the native pixel grid,
+source validity mask, cell-center polygon inclusion, normal work limits and default read/tile
 sizes. It does not contain its own clipping or summing algorithm.
 
 Use explicit inputs on another machine, and redirect the JSON report to save a baseline:
