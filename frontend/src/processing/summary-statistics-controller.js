@@ -309,7 +309,7 @@ export class SummaryStatisticsController {
             card.valid = false; card.checking = false; card.error = !!card.expression.trim();
             card.message = error.message; card.requested = null;
         }
-        this.render(); this.schedulePump();
+        this.render(); this.scheduleNextBatch();
     }
     /** Queue one card; an explicit manual action already authorizes submission.
      * @param {number} id Stable card identity.
@@ -325,7 +325,7 @@ export class SummaryStatisticsController {
         card.requestStarted = this.now();
         if (debounce) this.validateLater(card, false);
         else if (!card.valid && !card.checking) this.validateLater(card, false);
-        this.render(); this.schedulePump();
+        this.render(); this.scheduleNextBatch();
     }
     /** Cancel queued calculation or composed selection work without discarding old values.
      * @param {number} id Stable card identity.
@@ -353,15 +353,19 @@ export class SummaryStatisticsController {
             this.executor.stop();
         }
     }
-    schedulePump() {
-        if (this.pumpScheduled || this.destroyed) return;
-        this.pumpScheduled = true;
-        queueMicrotask(() => { this.pumpScheduled = false; this.pump(); });
-    }
-    /** Admit one compatible card batch using the executor status contract.
+    /** Schedule a check for the next statistic batch after current callbacks finish.
+     * Coalesce repeated requests into one microtask; the batch check waits if busy.
      * @return {void}
      */
-    pump() {
+    scheduleNextBatch() {
+        if (this.batchStartScheduled || this.destroyed) return;
+        this.batchStartScheduled = true;
+        queueMicrotask(() => { this.batchStartScheduled = false; this.startNextBatch(); });
+    }
+    /** Start preparing the next compatible statistic batch when execution is idle.
+     * @return {void}
+     */
+    startNextBatch() {
         const execution = this.executor.snapshot;
         if (this.destroyed || this.batch || !execution.isIdle) return;
         const eligible = this.state.statistics.filter(card => card.requested && card.valid && !card.checking && card.source && this.state.area &&
@@ -444,7 +448,7 @@ export class SummaryStatisticsController {
                 }
                 if (isIdle) { card.pending = false; card.progress = null; }
             });
-            if (isIdle) { this.batch = null; this.schedulePump(); }
+            if (isIdle) { this.batch = null; this.scheduleNextBatch(); }
         }
         this.render();
     }
