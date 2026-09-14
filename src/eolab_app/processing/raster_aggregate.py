@@ -22,6 +22,7 @@ from eolab_app.processing.aggregate_models import (
     AggregateGrid,
     AggregateSpec,
     AggregatePerformance,
+    AggregateKernelStages,
     GroundAreaPlan,
     NamedCalculation,
     RasterAggregateLimits,
@@ -333,6 +334,7 @@ def create_aggregate(
     """
     started = time.perf_counter()
     read_seconds = calculation_seconds = 0.0
+    mask_seconds = weights_seconds = reduction_seconds = 0.0
     read_count = tile_count = completed_blocks = 0
     alias = next(iter(spec.sources))
     roots = [compile_expression(item.expression, alias) for item in spec.calculations]
@@ -344,7 +346,9 @@ def create_aggregate(
     ):
         with rasterio.open(path) as dataset:
             require_source(dataset, path)
+            source_ready = time.perf_counter()
             window, geometries = selection(dataset, spec.area, limits)
+            selection_ready = time.perf_counter()
             ground = (
                 GroundArea(dataset, spec.area, limits)
                 if any(node.op == "areaha" for root in roots for node in walk(root))
@@ -352,6 +356,7 @@ def create_aggregate(
             )
             if ground is not None:
                 window = ground.window
+            ground_ready = time.perf_counter()
             if (
                 grid(
                     dataset,
@@ -373,6 +378,7 @@ def create_aggregate(
                     "The calculation grid or policy changed. Create a new plan.",
                     409,
                 )
+            grid_ready = time.perf_counter()
             last_progress = 0.0
             tile_side = (
                 AREA_TILE_SIDE if ground and not ground.rectilinear else TILE_SIDE
@@ -404,11 +410,13 @@ def create_aggregate(
                 read_count += 1
                 calculate_started = time.perf_counter()
                 intersection = block.intersection(window)
+                mask_started = time.perf_counter()
                 selection_valid = (
                     stable_selection_mask(dataset, window, block, geometries, tile_side)
                     if geometries and execution.targetChunkPixels
                     else None
                 )
+                mask_seconds += time.perf_counter() - mask_started
                 for y in range(
                     int(intersection.row_off),
                     int(intersection.row_off + intersection.height),
@@ -440,10 +448,13 @@ def create_aggregate(
                         values = native[local.toslices()]
                         data = values.data.astype(np.float64)
                         valid = ~np.ma.getmaskarray(values) & np.isfinite(data)
+                        weights_started = time.perf_counter()
                         hectares = ground.weights(tile) if ground is not None else None
+                        weights_seconds += time.perf_counter() - weights_started
                         area_valid = (
                             valid & (hectares > 0) if hectares is not None else None
                         )
+                        mask_started = time.perf_counter()
                         if selection_valid is not None:
                             valid &= selection_valid[local.toslices()]
                         elif geometries:
@@ -454,8 +465,11 @@ def create_aggregate(
                                 all_touched=False,
                                 invert=True,
                             )
+                        mask_seconds += time.perf_counter() - mask_started
+                        reduction_started = time.perf_counter()
                         for reducer in reducers:
                             reducer.update(data, valid, hectares, area_valid)
+                        reduction_seconds += time.perf_counter() - reduction_started
                         tile_count += 1
                         # Release the tile before allocating the next one; no old
                         # source view may retain the previous combined read.
@@ -477,7 +491,9 @@ def create_aggregate(
         {"label": item.label, "expression": item.expression, **reducer.result()}
         for item, reducer in zip(spec.calculations, reducers, strict=True)
     ]
-    calculation_seconds += time.perf_counter() - calculate_started
+    final_reduction_seconds = time.perf_counter() - calculate_started
+    calculation_seconds += final_reduction_seconds
+    reduction_seconds += final_reduction_seconds
     write_progress(
         directory, "writing_results", completed_blocks, spec.grid.nativeBlocks
     )
@@ -509,6 +525,15 @@ def create_aggregate(
         calculationSeconds=calculation_seconds,
         resultWriteSeconds=time.perf_counter() - writing_started,
         kernelSeconds=time.perf_counter() - started,
+        stages=AggregateKernelStages(
+            sourceSetupSeconds=source_ready - started,
+            selectionSetupSeconds=selection_ready - source_ready,
+            groundAreaSetupSeconds=ground_ready - selection_ready,
+            gridCheckSeconds=grid_ready - ground_ready,
+            selectionMaskSeconds=mask_seconds,
+            areaWeightsSeconds=weights_seconds,
+            reductionSeconds=reduction_seconds,
+        ),
     )
     artifact = AggregateArtifact(
         size=result.stat().st_size,

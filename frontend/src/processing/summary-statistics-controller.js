@@ -49,6 +49,7 @@ export class SummaryStatisticsController {
         this.now = now;
         Object.assign(this, { api, jobs, view, getContext, onOpen, onClose, onCancelSelection, clock });
         this.serial = 0;
+        this.vectorRequestStarted = null;
         this.state = { sources: [], statistics: [], area: null, selectedArea: null, areaChoice: "selection",
             active: false, automatic: true, jobs: [], historyError: "", saved: null, undo: false, targetChunkPixels: null };
         this.state.statistics.push(this.makeStatistic(STATISTIC_PRESETS.mean));
@@ -149,11 +150,16 @@ export class SummaryStatisticsController {
     }
 
     /** Select an authoritative Catalog descriptor and optionally execute the explicit action.
+     * When selection progress was observed here, include that wait in the new cards'
+     * request-to-display timings. Optional outline generation remains independent.
      * @param {Object} info Catalog selection and presentation label.
      * @param {boolean} [calculate=false] User explicitly requested filter and calculation.
      * @return {void}
      */
     setVectorSamplingArea(info, calculate = false) {
+        const selectionStarted = this.vectorRequestStarted;
+        const selectionFinished = this.now();
+        this.vectorRequestStarted = null;
         this.state.vectorSelecting = false;
         this.state.vectorCalculation = calculate;
         this.state.selectionMessage = "";
@@ -164,10 +170,18 @@ export class SummaryStatisticsController {
         if (calculate) {
             this.open();
             this.calculateSelection(true);
+            if (Number.isFinite(selectionStarted)) {
+                for (const card of this.state.statistics) {
+                    if (!card.requested) continue;
+                    card.requestStarted = selectionStarted;
+                    card.vectorSelectionSeconds = (selectionFinished - selectionStarted) / 1000;
+                }
+            }
         }
         this.render();
     }
     /** Receive selection lifecycle through composition, without accessing vector state.
+     * Time the current analysis selection until activation; discard cancelled/failed waits.
      * @param {{phase:string,message:string,analysis:boolean}} selection Public progress snapshot.
      * @return {void}
      */
@@ -175,11 +189,13 @@ export class SummaryStatisticsController {
         if (!selection.analysis) return;
         const selecting = ["reading", "selected"].includes(selection.phase);
         if (selecting && !this.state.vectorSelecting) {
+            this.vectorRequestStarted = this.now();
             this.invalidateBatch();
             this.executor.discardPendingCalculation();
             this.state.areaChoice = "vector";
             this.changeArea(null, false);
         }
+        if (!selecting) this.vectorRequestStarted = null;
         this.state.vectorSelecting = selecting;
         this.state.selectionMessage = selection.phase === "active" ? "" : selection.message;
         this.render();
@@ -235,6 +251,7 @@ export class SummaryStatisticsController {
             card.plan = null; card.manualRequired = false; card.error = false;
             card.requested = automatic && this.isActive && this.state.automatic && area ? "automatic" : null;
             card.requestStarted = card.requested ? this.now() : null;
+            card.vectorSelectionSeconds = undefined;
             this.validateLater(card, false);
         }
         this.render();
@@ -271,6 +288,7 @@ export class SummaryStatisticsController {
             card.plan = null; card.manualRequired = false; card.error = false;
             card.requested = automatic && this.isActive && this.state.automatic ? "automatic" : null;
             card.requestStarted = card.requested ? this.now() : null;
+            card.vectorSelectionSeconds = undefined;
             this.validateLater(card, false);
         }
         // Names are presentation only; the immutable original export keeps its run label.
@@ -314,7 +332,7 @@ export class SummaryStatisticsController {
         const version = ++card.version;
         card.valid = false; card.checking = true; card.error = false;
         card.cancelled = false;
-        if (requestAutomatic) { card.requested = "automatic"; card.requestStarted = this.now(); }
+        if (requestAutomatic) { card.requested = "automatic"; card.requestStarted = this.now(); card.vectorSelectionSeconds = undefined; }
         card.message = "Checking formula…";
         card.timer = this.clock.setTimeout(() => void this.validate(card, version), 700);
     }
@@ -345,6 +363,7 @@ export class SummaryStatisticsController {
         if (this.batch && !this.batch.obsolete && this.batch.cards.some(entry => entry.id === id && entry.key === this.key(card))) return;
         card.requested = kind; card.error = false; card.cancelled = false;
         card.requestStarted = this.now();
+        card.vectorSelectionSeconds = undefined;
         if (debounce) this.validateLater(card, false);
         else if (!card.valid && !card.checking) this.validateLater(card, false);
         this.render(); this.scheduleNextBatch();
@@ -409,7 +428,7 @@ export class SummaryStatisticsController {
             targetChunkPixels: this.state.targetChunkPixels,
             calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
         this.batch = { intent, previousJobId: execution.completedJob?.jobId, automatic: first.requested !== "manual", obsolete: false,
-            cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted })) };
+            cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted, vectorSelectionSeconds: card.vectorSelectionSeconds })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Checking calculation size…"; }
         this.executor.prepare(intent);
         this.render();
@@ -459,7 +478,7 @@ export class SummaryStatisticsController {
                     if (execution.plan) card.plan = execution.plan;
                     if (isIdle && matching && job.result?.rows[index]) {
                         card.result = { key: entry.key, row: job.result.rows[index], job, source: batch.intent.source, area: batch.intent.area,
-                            requestStarted: entry.requestStarted, stageTrace: execution.completedTimings };
+                            requestStarted: entry.requestStarted, vectorSelectionSeconds: entry.vectorSelectionSeconds, stageTrace: execution.completedTimings };
                         card.message = "Up to date";
                     } else if (isIdle && needsConfirmation) {
                         card.manualRequired = true;
@@ -523,6 +542,7 @@ export class SummaryStatisticsController {
                         submissionSeconds: (trace.submissionFinishedAtMs - trace.submissionStartedAtMs) / 1000,
                         afterSubmissionSeconds: (displayed - trace.submissionFinishedAtMs) / 1000,
                         planReused: trace.planReused, serverPlan: trace.serverPlan,
+                        vectorSelectionSeconds: result.vectorSelectionSeconds,
                     };
                 }
                 measured = true;

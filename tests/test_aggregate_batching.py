@@ -3,6 +3,7 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+from typing import Any, Callable
 
 from affine import Affine
 import numpy as np
@@ -17,6 +18,7 @@ from shapely.geometry import Polygon, mapping
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregatePlanRequest,
+    AggregatePerformance,
     AggregateSpec,
 )
 from eolab_app.processing.aggregate_windows import execution_plan, read_windows
@@ -161,6 +163,12 @@ def test_batched_native_results_and_durable_metrics(tmp_path, monkeypatch, targe
         < spec.grid.nativeBlocks
     )
     assert metrics["reducerUpdates"] < baseline.performance["reducerUpdates"]
+    legacy = {key: value for key, value in metrics.items() if key != "stages"}
+    assert AggregatePerformance.model_validate(legacy).stages is None
+    with pytest.raises(ValidationError):
+        AggregatePerformance.model_validate(
+            {**metrics, "stages": {**metrics["stages"], "selectionMaskSeconds": -1}}
+        )
     assert metrics["kernelSeconds"] >= sum(
         metrics[name]
         for name in ["readSeconds", "calculationSeconds", "resultWriteSeconds"]
@@ -316,3 +324,103 @@ def test_large_polygon_boundary_counts_do_not_depend_on_tile_width(
             assert float(expected["value"]) == pytest.approx(
                 float(actual["value"]), rel=1e-10
             )
+
+
+@pytest.mark.parametrize("target", [None, 65536])
+def test_kernel_stage_timers_attribute_work_without_changing_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: int | None
+) -> None:
+    """Injected stage durations prove attribution on legacy and combined reads.
+
+    Args:
+        tmp_path: Private native fixture and output.
+        monkeypatch: Replace the clock and observe existing operation boundaries.
+        target: Legacy blocks or combined reads.
+    """
+    values = np.ones((32, 32), dtype="float32")
+    path = write_source(tmp_path / "source.tif", values)
+    with rasterio.open(path) as ds:
+        bounds = ds.bounds
+    polygon = mapping(
+        Polygon(
+            [
+                (bounds.left, bounds.bottom),
+                (bounds.right, bounds.bottom),
+                (bounds.right, bounds.top),
+                (bounds.left, bounds.top),
+            ]
+        )
+    )
+    area = AggregateArea(kind="aoi", bounds=tuple(bounds), geometries=(polygon,))
+    spec = make_spec(path, ["sum(a)", "areaha(a>0)"], area, target_chunk_pixels=target)
+    expected = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
+    clock = [0.0]
+    calls = {"read": 0, "mask": 0, "weights": 0, "reduce": 0}
+
+    def measured(
+        function: Callable[..., Any], stage: str, seconds: float
+    ) -> Callable[..., Any]:
+        """Wrap a real boundary with a deterministic extra wall duration.
+
+        Args:
+            function: Original operation, preserving values and exceptions.
+            stage: Counter key.
+            seconds: Time charged to this invocation.
+
+        Returns:
+            Instrumented callable with unchanged result.
+        """
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            """Call the original operation and charge its controlled duration.
+
+            Args:
+                *args: Positional operation arguments.
+                **kwargs: Named operation arguments.
+
+            Returns:
+                Unchanged result from the original operation.
+            """
+            result = function(*args, **kwargs)
+            calls[stage] += 1
+            clock[0] += seconds
+            return result
+
+        return invoke
+
+    monkeypatch.setattr(kernel.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(
+        kernel,
+        "read_native_raster_block",
+        measured(kernel.read_native_raster_block, "read", 2),
+    )
+    monkeypatch.setattr(
+        kernel,
+        "read_native_raster_window",
+        measured(kernel.read_native_raster_window, "read", 2),
+    )
+    monkeypatch.setattr(
+        kernel, "selection_mask", measured(kernel.selection_mask, "mask", 3)
+    )
+    monkeypatch.setattr(
+        kernel.GroundArea, "weights", measured(kernel.GroundArea.weights, "weights", 5)
+    )
+    monkeypatch.setattr(
+        kernel.Calculation, "update", measured(kernel.Calculation.update, "reduce", 7)
+    )
+    result = kernel.create_aggregate(path, spec, tmp_path, LIMITS)
+    assert result.rows == expected.rows
+    metrics = result.performance
+    stages = metrics["stages"]
+    assert metrics["readSeconds"] == calls["read"] * 2
+    assert stages["selectionMaskSeconds"] == calls["mask"] * 3 > 0
+    assert stages["areaWeightsSeconds"] == calls["weights"] * 5 > 0
+    assert stages["reductionSeconds"] == calls["reduce"] * 7 > 0
+    assert metrics["calculationSeconds"] == sum(
+        stages[key]
+        for key in ["selectionMaskSeconds", "areaWeightsSeconds", "reductionSeconds"]
+    )
+    assert (
+        metrics["kernelSeconds"]
+        == metrics["readSeconds"] + metrics["calculationSeconds"]
+    )

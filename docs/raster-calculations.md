@@ -138,13 +138,28 @@ batch sizes; floating results can differ in last-place rounding.
 Performance details show requested and effective read/tile sizes, memory estimates
 and timings. These are wall times, including waiting within each operation:
 
-- **Total wait → result displayed** includes debounce, planning, queueing and
+- **Total wait → result displayed** includes vector selection when initiated for the calculation in this tab,
+  debounce, planning, queueing and
   result delivery through the UI update. It excludes earlier confirmation time
   and the browser's subsequent paint.
 - Browser stages divide that total. Server stages overlap them; do not add the
   browser and server groups together.
 - **Kernel elapsed** covers source opening and calculation through the CSV
-  checksum. Its read, calculation and write subtotals do not include all setup.
+  checksum. New results also break out source setup, selection-envelope
+  reading/projection, ground-area setup and the grid recheck.
+- **Inside Calculation** splits polygon masking, ground-area weights, formula
+  evaluation/reductions, and remaining tile/loop work. Masking includes any vector
+  reads, projection and rasterization required for each tile. These are nested
+  parts of Calculation, not additional time.
+- **Read/decode and source mask** includes native raster I/O, decompression and
+  its validity mask. It includes waiting, so it is not pure disk time.
+- **Vector selection before calculation** is part of Before planning when that
+  selection was observed in this tab. It excludes optional display-outline work.
+  A later Calculate click starts a new measurement.
+- Kernel setup, read, calculation, CSV/checksum and the labelled remaining kernel
+  work partition Kernel elapsed. Progress writes and source close/rechecks are
+  included in that remainder. Timings describe the entire shared batch when
+  several statistic cards run together.
 - Native-process time also includes communication and cleanup. Readiness wait
   includes any startup required for this request; earlier prewarming is excluded.
 - **Queued → ready** includes server queueing and execution. The estimated

@@ -33,18 +33,21 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
     const p = job.result?.performance;
     const lines = [...(Number.isFinite(totalWaitSeconds) && totalWaitSeconds >= 0
         ? [`Total wait → result displayed: ${totalWaitSeconds.toFixed(3)} s.`,
-            "Measured in this tab from the calculation request through the result UI update, including debounce, planning, queueing and result delivery (notifications or polling); excludes earlier confirmation time and the browser's subsequent paint."]
+            "Measured in this tab from the calculation request through the result UI update, including vector selection when requested here, debounce, planning, queueing and result delivery (notifications or polling); excludes earlier confirmation time and the browser's subsequent paint."]
         : ["Total wait unavailable for this result. Request-to-display timing is recorded only for statistic cards completed in this tab, without a page reload."]),
     ...executionDescription(job.grid)];
     const seconds = n => `${n.toFixed(3)} s`;
     if (stages) {
         lines.push(
-            `Before planning (debounce, validation or previous-work wait): ${seconds(stages.beforePlanningSeconds)}.`,
+            `Before planning (selection, debounce, validation or previous-work wait): ${seconds(stages.beforePlanningSeconds)}.`,
             `Planning round trip: ${seconds(stages.planningSeconds)}${stages.planReused ? " (existing plan reused)" : ""}.`,
             `Between planning and submission: ${seconds(stages.beforeSubmissionSeconds)}.`,
             `Submission round trip: ${seconds(stages.submissionSeconds)}.`,
             `Submission response → result displayed: ${seconds(stages.afterSubmissionSeconds)}.`,
             "These browser stages add up to total wait. Server stages below overlap them; do not add the two groups together.",
+        );
+        if (Number.isFinite(stages.vectorSelectionSeconds)) lines.push(
+            `Vector selection before calculation: ${seconds(stages.vectorSelectionSeconds)} (included in Before planning). Includes the selection request/response and source preparation; excludes optional display-outline work.`,
         );
         const plan = stages.serverPlan;
         if (plan && !stages.planReused) lines.push(
@@ -77,6 +80,19 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
     }
     lines.push("Server intervals use one database clock or a worker's monotonic clock. Browser intervals use this tab's monotonic clock. Small residual differences can include database transaction timestamp boundaries. Timings are diagnostic and do not change scheduling.");
     if (!p) return [...lines, "Kernel measurements are unavailable for this saved result."];
+    if (p.stages) {
+        const k = p.stages;
+        const setup = k.sourceSetupSeconds + k.selectionSetupSeconds + k.groundAreaSetupSeconds + k.gridCheckSeconds;
+        const preparation = Math.max(0, p.calculationSeconds - k.selectionMaskSeconds - k.areaWeightsSeconds - k.reductionSeconds);
+        const other = Math.max(0, p.kernelSeconds - setup - p.readSeconds - p.calculationSeconds - p.resultWriteSeconds);
+        lines.push(
+            `Kernel setup: ${seconds(setup)}. Source opening, checks and expression compilation: ${seconds(k.sourceSetupSeconds)}; selection envelope reading/projection: ${seconds(k.selectionSetupSeconds)}; ground-area setup: ${seconds(k.groundAreaSetupSeconds)}; grid/admission recheck: ${seconds(k.gridCheckSeconds)}.`,
+            `Inside Calculation - polygon selection masks: ${seconds(k.selectionMaskSeconds)}; ground-area weights: ${seconds(k.areaWeightsSeconds)}; formula evaluation and reductions: ${seconds(k.reductionSeconds)}; tile preparation and loop overhead (remainder): ${seconds(preparation)}.`,
+            `Other kernel work (remainder): ${seconds(other)}. Includes progress writes, source closing/rechecks and loop setup.`,
+            "Polygon mask time includes vector reads, geometry projection and rasterization, plus applying the mask. Read/decode includes the raster's own validity mask and I/O waiting; it is not a pure disk-time measurement.",
+            "Setup + Read/decode + Calculation + Write CSV + Other kernel work partition Kernel elapsed. Calculation's inner stages are already included in Calculation; do not add them again.",
+        );
+    } else lines.push("Detailed kernel stages were not recorded for this saved result.");
     return [...lines,
         `Kernel elapsed: ${seconds(p.kernelSeconds)}. Read/decode and source mask: ${seconds(p.readSeconds)}. Calculation: ${seconds(p.calculationSeconds)}. Write CSV and checksum: ${seconds(p.resultWriteSeconds)}.`,
         `${p.readWindows.toLocaleString()} reads; ${p.evaluationTiles.toLocaleString()} calculation tiles; ${p.reducerUpdates.toLocaleString()} statistic updates.`,

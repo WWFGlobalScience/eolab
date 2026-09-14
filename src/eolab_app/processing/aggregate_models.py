@@ -231,6 +231,27 @@ class AggregateExecutionPlan(BaseModel):
     readWindows: Annotated[int, Field(gt=0, le=65_536)]
 
 
+StageSeconds = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
+class AggregateKernelStages(BaseModel):
+    """Nested wall times; mask, weights and reductions are inside calculation.
+
+    Source setup includes compilation, signature checks and opening the raster.
+    Selection setup reads/projects the area envelope. Mask time includes vector
+    source reads, projection and rasterization. All times include I/O waits.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    sourceSetupSeconds: StageSeconds
+    selectionSetupSeconds: StageSeconds
+    groundAreaSetupSeconds: StageSeconds
+    gridCheckSeconds: StageSeconds
+    selectionMaskSeconds: StageSeconds
+    areaWeightsSeconds: StageSeconds
+    reductionSeconds: StageSeconds
+
+
 class AggregatePerformance(BaseModel):
     """Final bounded wall-time measurements, independent of transient progress."""
 
@@ -243,6 +264,7 @@ class AggregatePerformance(BaseModel):
     calculationSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     resultWriteSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     kernelSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
+    stages: AggregateKernelStages | None = None
 
 
 class AggregateGrid(BaseModel):
@@ -311,9 +333,6 @@ class AggregateValue(BaseModel):
     ]
     aggregates: list[dict[str, str | int]]
     unit: Literal["ha"] | None = None
-
-
-StageSeconds = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
 class NativeProcessTiming(BaseModel):
