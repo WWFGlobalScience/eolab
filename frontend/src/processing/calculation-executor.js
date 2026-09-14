@@ -53,8 +53,8 @@ export class CalculationExecutor {
      * @param {import("./api.js").ProcessingApiClient} dependencies.api Processing transport.
      * @param {import("./jobs.js").ProcessingJobs} dependencies.jobs Shared job observer.
      * @param {import("./calculation-session.js").CalculationSessionStorage} dependencies.storage Durable per-tab recovery.
-     * @param {function(CalculationExecutionSnapshot):void} dependencies.onChange Status callback.
-     * @param {function(Object|null):void} [dependencies.onActivity] Area-associated activity.
+     * @param {function(CalculationExecutionSnapshot):void} dependencies.onChange Updates the owning statistics controller with execution progress.
+     * @param {function(Object|null):void} [dependencies.onActivity] Sends the working sampling area (or null) to composition for its activity indicator.
      * @param {function():string} [dependencies.requestId] Idempotency key factory.
      * @param {function(Object,Readonly<Object>):boolean} [dependencies.canAutoSubmit] Caller-owned automatic admission policy.
      * @param {function():number} [dependencies.now] Monotonic browser clock.
@@ -99,7 +99,7 @@ export class CalculationExecutor {
             const { jobId } = this.#savedSubmission;
             if (jobId) this.jobs.tracked.add(jobId);
             try { this.storage.write(this.#savedSubmission); }
-            catch (error) { this.#executionStatus.message = error.message; this.#retryRequired = true; this.#publish(); }
+            catch (error) { this.#executionStatus.message = error.message; this.#retryRequired = true; this.#notifyListeners(); }
         }
         await this.jobs.refresh();
         await this.#processNextStep();
@@ -175,7 +175,7 @@ export class CalculationExecutor {
     execute(calculation, automatic = false) {
         if (this.destroyed) return;
         const snapshot = calculationIntent(calculation);
-        if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#publish(); return; }
+        if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#notifyListeners(); return; }
         // Repeated manual actions cannot create two jobs for the same intent.
         if (!automatic && ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
             (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot)))) return;
@@ -192,7 +192,7 @@ export class CalculationExecutor {
                 ? "Waiting for the previous calculation check to finish…"
                 : "Waiting for the latest sampling box…"
             : "Preparing calculation…";
-        this.#publish();
+        this.#notifyListeners();
         void this.#processNextStep();
     }
 
@@ -201,7 +201,7 @@ export class CalculationExecutor {
         this.discardPendingCalculation();
         this.#requestCancellation();
         if (!this.#savedSubmission) this.#executionStatus.message = "Calculation cancelled.";
-        this.#publish();
+        this.#notifyListeners();
     }
 
     /**
@@ -219,14 +219,14 @@ export class CalculationExecutor {
             if (this.plansToRelease.size) {
                 this.#executionStatus.phase = "releasing";
                 this.#executionStatus.message = "Releasing the previous calculation check…";
-                this.#publish();
+                this.#notifyListeners();
                 await this.#releasePlans();
                 if (!this.#savedSubmission) { this.#executionStatus.phase = "idle"; this.#executionStatus.message = ""; }
             }
             if (this.#savedSubmission?.pending) {
                 this.#executionStatus.phase = "submitting";
                 this.#executionStatus.message = "Confirming calculation submission…";
-                this.#publish();
+                this.#notifyListeners();
                 let job;
                 try {
                     if (this.trace) this.trace.submissionStarted = this.now();
@@ -280,7 +280,7 @@ export class CalculationExecutor {
             const target = this.#pendingCalculation;
             this.#executionStatus.phase = "planning";
             this.#executionStatus.message = "Checking calculation size…";
-            this.#publish();
+            this.#notifyListeners();
             if (target.plan && Date.parse(target.plan.expiresAt) <= Date.now()) {
                 this.plansToRelease.add(target.plan.planId);
                 target.plan = null;
@@ -326,7 +326,7 @@ export class CalculationExecutor {
         } finally {
             if (this.destroyed) await this.#releasePlans().catch(() => {});
             this.#isAdvancing = false;
-            this.#publish();
+            this.#notifyListeners();
             // Newest intent waits for both old metadata and acknowledged cleanup.
             if (!this.#retryRequired && !this.destroyed && !this.#savedSubmission &&
                 (this.#pendingCalculation || this.plansToRelease.size)) {
@@ -348,20 +348,24 @@ export class CalculationExecutor {
             this.#executionStatus.current = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.current;
             if (!this.#isAdvancing) void this.#processNextStep();
         }
-        this.#publish();
+        this.#notifyListeners();
     }
 
     /** Apply an explicit history action. @param {string} id Job ID. @param {string} action Intent. @return {Promise<void>} Action. */
     async jobAction(id, action) {
         if (id === this.#savedSubmission?.jobId && action === "cancel") { this.stop(); return; }
         try { await this.jobs.action(id, action); }
-        catch (error) { this.#executionStatus.message = error.message; this.#publish(); }
+        catch (error) { this.#executionStatus.message = error.message; this.#notifyListeners(); }
     }
 
-    /** Notify the owner with coherent status and area-associated activity.
+    /** Send progress to the statistics controller and the working area to composition.
+     * onChange receives status, outstanding work and the last completed job together.
+     * onActivity receives the submitted calculation's area while work is active, or
+     * null after cancellation/error/completion. Composition uses it for the map's
+     * working indicator; this method neither draws the map nor sends an HTTP request.
      * @return {void}
      */
-    #publish() {
+    #notifyListeners() {
         if (this.destroyed) return;
         this.onChange(this.snapshot);
         const active = this.#savedSubmission && !this.#savedSubmission.cancelRequested && !this.#retryRequired;

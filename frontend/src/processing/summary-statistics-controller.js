@@ -383,7 +383,7 @@ export class SummaryStatisticsController {
     }
 
     /** Apply execution progress to the batch that owns it, including terminal results.
-     * @param {import("./calculation-executor.js").CalculationExecutionSnapshot} execution Coherent execution status.
+     * @param {import("./calculation-executor.js").CalculationExecutionSnapshot} execution Progress, remaining work and last completed job from one executor update.
      * @return {void}
      */
     receive(execution) {
