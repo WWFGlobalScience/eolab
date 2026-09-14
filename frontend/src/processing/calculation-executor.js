@@ -30,12 +30,20 @@ function identity(value) { return JSON.stringify(value); }
 
 /** Own durable submission, cancellation, plan release and recovery for one lane. */
 export class CalculationExecutor {
-    #state;
-    #record;
-    #desired = null;
-    #advanceRunning = false;
-    #blocked = false;
-    #reviewIntent = null;
+    /** Latest progress, confirmation plan and completed job for the status callback. @type {Object} */
+    #executionStatus;
+    /** Session-stored submission, kept until completion/cancellation is confirmed.
+     * Includes the request key even when the submission response was lost. @type {Object|null}
+     */
+    #savedSubmission;
+    /** Newest calculation waiting for planning or for an older job to stop. @type {Object|null} */
+    #pendingCalculation = null;
+    /** An asynchronous execution step is already running; prevent overlapping API actions. @type {boolean} */
+    #isAdvancing = false;
+    /** A failed step needs an explicit retry or, when no job remains, a new request. @type {boolean} */
+    #retryRequired = false;
+    /** Calculation matching the plan held for the user's Calculate confirmation. @type {Readonly<Object>|null} */
+    #confirmationCalculation = null;
 
     /** Connect execution providers without an editor or DOM dependency.
      * @param {Object} dependencies Execution dependencies.
@@ -52,9 +60,9 @@ export class CalculationExecutor {
         requestId = () => crypto.randomUUID(), canAutoSubmit = () => true,
         now = () => performance.now() }) {
         Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, canAutoSubmit, now });
-        this.#state = { plan: null, phase: "idle", message: "", manualRequired: false,
+        this.#executionStatus = { plan: null, phase: "idle", message: "", manualRequired: false,
             result: null, resultIntent: null, resultTiming: null, current: null, jobs: [], historyError: "" };
-        this.#record = storage.read();
+        this.#savedSubmission = storage.read();
         this.plansToRelease = new Set();
         this.destroyed = false;
         this.unsubscribe = jobs.subscribe(() => this.#receiveJobs());
@@ -64,27 +72,27 @@ export class CalculationExecutor {
      * @return {CalculationExecutionSnapshot} Current execution snapshot.
      */
     get snapshot() {
-        const settled = !this.#record && !this.#desired && !this.#advanceRunning &&
-            (this.#blocked || this.plansToRelease.size === 0);
-        const recovery = this.#record ? Object.freeze({ intent: this.#record.intent,
-            automatic: this.#record.automatic, cancelRequested: this.#record.cancelRequested }) : null;
-        return Object.freeze({ ...this.#state, jobs: Object.freeze([...this.#state.jobs]),
-            settled, admission: !settled ? "busy" : this.#blocked ? "manual" : "ready",
-            recovery, recoverable: !!this.#record && this.#blocked });
+        const settled = !this.#savedSubmission && !this.#pendingCalculation && !this.#isAdvancing &&
+            (this.#retryRequired || this.plansToRelease.size === 0);
+        const recovery = this.#savedSubmission ? Object.freeze({ intent: this.#savedSubmission.intent,
+            automatic: this.#savedSubmission.automatic, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
+        return Object.freeze({ ...this.#executionStatus, jobs: Object.freeze([...this.#executionStatus.jobs]),
+            settled, admission: !settled ? "busy" : this.#retryRequired ? "manual" : "ready",
+            recovery, recoverable: !!this.#savedSubmission && this.#retryRequired });
     }
 
     /** Resume the same durable request or retry acknowledged plan cleanup.
      * @return {Promise<void>} Progress on the existing lane; never a new job intent.
      */
-    async retry() { this.#blocked = false; await this.#advance(); }
+    async retry() { this.#retryRequired = false; await this.#advance(); }
 
     /** Recover accepted work; reload always pauses automatic sampling. @return {Promise<void>} Recovery. */
     async start() {
-        if (this.#record) {
-            const { jobId } = this.#record;
+        if (this.#savedSubmission) {
+            const { jobId } = this.#savedSubmission;
             if (jobId) this.jobs.tracked.add(jobId);
-            try { this.storage.write(this.#record); }
-            catch (error) { this.#state.message = error.message; this.#blocked = true; this.#publish(); }
+            try { this.storage.write(this.#savedSubmission); }
+            catch (error) { this.#executionStatus.message = error.message; this.#retryRequired = true; this.#publish(); }
         }
         await this.jobs.refresh();
         await this.#advance();
@@ -92,29 +100,29 @@ export class CalculationExecutor {
 
     /** Invalidate unaccepted intent and cancel obsolete automatic work. @return {void} */
     invalidate() {
-        const target = this.#desired;
-        this.#desired = null;
+        const target = this.#pendingCalculation;
+        this.#pendingCalculation = null;
         this.#discardReview();
         if (target?.plan) this.plansToRelease.add(target.plan.planId);
-        if (!this.#record) this.#state.phase = "idle";
-        if (this.#record?.automatic) this.#requestCancellation();
+        if (!this.#savedSubmission) this.#executionStatus.phase = "idle";
+        if (this.#savedSubmission?.automatic) this.#requestCancellation();
         if (this.plansToRelease.size) void this.#advance();
     }
 
     /** Mark durable cancellation before recovering uncertain submissions. @return {void} */
     #requestCancellation() {
-        if (!this.#record) return;
-        this.#record.cancelRequested = true;
-        try { this.storage.write(this.#record); }
-        catch (error) { this.#state.message = error.message; }
+        if (!this.#savedSubmission) return;
+        this.#savedSubmission.cancelRequested = true;
+        try { this.storage.write(this.#savedSubmission); }
+        catch (error) { this.#executionStatus.message = error.message; }
         void this.#advance();
     }
 
     /** Retain obsolete plan identities until the server acknowledges release. @return {void} */
     #discardReview() {
-        const plan = this.#state.plan;
-        this.#state.plan = null;
-        this.#reviewIntent = null;
+        const plan = this.#executionStatus.plan;
+        this.#executionStatus.plan = null;
+        this.#confirmationCalculation = null;
         if (plan) this.plansToRelease.add(plan.planId);
     }
 
@@ -142,20 +150,20 @@ export class CalculationExecutor {
     executeIntent(intent, automatic = false) {
         if (this.destroyed) return;
         const snapshot = calculationIntent(intent);
-        if (this.#blocked && this.#record) { this.invalidate(); this.#publish(); return; }
+        if (this.#retryRequired && this.#savedSubmission) { this.invalidate(); this.#publish(); return; }
         // Repeated manual actions cannot create two jobs for the same intent.
-        if (!automatic && ((this.#desired && identity(this.#desired.intent) === identity(snapshot)) ||
-            (this.#record && !this.#record.cancelRequested && identity(this.#record.intent) === identity(snapshot)))) return;
-        const plan = this.#state.plan && identity(snapshot) === identity(this.#reviewIntent) ? this.#state.plan : null;
-        if (plan) this.#state.plan = null;
+        if (!automatic && ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
+            (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot)))) return;
+        const plan = this.#executionStatus.plan && identity(snapshot) === identity(this.#confirmationCalculation) ? this.#executionStatus.plan : null;
+        if (plan) this.#executionStatus.plan = null;
         this.invalidate();
-        this.#blocked = false;
-        this.#state.manualRequired = false;
-        this.#desired = { intent: snapshot, plan, automatic };
+        this.#retryRequired = false;
+        this.#executionStatus.manualRequired = false;
+        this.#pendingCalculation = { intent: snapshot, plan, automatic };
         this.#requestCancellation();
-        this.#state.phase = "waiting";
-        this.#state.message = automatic
-            ? this.#advanceRunning && !this.#record
+        this.#executionStatus.phase = "waiting";
+        this.#executionStatus.message = automatic
+            ? this.#isAdvancing && !this.#savedSubmission
                 ? "Waiting for the previous calculation check to finish…"
                 : "Waiting for the latest sampling box…"
             : "Preparing calculation…";
@@ -167,7 +175,7 @@ export class CalculationExecutor {
     stop() {
         this.invalidate();
         this.#requestCancellation();
-        if (!this.#record) this.#state.message = "Calculation cancelled.";
+        if (!this.#savedSubmission) this.#executionStatus.message = "Calculation cancelled.";
         this.#publish();
     }
 
@@ -177,80 +185,80 @@ export class CalculationExecutor {
      * @return {Promise<void>} Current progress, never an unbounded polling loop.
      */
     async #advance() {
-        if (this.#advanceRunning || this.destroyed || this.#blocked) return;
-        this.#advanceRunning = true;
+        if (this.#isAdvancing || this.destroyed || this.#retryRequired) return;
+        this.#isAdvancing = true;
         try {
             if (this.plansToRelease.size) {
-                this.#state.phase = "releasing";
-                this.#state.message = "Releasing the previous calculation check…";
+                this.#executionStatus.phase = "releasing";
+                this.#executionStatus.message = "Releasing the previous calculation check…";
                 this.#publish();
                 await this.#releasePlans();
-                if (!this.#record) { this.#state.phase = "idle"; this.#state.message = ""; }
+                if (!this.#savedSubmission) { this.#executionStatus.phase = "idle"; this.#executionStatus.message = ""; }
             }
-            if (this.#record?.pending) {
-                this.#state.phase = "submitting";
-                this.#state.message = "Confirming calculation submission…";
+            if (this.#savedSubmission?.pending) {
+                this.#executionStatus.phase = "submitting";
+                this.#executionStatus.message = "Confirming calculation submission…";
                 this.#publish();
                 let job;
                 try {
                     if (this.trace) this.trace.submissionStarted = this.now();
-                    job = await this.api.submitCalculation(this.#record.pending);
+                    job = await this.api.submitCalculation(this.#savedSubmission.pending);
                     if (this.trace) this.trace.submissionFinished = this.now();
                 }
                 catch (error) {
                     this.trace = null; // An uncertain/retried submission has no complete stage trace.
                     if (error instanceof ProcessingRequestError && error.status >= 400 && error.status < 500 && error.status !== 408) {
-                        this.storage.clear(); this.#record = null;
+                        this.storage.clear(); this.#savedSubmission = null;
                     }
                     throw error;
                 }
-                this.#record.jobId = job.jobId;
-                this.#record.releasePlanId = this.#record.pending.planId;
-                this.#record.pending = null;
-                this.storage.write(this.#record);
+                this.#savedSubmission.jobId = job.jobId;
+                this.#savedSubmission.releasePlanId = this.#savedSubmission.pending.planId;
+                this.#savedSubmission.pending = null;
+                this.storage.write(this.#savedSubmission);
                 this.jobs.tracked.add(job.jobId);
                 this.jobs.accept(job);
             }
-            if (this.#record?.releasePlanId) {
-                await this.api.discardPlan(this.#record.releasePlanId);
-                this.#record.releasePlanId = null;
-                this.storage.write(this.#record);
+            if (this.#savedSubmission?.releasePlanId) {
+                await this.api.discardPlan(this.#savedSubmission.releasePlanId);
+                this.#savedSubmission.releasePlanId = null;
+                this.storage.write(this.#savedSubmission);
             }
-            if (this.#record?.jobId) {
-                const job = this.jobs.jobs.find(item => item.jobId === this.#record.jobId);
+            if (this.#savedSubmission?.jobId) {
+                const job = this.jobs.jobs.find(item => item.jobId === this.#savedSubmission.jobId);
                 if (!job) { await this.jobs.refresh(); return; }
-                this.#state.current = job;
+                this.#executionStatus.current = job;
                 if (ACTIVE_JOB_STATES.has(job.status)) {
-                    this.#state.phase = this.#record.cancelRequested ? "cancelling" : job.status;
-                    this.#state.message = this.#record.cancelRequested ? "Cancelling calculation…" : "";
-                    if (this.#record.cancelRequested && job.status !== "cancelling") await this.jobs.action(job.jobId, "cancel");
+                    this.#executionStatus.phase = this.#savedSubmission.cancelRequested ? "cancelling" : job.status;
+                    this.#executionStatus.message = this.#savedSubmission.cancelRequested ? "Cancelling calculation…" : "";
+                    if (this.#savedSubmission.cancelRequested && job.status !== "cancelling") await this.jobs.action(job.jobId, "cancel");
                     return;
                 }
-                if (job.status === "ready" && !this.#record.cancelRequested) {
-                    this.#state.result = job; this.#state.resultIntent = this.#record.intent;
-                    this.#state.resultTiming = this.trace ?? null;
-                    this.#state.message = "Calculation complete.";
-                } else if (["failed", "interrupted"].includes(job.status) && !this.#record.cancelRequested) {
-                    this.#state.message = job.error?.detail ?? "Calculation interrupted. Click Calculate to try again.";
-                } else if (this.#record.cancelRequested || job.status === "cancelled") {
-                    this.#state.message = this.#desired ? "Waiting for the latest sampling box…" : "Calculation cancelled.";
+                if (job.status === "ready" && !this.#savedSubmission.cancelRequested) {
+                    this.#executionStatus.result = job; this.#executionStatus.resultIntent = this.#savedSubmission.intent;
+                    this.#executionStatus.resultTiming = this.trace ?? null;
+                    this.#executionStatus.message = "Calculation complete.";
+                } else if (["failed", "interrupted"].includes(job.status) && !this.#savedSubmission.cancelRequested) {
+                    this.#executionStatus.message = job.error?.detail ?? "Calculation interrupted. Click Calculate to try again.";
+                } else if (this.#savedSubmission.cancelRequested || job.status === "cancelled") {
+                    this.#executionStatus.message = this.#pendingCalculation ? "Waiting for the latest sampling box…" : "Calculation cancelled.";
                 }
                 this.jobs.tracked.delete(job.jobId);
-                this.storage.clear(); this.#record = null; this.#state.current = null;
+                this.storage.clear(); this.#savedSubmission = null; this.#executionStatus.current = null;
                 this.trace = null;
-                this.#state.phase = "idle";
+                this.#executionStatus.phase = "idle";
             }
-            if (!this.#desired) return;
-            const target = this.#desired;
-            this.#state.phase = "planning";
-            this.#state.message = "Checking calculation size…";
+            if (!this.#pendingCalculation) return;
+            const target = this.#pendingCalculation;
+            this.#executionStatus.phase = "planning";
+            this.#executionStatus.message = "Checking calculation size…";
             this.#publish();
             if (target.plan && Date.parse(target.plan.expiresAt) <= Date.now()) {
                 this.plansToRelease.add(target.plan.planId);
                 target.plan = null;
                 await this.#releasePlans();
             }
-            if (target !== this.#desired || this.destroyed) return;
+            if (target !== this.#pendingCalculation || this.destroyed) return;
             let plan;
             // Aborting fetch cannot acknowledge native cleanup, and can lose the
             // ID of a plan already committed behind a proxy. Keep this bounded
@@ -258,68 +266,68 @@ export class CalculationExecutor {
             const planningStarted = this.now();
             const planReused = !!target.plan;
             try { plan = target.plan ?? await this.api.planCalculation(target.intent); }
-            catch (error) { if (target !== this.#desired || error.name === "AbortError") return; throw error; }
+            catch (error) { if (target !== this.#pendingCalculation || error.name === "AbortError") return; throw error; }
             const planningFinished = this.now();
-            if (target !== this.#desired || this.destroyed) {
+            if (target !== this.#pendingCalculation || this.destroyed) {
                 this.plansToRelease.add(plan.planId);
                 await this.#releasePlans();
                 return;
             }
             target.plan = plan;
             if (target.automatic && !this.canAutoSubmit(plan, target.intent)) {
-                this.#state.plan = plan;
-                this.#reviewIntent = target.intent;
-                this.#state.manualRequired = true;
-                this.#desired = null;
-                this.#state.phase = "idle";
-                this.#state.message = "Large or explicit area · Calculate to update.";
+                this.#executionStatus.plan = plan;
+                this.#confirmationCalculation = target.intent;
+                this.#executionStatus.manualRequired = true;
+                this.#pendingCalculation = null;
+                this.#executionStatus.phase = "idle";
+                this.#executionStatus.message = "Large or explicit area · Calculate to update.";
                 return;
             }
             const record = { intent: target.intent, automatic: target.automatic, cancelRequested: false,
                 pending: { planId: plan.planId, requestId: this.requestId() }, jobId: null };
             this.storage.write(record);
-            this.#record = record;
+            this.#savedSubmission = record;
             this.trace = { planningStarted, planningFinished, planReused, serverPlan: plan.timing ?? null };
-            this.#desired = null;
+            this.#pendingCalculation = null;
         } catch (error) {
-            this.#blocked = true;
-            if (this.#desired?.plan) this.plansToRelease.add(this.#desired.plan.planId);
-            this.#desired = null;
-            this.#state.phase = "error";
-            this.#state.message = `${error.message}${this.#record ? " Recover / retry to confirm or cancel the same job safely." : " Click Calculate or select a new sampling box to retry."}`;
+            this.#retryRequired = true;
+            if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
+            this.#pendingCalculation = null;
+            this.#executionStatus.phase = "error";
+            this.#executionStatus.message = `${error.message}${this.#savedSubmission ? " Recover / retry to confirm or cancel the same job safely." : " Click Calculate or select a new sampling box to retry."}`;
         } finally {
             if (this.destroyed) await this.#releasePlans().catch(() => {});
-            this.#advanceRunning = false;
+            this.#isAdvancing = false;
             this.#publish();
             // Newest intent waits for both old metadata and acknowledged cleanup.
-            if (!this.#blocked && !this.destroyed && !this.#record &&
-                (this.#desired || this.plansToRelease.size)) {
+            if (!this.#retryRequired && !this.destroyed && !this.#savedSubmission &&
+                (this.#pendingCalculation || this.plansToRelease.size)) {
                 queueMicrotask(() => void this.#advance());
             }
         }
-        if (this.#record?.pending && !this.#blocked) await this.#advance();
-        else if (this.#desired && !this.#blocked) await this.#advance();
+        if (this.#savedSubmission?.pending && !this.#retryRequired) await this.#advance();
+        else if (this.#pendingCalculation && !this.#retryRequired) await this.#advance();
     }
 
     /** Consume shared progress without replacing current result with an older job. @return {void} */
     #receiveJobs() {
-        this.#state.jobs = this.jobs.jobs.filter(job => job.operation === "raster.aggregate.v1");
-        this.#state.historyError = this.jobs.error;
-        if (this.#state.result) {
-            this.#state.result = this.jobs.jobs.find(job => job.jobId === this.#state.result.jobId) ?? this.#state.result;
+        this.#executionStatus.jobs = this.jobs.jobs.filter(job => job.operation === "raster.aggregate.v1");
+        this.#executionStatus.historyError = this.jobs.error;
+        if (this.#executionStatus.result) {
+            this.#executionStatus.result = this.jobs.jobs.find(job => job.jobId === this.#executionStatus.result.jobId) ?? this.#executionStatus.result;
         }
-        if (this.#record?.jobId) {
-            this.#state.current = this.jobs.jobs.find(job => job.jobId === this.#record.jobId) ?? this.#state.current;
-            if (!this.#advanceRunning) void this.#advance();
+        if (this.#savedSubmission?.jobId) {
+            this.#executionStatus.current = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.current;
+            if (!this.#isAdvancing) void this.#advance();
         }
         this.#publish();
     }
 
     /** Apply an explicit history action. @param {string} id Job ID. @param {string} action Intent. @return {Promise<void>} Action. */
     async jobAction(id, action) {
-        if (id === this.#record?.jobId && action === "cancel") { this.stop(); return; }
+        if (id === this.#savedSubmission?.jobId && action === "cancel") { this.stop(); return; }
         try { await this.jobs.action(id, action); }
-        catch (error) { this.#state.message = error.message; this.#publish(); }
+        catch (error) { this.#executionStatus.message = error.message; this.#publish(); }
     }
 
     /** Notify the owner with coherent status and area-associated activity.
@@ -328,17 +336,17 @@ export class CalculationExecutor {
     #publish() {
         if (this.destroyed) return;
         this.onChange(this.snapshot);
-        const active = this.#record && !this.#record.cancelRequested && !this.#blocked;
-        this.onActivity(active ? this.#record.intent.area : null);
+        const active = this.#savedSubmission && !this.#savedSubmission.cancelRequested && !this.#retryRequired;
+        this.onActivity(active ? this.#savedSubmission.intent.area : null);
     }
 
     /** Detach browser work, retaining server/recovery records. @return {void} */
     destroy() {
         this.destroyed = true;
         this.#discardReview();
-        if (this.#desired?.plan) this.plansToRelease.add(this.#desired.plan.planId);
-        this.#desired = null;
+        if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
+        this.#pendingCalculation = null;
         this.unsubscribe(); this.onActivity(null);
-        if (!this.#advanceRunning) void this.#releasePlans().catch(() => {});
+        if (!this.#isAdvancing) void this.#releasePlans().catch(() => {});
     }
 }
