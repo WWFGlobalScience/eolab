@@ -746,11 +746,13 @@ async function initializeCatalog(
     });
     const processingApi = new ProcessingApiClient();
     const processingJobs = new ProcessingJobs(processingApi);
+    /** Read current raster identities and sampling area. @return {{sources: Object[], area: Object|null}} Current Processing context. */
     const processingContext = () => ({
         sources: mapLayerController.snapshots().filter(layer => layer.datasetKind === "raster")
             .map(layer => clipSource(layer.item)),
         area: rasterVisualization?.getSelectedArea() ?? null,
     });
+    /** Open and focus the shared sampling controls. @return {void} */
     const editProcessingArea = () => {
         mapInspection.showHistogram();
         document.querySelector("#raster-sampling-disclosure").open = true;
@@ -770,20 +772,10 @@ async function initializeCatalog(
         api: processingApi, jobs: processingJobs, view: new DownloadsView(),
         onInspectCalculation: id => calculations.inspect(id),
         storage: new PendingSubmissionStorage(browserSessionStorage()),
-        getContext: () => ({
-            sources: mapLayerController.snapshots()
-                .filter(layer => layer.datasetKind === "raster")
-                .map(layer => clipSource(layer.item)),
-            area: rasterVisualization?.getSelectedArea() ?? null,
-        }),
+        getContext: processingContext,
         onOpen: () => mapInspection.showDownloads(),
         onClose: () => mapInspection.hideDownloads(),
-        onEditArea: () => {
-            mapInspection.showHistogram();
-            document.querySelector("#raster-sampling-disclosure").open = true;
-            document.querySelector("#raster-sampling-vector-disclosure").open = true;
-            document.querySelector("#raster-sampling-disclosure summary").focus();
-        },
+        onEditArea: editProcessingArea,
     });
     mapLayerController.onDownload = (key) => {
         const record = mapLayerController.getRecord(key);
