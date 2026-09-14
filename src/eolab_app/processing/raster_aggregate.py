@@ -338,7 +338,7 @@ def create_aggregate(
     read_count = tile_count = completed_blocks = 0
     alias = next(iter(spec.sources))
     roots = [compile_expression(item.expression, alias) for item in spec.calculations]
-    reducers = [Calculation(root) for root in roots]
+    calculations = [Calculation(root) for root in roots]
     nodes = sum(sum(1 for _ in walk(root)) for root in roots)
     require_signature(path, spec.sourceSignature)
     with rasterio.Env(
@@ -467,8 +467,8 @@ def create_aggregate(
                             )
                         mask_seconds += time.perf_counter() - mask_started
                         reduction_started = time.perf_counter()
-                        for reducer in reducers:
-                            reducer.update(data, valid, hectares, area_valid)
+                        for calculation in calculations:
+                            calculation.process_tile(data, valid, hectares, area_valid)
                         reduction_seconds += time.perf_counter() - reduction_started
                         tile_count += 1
                         # Release the tile before allocating the next one; no old
@@ -488,8 +488,8 @@ def create_aggregate(
     require_signature(path, spec.sourceSignature)
     calculate_started = time.perf_counter()
     rows = [
-        {"label": item.label, "expression": item.expression, **reducer.result()}
-        for item, reducer in zip(spec.calculations, reducers, strict=True)
+        {"label": item.label, "expression": item.expression, **calculation.result()}
+        for item, calculation in zip(spec.calculations, calculations, strict=True)
     ]
     final_reduction_seconds = time.perf_counter() - calculate_started
     calculation_seconds += final_reduction_seconds
@@ -520,7 +520,7 @@ def create_aggregate(
         execution=execution,
         readWindows=read_count,
         evaluationTiles=tile_count,
-        reducerUpdates=tile_count * len(reducers),
+        reducerUpdates=tile_count * len(calculations),
         readSeconds=read_seconds,
         calculationSeconds=calculation_seconds,
         resultWriteSeconds=time.perf_counter() - writing_started,
