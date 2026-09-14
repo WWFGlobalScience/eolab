@@ -355,7 +355,14 @@ export class CalculationExecutor {
         this.#notifyListeners();
     }
 
-    /** Apply an explicit history action. @param {string} id Job ID. @param {string} action Intent. @return {Promise<void>} Action. */
+    /** Cancel or delete a job selected in History & exports.
+     * Cancelling this executor's current job also clears its pending replacement.
+     * Other actions go through the shared job observer, which refreshes history.
+     * Request failures are reported through the execution status callback.
+     * @param {string} id Processing job ID selected by the user.
+     * @param {"cancel"|"delete"} action Cancel running work or delete its retained result.
+     * @return {Promise<void>} Completion of the requested action or error reporting.
+     */
     async jobAction(id, action) {
         if (id === this.#savedSubmission?.jobId && action === "cancel") { this.stop(); return; }
         try { await this.jobs.action(id, action); }
