@@ -321,16 +321,26 @@ def stable_selection_mask(
 def create_aggregate(
     path: Path, spec: AggregateSpec, directory: Path, limits: RasterAggregateLimits
 ) -> AggregateArtifact:
-    """Reduce native blocks to a small validated CSV and provenance artifact.
+    """Calculate summary statistics for a selected area of a raster.
+
+    Read the raster in blocks, exclude nodata pixels and pixels outside the
+    selected area, and evaluate the expressions in spec. Write the results
+    to CSV and record the inputs and calculation details in a provenance file.
 
     Args:
-        path: Source reauthorized by the worker.
-        spec: Reviewed immutable intent and metadata plan.
-        directory: Confined private attempt directory.
-        limits: Native execution policy matching admission.
+        path: Path to the input raster.
+        spec: Expressions to evaluate, area to summarize, expected source
+            signature, and grid produced by plan_aggregate.
+        directory: Existing directory for result files and progress updates.
+        limits: Limits on raster reads, memory use, and geometry processing.
 
     Returns:
-        Final closed artifact metadata and bounded inline result rows.
+        An AggregateArtifact containing the calculated values, performance
+        timings, and the CSV filename, size, and checksum.
+
+    Raises:
+        ProcessingError: If the source or grid differs from the plan, or
+            the calculation exceeds a processing limit.
     """
     started = time.perf_counter()
     read_seconds = calculation_seconds = 0.0

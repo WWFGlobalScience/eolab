@@ -117,22 +117,50 @@ def build_stac_item(source_root: Path, geotiff_path: Path) -> dict[str, Any]:
             "proj:shape": [dataset.height, dataset.width],
             "proj:transform": list(dataset.transform)[:6],
         }
+        # Curated metadata is opt-in; ordinary rasters retain existing behavior.
+        tags = dataset.tags()
+        if title := tags.get("EOLAB_TITLE"):
+            properties["title"] = title
+        if summary := tags.get("TIFFTAG_IMAGEDESCRIPTION"):
+            properties["description"] = f"{summary} {description}"
+        start = tags.get("EOLAB_START_DATETIME")
+        end = tags.get("EOLAB_END_DATETIME")
+        if start is not None or end is not None:
+            if not start or not end:
+                raise ValueError("Both EOLAB_START_DATETIME and EOLAB_END_DATETIME are required")
+            start_time = _parse_acquisition_datetime(start)
+            end_time = _parse_acquisition_datetime(end)
+            if start_time > end_time:
+                raise ValueError("GeoTIFF temporal interval is reversed")
+            properties.update(datetime=None,start_datetime=_format_datetime(start_time),
+                              end_datetime=_format_datetime(end_time))
+            properties["description"] = summary or "Raster summarizes the specified temporal interval."
+            if used_suggested_warp_bounds:
+                properties["description"] += f" {SUGGESTED_WARP_BOUNDS_DESCRIPTION}"
+        for tag, key in (("EOLAB_LICENSE", "license"), ("EOLAB_ATTRIBUTION", "eolab:attribution"),
+                         ("EOLAB_SOURCE", "eolab:source_url")):
+            if value := tags.get(tag):
+                properties[key] = value
         if epsg_code := dataset.crs.to_epsg():
             properties["proj:epsg"] = epsg_code
         else:
             properties["proj:wkt2"] = dataset.crs.to_wkt()
 
         raster_bands = []
-        for data_type, nodata_value in zip(
+        for band_index, (data_type, nodata_value) in enumerate(zip(
             dataset.dtypes,
             dataset.nodatavals,
             strict=True,
-        ):
+        ),start=1):
             band: dict[str, Any] = {
                 "data_type": STAC_RASTER_DATA_TYPES.get(data_type, data_type)
             }
             if nodata_value is not None:
                 band["nodata"] = _serialize_nodata(nodata_value)
+            if band_description := dataset.descriptions[band_index-1]:
+                band["description"] = band_description
+            if unit := dataset.units[band_index-1]:
+                band["unit"] = unit
             raster_bands.append(band)
         source_metadata = {
             RASTER_SOURCE_SIGNATURE_FIELD: (
@@ -164,7 +192,7 @@ def build_stac_item(source_root: Path, geotiff_path: Path) -> dict[str, Any]:
             "data": {
                 "href": geotiff_path.resolve().as_uri(),
                 "type": media_type,
-                "title": relative_path_text,
+                "title": properties["title"],
                 "roles": ["data"],
                 "updated": _format_datetime(filesystem_modified_at),
                 "file:size": file_status.st_size,
