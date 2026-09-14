@@ -57,9 +57,10 @@ test("clearing raster coverage cancels automatic work without relabeling the pre
 
 /** Build the real summary/controller/job boundary against current HTML identities.
  * @param {Object} [overrides={}] API fault overrides. @param {Map} [data=new Map()] Session storage.
- * @param {Object} [browserContext={}] Clipboard capability. @return {Object} Observable workflow harness.
+ * @param {Object} [browserContext={}] Clipboard capability.
+ * @param {Object} [context] Current catalog sources and sampling area. @return {Object} Observable workflow harness.
  */
-function fixture(overrides = {}, data = new Map(), browserContext = {}) {
+function fixture(overrides = {}, data = new Map(), browserContext = {}, context = {sources:[source,resistance],area:box(77)}) {
     let serial = 0, jobSerial = 0, elapsed = 0;
     const timers = new Map(), requests = [], server = new Map(), plans = new Map();
     const clock = { setTimeout(fn, delay) { timers.set(++serial, { fn, delay }); return serial; }, clearTimeout(id) { timers.delete(id); } };
@@ -84,7 +85,7 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}) {
     const document = new SummaryControlDocument();
     const view = new SummaryStatisticsView(document, browserContext);
     let controller;
-    controller = new SummaryStatisticsController({api,jobs,storage,view,clock,now:()=>elapsed,getContext:()=>({sources:[source,resistance],area:box(77)}),
+    controller = new SummaryStatisticsController({api,jobs,storage,view,clock,now:()=>elapsed,getContext:()=>context,
         onOpen:()=>controller.setActive(true),onClose(){},onEditArea(){},requestId:()=>`request-${String(jobSerial).padStart(16,"0")}`});
     const tick = async (delay = 700) => { const due=[...timers.entries()].filter(([,t])=>t.delay===delay);for(const[id,t]of due){timers.delete(id);t.fn();}await flush(); };
     const finish = async (status="ready", values=["12.5"]) => {
@@ -374,6 +375,100 @@ test("opening and tab switching preserve cards and do not run native calculation
     h.controller.request(card.id,"manual");await flush();await h.finish();
     h.controller.setActive(false);h.controller.open();await h.tick();assert.equal(h.submits(),1);
     assert.equal(card.current,true);
+});
+
+test("histogram action opens and runs all valid configured cards without Calculate, even in manual mode", async () => {
+    const h = fixture(); await h.open(); h.controller.setAutomatic(false);
+    h.controller.addStatistic("sum"); h.controller.addStatistic("custom");
+    const [mean, sum, invalid] = h.controller.state.statistics;
+    h.controller.editStatistic(sum.id, { source: resistance });
+    h.controller.editStatistic(invalid.id, { expression: "bad(a)" });
+    const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8");
+    const callback = main.slice(main.indexOf("onCalculateRequested: ") + "onCalculateRequested: ".length,
+        main.indexOf(",\n        onSamplingAreaChange:"));
+    const action = new Function("calculations", "clipSource", `return (${callback});`)(h.controller, item => item);
+    h.controller.setActive(false);
+    action(source, box(80)); action(source, box(80));
+    await h.tick();
+    assert.equal(h.controller.isActive, true);
+    assert.equal(h.submits(), 1, "repeat clicks during validation do not duplicate work");
+    assert.equal(h.plans.values().next().value.calculations[0].expression, "mean(a)");
+    assert.deepEqual(h.plans.values().next().value.area, box(80));
+    assert.equal(invalid.error, true);
+    assert.match(h.view.cards.get(invalid.id).status.textContent, /Unknown function bad/);
+    await h.finish("ready", ["4"]);
+    assert.equal(h.submits(), 2);
+    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.source.itemId, resistance.itemId);
+    await h.finish("ready", ["20"]);
+    assert.equal(mean.result.row.value, "4"); assert.equal(sum.result.row.value, "20");
+    assert.equal(invalid.result, null);
+    h.controller.destroy();
+});
+
+test("a histogram explicitly replaces a whole-raster scope with its previously selected box", async () => {
+    const h = fixture(); await h.open(); h.controller.setAutomatic(false);
+    h.controller.chooseArea("whole"); await h.tick();
+    h.controller.open(source, box(77)); h.controller.calculateSelection(true); await h.tick();
+    assert.equal(h.submits(), 1);
+    assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area, box(77));
+    h.controller.destroy();
+});
+
+test("explicit histogram actions still submit larger areas through existing server planning", async () => {
+    const h = fixture(); await h.open(); h.controller.setAutomatic(false);
+    const plan = h.api.planCalculation;
+    h.api.planCalculation = async intent => ({ ...await plan(intent), grid: { ...grid, nativeBlocks: 1000 } });
+    h.controller.open(source, { kind: "wholeRaster" }); h.controller.calculateSelection(true); await h.tick();
+    assert.equal(h.submits(), 1);
+    assert.equal(h.requests.filter(([kind]) => kind === "plan").length, 1);
+    h.controller.destroy();
+});
+
+test("opening with no area prompts for a map click instead of a number or Calculate button", async () => {
+    const h = fixture({}, new Map(), {}, { sources: [source], area: null }); await h.open();
+    const card = h.controller.state.statistics[0], row = h.view.cards.get(card.id);
+    assert.equal(h.submits(), 0);
+    assert.equal(h.requests.some(([kind]) => kind === "plan"), false);
+    assert.match(row.status.textContent, /^Click the map to calculate/);
+    assert.equal(row.status.classList.contains("is-awaiting-map"), true);
+    assert.equal(row.run.hidden, true); assert.equal(row.valueActions.hidden, true);
+    h.controller.setSelection(box(80)); h.controller.calculateSelection(); await h.tick();
+    assert.equal(h.submits(), 1);
+    assert.equal(row.status.classList.contains("is-awaiting-map"), false);
+    await h.finish(); assert.equal(card.current, true); assert.equal(row.valueActions.hidden, false);
+    h.controller.destroy();
+});
+
+test("no-area guidance preserves missing raster, invalid formula and vector selection feedback", async () => {
+    const h = fixture({}, new Map(), {}, { sources: [], area: null }); await h.open();
+    const card = h.controller.state.statistics[0], row = h.view.cards.get(card.id);
+    assert.equal(row.status.textContent, "Choose a raster");
+    h.controller.open(source, null); await h.tick();
+    h.controller.editStatistic(card.id, { expression: "bad(a)" }); await h.tick();
+    assert.match(row.status.textContent, /Unknown function bad/);
+    assert.equal(row.status.classList.contains("is-awaiting-map"), false);
+    h.controller.editStatistic(card.id, { expression: "mean(a)" }); await h.tick();
+    h.controller.chooseArea("vector"); await h.tick();
+    assert.equal(row.status.textContent, "Choose an area");
+    assert.equal(row.status.classList.contains("is-awaiting-map"), false);
+    assert.equal(h.submits(), 0); h.controller.destroy();
+});
+
+test("a new histogram action cancels old manual work before replacing it and rejects its late value", async () => {
+    const h = fixture(); await h.open(); h.controller.setAutomatic(false);
+    const card = h.controller.state.statistics[0], row = h.view.cards.get(card.id);
+    h.controller.open(source, box(77)); h.controller.calculateSelection(true); await h.tick(); await h.finish("ready", ["10"]);
+    h.controller.open(source, box(78)); h.controller.calculateSelection(true); await h.tick();
+    h.controller.setActive(false);
+    h.controller.open(source, box(79)); h.controller.calculateSelection(true); await h.tick();
+    assert.equal(h.requests.filter(([kind]) => kind === "cancel").length, 1);
+    assert.equal(h.submits(), 2, "replacement waits for cancellation acknowledgement");
+    assert.equal(row.root.classList.contains("is-previous"), true);
+    await h.finish("ready", ["999"]);
+    assert.equal(card.result.row.value, "10"); assert.equal(h.submits(), 3);
+    assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area, box(79));
+    await h.finish("ready", ["30"]); assert.equal(card.result.row.value, "30");
+    h.controller.destroy();
 });
 
 test("the summary Area selector offers inline vector controls and never calculates the old box while choosing polygons", async()=>{

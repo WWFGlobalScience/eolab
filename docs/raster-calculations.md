@@ -15,6 +15,12 @@ Edit a formula or choose an **Add statistic** preset. Formula checks wait for a
 700 ms pause in typing. Invalid formulas show an explanation. Choose **Calculate**
 when a card is ready. Opening the panel or renaming a card does not run it.
 
+From a histogram, **Summarize this area** opens the cards and runs all configured
+valid statistics over that area. The first card
+uses that histogram's raster; other cards keep their raster bindings. If no area
+has been selected, the result position says **Click the map to calculate**. Click
+the map to select a sampling box; the automatic-update policy below then applies.
+
 **Update statistics automatically**, in the dock's **More** menu, is on by default.
 With Summarize active, a new map box can update statistics automatically. Plans
 above 128 native blocks, 64 MiB decoded values/masks, or 25,000 estimated geometry
