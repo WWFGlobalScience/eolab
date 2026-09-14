@@ -319,7 +319,7 @@ def stable_selection_mask(
 
 
 def calculate_raster_statistics_for_area(
-    path: Path,
+    raster_path: Path,
     calculation_plan: AggregateSpec,
     directory: Path,
     limits: RasterAggregateLimits,
@@ -332,7 +332,7 @@ def calculate_raster_statistics_for_area(
     provenance file.
 
     Args:
-        path: Path to the input raster.
+        raster_path: Path to the input raster.
         calculation_plan: Expressions to evaluate, area to summarize,
             expected source signature, and grid produced by plan_aggregate.
         directory: Existing directory for result files and progress updates.
@@ -357,12 +357,12 @@ def calculate_raster_statistics_for_area(
     ]
     calculations = [Calculation(root) for root in roots]
     nodes = sum(sum(1 for _ in walk(root)) for root in roots)
-    require_signature(path, calculation_plan.sourceSignature)
+    require_signature(raster_path, calculation_plan.sourceSignature)
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
-        with rasterio.open(path) as dataset:
-            require_source(dataset, path)
+        with rasterio.open(raster_path) as dataset:
+            require_source(dataset, raster_path)
             source_ready = time.perf_counter()
             window, geometries = selection(dataset, calculation_plan.area, limits)
             selection_ready = time.perf_counter()
@@ -502,7 +502,7 @@ def calculate_raster_statistics_for_area(
                         calculation_plan.grid.nativeBlocks,
                     )
                     last_progress = time.monotonic()
-    require_signature(path, calculation_plan.sourceSignature)
+    require_signature(raster_path, calculation_plan.sourceSignature)
     calculate_started = time.perf_counter()
     rows = [
         {"label": item.label, "expression": item.expression, **calculation.result()}
@@ -582,7 +582,7 @@ def calculate_raster_statistics_for_area(
     (directory / "provenance.json").write_text(
         json.dumps(provenance, allow_nan=False), encoding="utf-8"
     )
-    require_signature(path, calculation_plan.sourceSignature)
+    require_signature(raster_path, calculation_plan.sourceSignature)
     return artifact
 
 
