@@ -77,7 +77,7 @@ export class CalculationExecutor {
         this.unsubscribe = jobs.subscribe(() => this.#receiveJobs());
     }
 
-    /** Read progress and whether work remains, without exposing mutable scheduler fields.
+    /** Read calculation progress and whether work remains.
      * @return {CalculationExecutionSnapshot} Current execution snapshot.
      */
     get snapshot() {
