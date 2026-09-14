@@ -101,8 +101,14 @@ export class CalculationExecutor {
         await this.#advance();
     }
 
-    /** Invalidate unaccepted intent and cancel obsolete automatic work. @return {void} */
-    invalidate() {
+    /** Drop a requested calculation that has not reached submission yet.
+     * The statistics controller calls this when the area or execution settings
+     * change. Stop and replacement requests also use it to discard older work.
+     * Release any unused plan and cancel an already-submitted automatic job.
+     * A submitted manual job continues unless stop() or execute() replaces it.
+     * @return {void}
+     */
+    discardPendingCalculation() {
         const target = this.#pendingCalculation;
         this.#pendingCalculation = null;
         this.#discardReview();
@@ -153,13 +159,13 @@ export class CalculationExecutor {
     executeIntent(intent, automatic = false) {
         if (this.destroyed) return;
         const snapshot = calculationIntent(intent);
-        if (this.#retryRequired && this.#savedSubmission) { this.invalidate(); this.#publish(); return; }
+        if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#publish(); return; }
         // Repeated manual actions cannot create two jobs for the same intent.
         if (!automatic && ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
             (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot)))) return;
         const plan = this.#executionStatus.plan && identity(snapshot) === identity(this.#confirmationCalculation) ? this.#executionStatus.plan : null;
         if (plan) this.#executionStatus.plan = null;
-        this.invalidate();
+        this.discardPendingCalculation();
         this.#retryRequired = false;
         this.#executionStatus.manualRequired = false;
         this.#pendingCalculation = { intent: snapshot, plan, automatic };
@@ -176,7 +182,7 @@ export class CalculationExecutor {
 
     /** Cancel this calculation; a later map click is a new explicit request. @return {void} */
     stop() {
-        this.invalidate();
+        this.discardPendingCalculation();
         this.#requestCancellation();
         if (!this.#savedSubmission) this.#executionStatus.message = "Calculation cancelled.";
         this.#publish();

@@ -173,7 +173,7 @@ test("explicit Run freezes intent, publishes measured progress and inline result
     const h=fixture();await h.run(false);
     assert.equal(h.view.state.current.progress.totalBlocks,4);
     assert.deepEqual(h.activity.at(-1),box(77));
-    h.controller.invalidate();assert.equal(h.requests.filter(r=>r[0]==="cancel").length,0);
+    h.controller.discardPendingCalculation();assert.equal(h.requests.filter(r=>r[0]==="cancel").length,0);
     await h.finish();assert.equal(h.view.state.result.result.rows[0].value,"12.5");
     assert.deepEqual(h.view.state.resultIntent.area,box(77));assert.equal(h.storage.read(),null);
     assert.equal(h.activity.at(-1),null);

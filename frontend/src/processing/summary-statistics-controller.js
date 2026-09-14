@@ -164,7 +164,7 @@ export class SummaryStatisticsController {
         const selecting = ["reading", "selected"].includes(selection.phase);
         if (selecting && !this.state.vectorSelecting) {
             this.invalidateBatch();
-            this.executor.invalidate();
+            this.executor.discardPendingCalculation();
             this.state.areaChoice = "vector";
             this.changeArea(null, false);
         }
@@ -187,7 +187,7 @@ export class SummaryStatisticsController {
         const target = chunkPixels(value);
         if (target === this.state.targetChunkPixels) return;
         this.invalidateBatch();
-        this.executor.invalidate();
+        this.executor.discardPendingCalculation();
         this.state.targetChunkPixels = target;
         for (const card of this.state.statistics) {
             card.plan = null; card.manualRequired = false; card.requested = null; card.error = false;
@@ -217,7 +217,7 @@ export class SummaryStatisticsController {
     changeArea(area, automatic) {
         if (same(area, this.state.area)) return;
         if (this.batch?.automatic || this.isActive) this.invalidateBatch();
-        this.executor.invalidate();
+        this.executor.discardPendingCalculation();
         this.state.area = area;
         for (const card of this.state.statistics) {
             card.plan = null; card.manualRequired = false; card.error = false;
