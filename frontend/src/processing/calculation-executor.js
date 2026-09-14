@@ -1,4 +1,4 @@
-/** One durable execution lane for validated Processing calculation intents. */
+/** Track one submitted calculation at a time, saving enough state to resume after reload. */
 import { ACTIVE_JOB_STATES } from "./jobs.js";
 import { ProcessingRequestError } from "./api.js";
 import { calculationIntent } from "./calculation-session.js";
@@ -31,7 +31,7 @@ function identity(value) { return JSON.stringify(value); }
  * @property {string} historyError Shared history retrieval error.
  */
 
-/** Own durable submission, cancellation, plan release and recovery for one lane. */
+/** Submit and track calculations, cancel replacements, and resume saved submissions after reload. */
 export class CalculationExecutor {
     /** Latest progress, confirmation plan and completed job for the status callback. @type {Object} */
     #executionStatus;
@@ -84,12 +84,16 @@ export class CalculationExecutor {
             unfinishedCalculation, recoverable: !!this.#savedSubmission && this.#retryRequired });
     }
 
-    /** Resume the same durable request or retry acknowledged plan cleanup.
-     * @return {Promise<void>} Progress on the existing lane; never a new job intent.
+    /** Retry a failed step using the saved submission or pending plan-release IDs.
+     * Called by Recover / retry; a lost submission response keeps its request key.
+     * @return {Promise<void>} Current progress without creating a new calculation request.
      */
-    async retry() { this.#retryRequired = false; await this.#advance(); }
+    async retry() { this.#retryRequired = false; await this.#processNextStep(); }
 
-    /** Recover accepted work; reload always pauses automatic sampling. @return {Promise<void>} Recovery. */
+    /** Resume observing the job or submission recovered from session storage.
+     * Storage marks recovered automatic jobs for cancellation; manual jobs continue.
+     * @return {Promise<void>} Initial job refresh and any submission/cancellation steps.
+     */
     async start() {
         if (this.#savedSubmission) {
             const { jobId } = this.#savedSubmission;
@@ -98,7 +102,7 @@ export class CalculationExecutor {
             catch (error) { this.#executionStatus.message = error.message; this.#retryRequired = true; this.#publish(); }
         }
         await this.jobs.refresh();
-        await this.#advance();
+        await this.#processNextStep();
     }
 
     /** Drop a requested calculation that has not reached submission yet.
@@ -115,16 +119,22 @@ export class CalculationExecutor {
         if (target?.plan) this.plansToRelease.add(target.plan.planId);
         if (!this.#savedSubmission) this.#executionStatus.phase = "idle";
         if (this.#savedSubmission?.automatic) this.#requestCancellation();
-        if (this.plansToRelease.size) void this.#advance();
+        if (this.plansToRelease.size) void this.#processNextStep();
     }
 
-    /** Mark durable cancellation before recovering uncertain submissions. @return {void} */
+    /** Save the cancellation request before contacting the server.
+     * Saving it in session storage lets reload continue the cancellation. If a
+     * submission response was lost, repeat that submission with the same request
+     * key to obtain its job ID, then cancel that job rather than creating another.
+     * A storage failure is reported; the in-memory cancellation still proceeds.
+     * @return {void}
+     */
     #requestCancellation() {
         if (!this.#savedSubmission) return;
         this.#savedSubmission.cancelRequested = true;
         try { this.storage.write(this.#savedSubmission); }
         catch (error) { this.#executionStatus.message = error.message; }
-        void this.#advance();
+        void this.#processNextStep();
     }
 
     /** Retain obsolete plan identities until the server acknowledges release. @return {void} */
@@ -177,7 +187,7 @@ export class CalculationExecutor {
                 : "Waiting for the latest sampling box…"
             : "Preparing calculation…";
         this.#publish();
-        void this.#advance();
+        void this.#processNextStep();
     }
 
     /** Cancel this calculation; a later map click is a new explicit request. @return {void} */
@@ -189,11 +199,14 @@ export class CalculationExecutor {
     }
 
     /**
-     * Drain one durable workflow before admitting the newest requested area.
-     * Unknown submissions retain their key; cancelling jobs retain their slot.
-     * @return {Promise<void>} Current progress, never an unbounded polling loop.
+     * Perform the next planning, submission, cancellation or completion step.
+     * Session storage preserves unfinished submission details across reloads.
+     * Reusing a request key after a lost response prevents duplicate jobs. Waiting
+     * until cancellation finishes prevents the replacement from overlapping the
+     * old job. Return while a job runs; the shared job observer calls back later.
+     * @return {Promise<void>} Completion of the currently possible API steps.
      */
-    async #advance() {
+    async #processNextStep() {
         if (this.#isAdvancing || this.destroyed || this.#retryRequired) return;
         this.#isAdvancing = true;
         try {
@@ -311,11 +324,11 @@ export class CalculationExecutor {
             // Newest intent waits for both old metadata and acknowledged cleanup.
             if (!this.#retryRequired && !this.destroyed && !this.#savedSubmission &&
                 (this.#pendingCalculation || this.plansToRelease.size)) {
-                queueMicrotask(() => void this.#advance());
+                queueMicrotask(() => void this.#processNextStep());
             }
         }
-        if (this.#savedSubmission?.pending && !this.#retryRequired) await this.#advance();
-        else if (this.#pendingCalculation && !this.#retryRequired) await this.#advance();
+        if (this.#savedSubmission?.pending && !this.#retryRequired) await this.#processNextStep();
+        else if (this.#pendingCalculation && !this.#retryRequired) await this.#processNextStep();
     }
 
     /** Consume shared progress without replacing current result with an older job. @return {void} */
@@ -327,7 +340,7 @@ export class CalculationExecutor {
         }
         if (this.#savedSubmission?.jobId) {
             this.#executionStatus.current = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.current;
-            if (!this.#isAdvancing) void this.#advance();
+            if (!this.#isAdvancing) void this.#processNextStep();
         }
         this.#publish();
     }
@@ -349,7 +362,10 @@ export class CalculationExecutor {
         this.onActivity(active ? this.#savedSubmission.intent.area : null);
     }
 
-    /** Detach browser work, retaining server/recovery records. @return {void} */
+    /** Stop local observation and release unused plans when the controller is destroyed.
+     * Submitted jobs and their session-storage records remain available after reload.
+     * @return {void}
+     */
     destroy() {
         this.destroyed = true;
         this.#discardReview();
