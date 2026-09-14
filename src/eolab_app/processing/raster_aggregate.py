@@ -319,7 +319,10 @@ def stable_selection_mask(
 
 
 def create_aggregate(
-    path: Path, spec: AggregateSpec, directory: Path, limits: RasterAggregateLimits
+    path: Path,
+    calculation_plan: AggregateSpec,
+    directory: Path,
+    limits: RasterAggregateLimits,
 ) -> AggregateArtifact:
     """Calculate summary statistics for a selected area of a raster.
 
@@ -329,8 +332,8 @@ def create_aggregate(
 
     Args:
         path: Path to the input raster.
-        spec: Expressions to evaluate, area to summarize, expected source
-            signature, and grid produced by plan_aggregate.
+        calculation_plan: Expressions to evaluate, area to summarize,
+            expected source signature, and grid produced by plan_aggregate.
         directory: Existing directory for result files and progress updates.
         limits: Limits on raster reads, memory use, and geometry processing.
 
@@ -346,21 +349,24 @@ def create_aggregate(
     read_seconds = calculation_seconds = 0.0
     mask_seconds = weights_seconds = reduction_seconds = 0.0
     read_count = tile_count = completed_blocks = 0
-    alias = next(iter(spec.sources))
-    roots = [compile_expression(item.expression, alias) for item in spec.calculations]
+    alias = next(iter(calculation_plan.sources))
+    roots = [
+        compile_expression(item.expression, alias)
+        for item in calculation_plan.calculations
+    ]
     calculations = [Calculation(root) for root in roots]
     nodes = sum(sum(1 for _ in walk(root)) for root in roots)
-    require_signature(path, spec.sourceSignature)
+    require_signature(path, calculation_plan.sourceSignature)
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
         with rasterio.open(path) as dataset:
             require_source(dataset, path)
             source_ready = time.perf_counter()
-            window, geometries = selection(dataset, spec.area, limits)
+            window, geometries = selection(dataset, calculation_plan.area, limits)
             selection_ready = time.perf_counter()
             ground = (
-                GroundArea(dataset, spec.area, limits)
+                GroundArea(dataset, calculation_plan.area, limits)
                 if any(node.op == "areaha" for root in roots for node in walk(root))
                 else None
             )
@@ -375,13 +381,13 @@ def create_aggregate(
                     limits,
                     ground.metadata if ground else None,
                     (
-                        spec.grid.execution.targetChunkPixels
-                        if spec.grid.execution
+                        calculation_plan.grid.execution.targetChunkPixels
+                        if calculation_plan.grid.execution
                         else None
                     ),
-                    include_execution=spec.grid.execution is not None,
+                    include_execution=calculation_plan.grid.execution is not None,
                 )
-                != spec.grid
+                != calculation_plan.grid
             ):
                 raise ProcessingError(
                     "plan_changed",
@@ -393,7 +399,7 @@ def create_aggregate(
             tile_side = (
                 AREA_TILE_SIDE if ground and not ground.rectilinear else TILE_SIDE
             )
-            execution = spec.grid.execution or execution_plan(
+            execution = calculation_plan.grid.execution or execution_plan(
                 window,
                 dataset.block_shapes[0],
                 dataset.width,
@@ -492,20 +498,25 @@ def create_aggregate(
                         directory,
                         "calculating",
                         completed_blocks,
-                        spec.grid.nativeBlocks,
+                        calculation_plan.grid.nativeBlocks,
                     )
                     last_progress = time.monotonic()
-    require_signature(path, spec.sourceSignature)
+    require_signature(path, calculation_plan.sourceSignature)
     calculate_started = time.perf_counter()
     rows = [
         {"label": item.label, "expression": item.expression, **calculation.result()}
-        for item, calculation in zip(spec.calculations, calculations, strict=True)
+        for item, calculation in zip(
+            calculation_plan.calculations, calculations, strict=True
+        )
     ]
     final_reduction_seconds = time.perf_counter() - calculate_started
     calculation_seconds += final_reduction_seconds
     reduction_seconds += final_reduction_seconds
     write_progress(
-        directory, "writing_results", completed_blocks, spec.grid.nativeBlocks
+        directory,
+        "writing_results",
+        completed_blocks,
+        calculation_plan.grid.nativeBlocks,
     )
     writing_started = time.perf_counter()
     result = directory / "result.csv"
@@ -525,7 +536,7 @@ def create_aggregate(
             )
     with result.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    source = next(iter(spec.sources.values()))
+    source = next(iter(calculation_plan.sources.values()))
     performance = AggregatePerformance(
         execution=execution,
         readWindows=read_count,
@@ -553,13 +564,15 @@ def create_aggregate(
         performance=performance.model_dump(mode="json"),
     )
     provenance = {
-        **spec.model_dump(mode="json", by_alias=True),
+        **calculation_plan.model_dump(mode="json", by_alias=True),
         "resolution": "native",
         "valueDomain": "stored",
-        "inclusion": "per_function" if spec.grid.groundArea else "cell_center",
+        "inclusion": (
+            "per_function" if calculation_plan.grid.groundArea else "cell_center"
+        ),
         "functionInclusion": (
             {"numeric": "cell_center", "areaha": "fractional_cell_intersection"}
-            if spec.grid.groundArea
+            if calculation_plan.grid.groundArea
             else {"numeric": "cell_center"}
         ),
         "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -568,7 +581,7 @@ def create_aggregate(
     (directory / "provenance.json").write_text(
         json.dumps(provenance, allow_nan=False), encoding="utf-8"
     )
-    require_signature(path, spec.sourceSignature)
+    require_signature(path, calculation_plan.sourceSignature)
     return artifact
 
 
