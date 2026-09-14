@@ -83,7 +83,7 @@ export class CalculationExecutor {
     get snapshot() {
         const isIdle = !this.#savedSubmission && !this.#pendingCalculation && !this.#isAdvancing &&
             (this.#retryRequired || this.plansToRelease.size === 0);
-        // The existing session-storage format calls the calculation settings "intent".
+        // Session storage names the calculation settings "intent".
         const unfinishedCalculation = this.#savedSubmission ? Object.freeze({ calculation: this.#savedSubmission.intent,
             context: this.#savedSubmission.context, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
         return Object.freeze({ ...this.#executionStatus, jobs: Object.freeze([...this.#executionStatus.jobs]),
