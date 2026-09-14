@@ -51,10 +51,10 @@ function fixture(overrides = {}, data = new Map()) {
     const controller = new CalculationExecutor(options);
     view.state=controller.snapshot;
     const intent = change => ({source,area:box(77),calculations:[{label:"Mean",expression:"mean(a)"}],...change});
-    const click = west => controller.executeIntent(intent({area:box(west)}), true);
+    const click = west => controller.execute(intent({area:box(west)}), true);
     const review = async () => {
         controller.canAutoSubmit=()=>false;
-        controller.executeIntent(intent(),true);
+        controller.execute(intent(),true);
         await flush();
         controller.canAutoSubmit=()=>true;
     };
@@ -64,7 +64,7 @@ function fixture(overrides = {}, data = new Map()) {
         server.set(old.jobId,{...old,status,result:status==="ready"?{url:`/api/processing/jobs/${old.jobId}/result`,provenanceUrl:`/api/processing/jobs/${old.jobId}/provenance`,rows:[{label:"Mean",expression:"mean(a)",value,valueType:"float",state:"ok",aggregates:[{function:"mean",matchedPixels:8,validPixels:8,invalidArithmeticPixels:0}]}]}:null});
         await jobs.refresh(); await flush();
     };
-    const run = async automatic => { controller.executeIntent(intent(),automatic); await flush(); };
+    const run = async automatic => { controller.execute(intent(),automatic); await flush(); };
     return {controller,api,jobs,storage,view,requests,server,plans,tick,finish,run,activity,data,options,click,review,intent,snapshots};
 }
 
@@ -118,7 +118,7 @@ test("intent is copied before asynchronous planning and no editor validation is 
     const h = fixture(); const pending = deferred(); const plan = h.api.planCalculation;
     h.api.planCalculation = async intent => { await pending.promise; return plan(intent); };
     const input = h.intent();
-    h.controller.executeIntent(input);
+    h.controller.execute(input);
     input.calculations[0].expression = "sum(a)";
     input.area.selectedBounds.west = 80;
     pending.resolve(); await flush();
@@ -161,7 +161,7 @@ test("superseding an uncertain automatic submission persists cancellation before
 test("double Calculate during size checking admits only one manual job", async () => {
     const response = deferred(); const h = fixture(); const original = h.api.planCalculation;
     h.api.planCalculation = async intent => { const plan = await original(intent); await response.promise; return plan; };
-    h.controller.executeIntent(h.intent()); h.controller.executeIntent(h.intent());
+    h.controller.execute(h.intent()); h.controller.execute(h.intent());
     response.resolve(); await flush();
     assert.equal(h.requests.filter(r => r[0] === "plan").length, 1);
     assert.equal(h.requests.filter(r => r[0] === "submit").length, 1);
@@ -217,7 +217,7 @@ test("superseded HTTP planning drains before replacement and releases its return
     });
     h.api.planCalculation = client.planCalculation.bind(client);
     h.api.discardPlan = client.discardPlan.bind(client);
-    h.controller.executeIntent(h.intent(),true); await flush();
+    h.controller.execute(h.intent(),true); await flush();
     for (const west of [78,79,80]) { h.click(west); await h.tick(650); }
     assert.equal(calls.filter(([url])=>url.endsWith('/plan')).length, 1,
         'a browser abort must not free the server planning lane');
@@ -286,7 +286,7 @@ test("destroy releases completed and late planning results without submitting", 
 test("click during submission cancels its eventual accepted job before admitting a replacement", async () => {
     const h=fixture();const acceptance=deferred();const original=h.api.submitCalculation;
     h.api.submitCalculation=async value=>{const job=await original(value);await acceptance.promise;return job;};
-    h.controller.executeIntent(h.intent(),true);await flush();
+    h.controller.execute(h.intent(),true);await flush();
     h.click(79);await h.tick(650);
     assert.equal(h.storage.read().cancelRequested,true);
     acceptance.resolve();await flush();assert.equal(h.view.state.current.status,"cancelling");
@@ -350,11 +350,11 @@ for (const [kind, code, message] of [
 
 test("expired estimates refresh automatically and unavailable storage refuses submission", async () => {
     const h=fixture();await h.review();h.view.state.plan.expiresAt="2000-01-01";
-    await h.controller.executeIntent(h.intent());await flush();
+    await h.controller.execute(h.intent());await flush();
     assert.equal(h.requests.filter(r=>r[0]==="plan").length,2);
     assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
     await h.finish();
-    h.controller.storage=new CalculationSessionStorage(null);await h.controller.executeIntent(h.intent());await flush();
+    h.controller.storage=new CalculationSessionStorage(null);await h.controller.execute(h.intent());await flush();
     assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);assert.match(h.view.state.message,/storage/);
 });
 
@@ -411,7 +411,7 @@ test("card confirmation reuses only an unexpired plan for the complete reviewed 
     for (const change of changes) {
         const h=fixture();await h.review();
         const reviewed=h.controller.snapshot.plan;
-        h.controller.executeIntent({...h.intent(),...change});await flush();
+        h.controller.execute({...h.intent(),...change});await flush();
         const reused=Object.keys(change).length===0;
         assert.equal(h.requests.filter(r=>r[0]==="plan").length,reused?1:2);
         assert.equal(h.storage.read().pending,null);
@@ -421,7 +421,7 @@ test("card confirmation reuses only an unexpired plan for the complete reviewed 
     }
     const h=fixture();await h.review();
     const expired=h.controller.snapshot.plan;expired.expiresAt="2000-01-01";
-    h.controller.executeIntent(h.intent());await flush();
+    h.controller.execute(h.intent());await flush();
     assert.equal(h.requests.filter(r=>r[0]==="plan").length,2);
     await h.finish(); assert.equal(h.controller.snapshot.resultTiming.planReused,false);
     assert.ok(h.requests.findIndex(r=>r[0]==="discard"&&r[1]===expired.planId)<h.requests.findIndex(r=>r[0]==="submit"));
@@ -430,7 +430,7 @@ test("card confirmation reuses only an unexpired plan for the complete reviewed 
 test("server rejection of a reused plan does not submit a replacement or accept stale work", async () => {
     const h=fixture();await h.review();
     h.api.submitCalculation=async()=>{throw new ProcessingRequestError("The raster changed. Create a new plan.",409);};
-    h.controller.executeIntent(h.intent());await flush();
+    h.controller.execute(h.intent());await flush();
     assert.equal(h.requests.filter(r=>r[0]==="plan").length,1);
     assert.equal(h.controller.snapshot.unfinishedCalculation,null);
     assert.equal(h.controller.snapshot.admission,"manual");

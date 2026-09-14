@@ -378,7 +378,7 @@ export class SummaryStatisticsController {
         this.batch = { intent, previousJobId: execution.result?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Checking calculation size…"; }
-        this.executor.executeIntent(intent, this.batch.automatic);
+        this.executor.execute(intent, this.batch.automatic);
         this.render();
     }
 

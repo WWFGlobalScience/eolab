@@ -163,17 +163,18 @@ export class CalculationExecutor {
         }
     }
 
-    /** Execute a validated card batch; preserve matching confirmation and idempotency.
-     * Formula syntax belongs to the caller's validation workflow. This boundary
-     * snapshots catalog identity, area and calculation structure before any work.
-     * @param {Object} intent Complete public calculation intent.
+    /** Request execution of a raster calculation, replacing older pending work.
+     * The statistics controller supplies a raster, area, formulas and optional
+     * batch size after checking formula syntax. Copy those settings so edits cannot
+     * change an in-progress request; retain any matching confirmation plan.
+     * @param {Object} calculation Raster source, sampling area, labeled formulas and optional targetChunkPixels.
      * @param {boolean} [automatic=false] Whether caller policy must approve submission.
      * @return {void}
-     * @throws {TypeError} If the intent violates the calculation contract.
+     * @throws {TypeError} If the calculation settings violate the input contract.
      */
-    executeIntent(intent, automatic = false) {
+    execute(calculation, automatic = false) {
         if (this.destroyed) return;
-        const snapshot = calculationIntent(intent);
+        const snapshot = calculationIntent(calculation);
         if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#publish(); return; }
         // Repeated manual actions cannot create two jobs for the same intent.
         if (!automatic && ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
