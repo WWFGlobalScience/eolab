@@ -793,7 +793,7 @@ async function initializeCatalog(
         leaflet: L,
         onTileError: reportMapTileError,
         onDownloadRequested: (item, area) => downloads.open(clipSource(item), area),
-        onCalculateRequested: (item, area) => calculations.open(clipSource(item), area),
+        onCalculateRequested: (item, area) => calculations.summarizeArea(clipSource(item), area),
         onSamplingAreaChange: area => calculations.setSelection(area),
         onHistogramRequested: () => mapInspection.showHistogram(null, {
             activate: !selectingMapClick && !calculations.isActive,

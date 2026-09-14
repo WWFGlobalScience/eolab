@@ -154,8 +154,9 @@ export class SummaryStatisticsView {
                 ? `Calculating · ${message}` : message;
             row.status.hidden = !row.status.textContent;
             row.status.classList.toggle("is-error", card.error);
+            row.status.classList.toggle("is-awaiting-map", !!card.awaitingMap);
             row.status.classList.toggle("is-working", card.pending || !!card.requested || card.checking);
-            row.run.hidden = card.current || card.pending || !!card.requested || !!state.vectorSelecting;
+            row.run.hidden = !state.area || card.current || card.pending || !!card.requested || !!state.vectorSelecting;
             row.run.disabled = !card.valid || card.checking || !card.source || !state.area || state.recoverable;
             row.stop.hidden = !card.pending && !card.requested && !state.vectorSelecting;
             row.statusRow.hidden = row.status.hidden && row.run.hidden && row.stop.hidden;

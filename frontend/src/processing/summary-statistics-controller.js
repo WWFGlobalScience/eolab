@@ -117,7 +117,7 @@ export class SummaryStatisticsController {
         if (area !== undefined || (!this.state.area && this.state.areaChoice === "selection")) {
             this.state.areaChoice = this.state.vectorArea && catalogSelectionsEqual(selected?.catalogSelection, this.state.vectorArea.selection) ? "vector" : "selection";
             this.setSelection(selected, false);
-            if (this.state.areaChoice === "vector") this.changeArea(selected, false);
+            this.changeArea(this.state.selectedArea, false);
         }
         for (const card of this.state.statistics) {
             const next = (source && card === this.state.statistics[0]) ? source : card.source ?? sources[0] ?? null;
@@ -125,6 +125,25 @@ export class SummaryStatisticsController {
             else if (!card.valid && !card.checking) this.validateLater(card, false);
         }
         this.onOpen();
+        this.render();
+    }
+
+    /** Open a histogram's area and execute the configured statistics as an explicit action.
+     * Keep other cards' raster bindings, validate formulas, and cancel superseded work
+     * before admitting replacement batches. Repeated clicks coalesce while work is pending.
+     * @param {Object} source Catalog raster bound to the first statistic.
+     * @param {Object|null} area Histogram sampling area; null waits for map selection.
+     * @return {void}
+     */
+    summarizeArea(source, area) {
+        this.open(source, area);
+        this.state.saved = null;
+        if (this.batch?.cards.some(entry => {
+            const card = this.state.statistics.find(item => item.id === entry.id);
+            return !card || entry.key !== this.key(card);
+        })) this.invalidateBatch();
+        for (const card of this.state.statistics) this.request(card.id, "manual");
+        if (!this.state.statistics.length) this.view.focusAddStatistic?.();
         this.render();
     }
 
@@ -472,8 +491,13 @@ export class SummaryStatisticsController {
         if (this.destroyed) return;
         for (const card of this.state.statistics) {
             card.current = !!card.result && card.result.key === this.key(card) && !card.pending && !card.requested && !card.checking && !card.error && !card.cancelled;
+            card.awaitingMap = !this.state.area && this.state.areaChoice === "selection" && !!card.source && card.valid &&
+                !card.pending && !card.checking && !card.error && !card.cancelled && !this.state.vectorSelecting && !this.state.selectionMessage;
             if (!card.pending && !card.checking && !card.error) {
-                card.message = !card.source ? "Choose a raster" : !this.state.area ? "Choose an area" : !card.valid ? "Enter a formula"
+                card.message = !card.source ? "Choose a raster" : card.awaitingMap ? (this.state.automatic
+                    ? "Click the map to calculate. Statistics use the sampling box around your click."
+                    : "Click the map to select an area, then choose Calculate.")
+                    : !card.valid ? "Enter a formula" : !this.state.area ? "Choose an area"
                     : card.requested ? "Ready to calculate · queued" : card.current ? "Up to date"
                     : card.manualRequired ? "Ready to calculate · explicit confirmation needed" : "Ready to calculate";
             }
