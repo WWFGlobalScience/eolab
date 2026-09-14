@@ -53,10 +53,10 @@ function fixture(overrides = {}, data = new Map()) {
     const intent = change => ({source,area:box(77),calculations:[{label:"Mean",expression:"mean(a)"}],...change});
     const click = west => controller.execute(intent({area:box(west)}), true);
     const review = async () => {
-        controller.canAutoSubmit=()=>false;
+        controller.canRunAutomatically=()=>false;
         controller.execute(intent(),true);
         await flush();
-        controller.canAutoSubmit=()=>true;
+        controller.canRunAutomatically=()=>true;
     };
     const tick = async delay => { const due=[...timers.entries()].filter(([,item])=>item.delay===delay); for(const [key,item]of due){timers.delete(key);item.fn();}await flush(); };
     const finish = async (status="ready",value="12.5") => {

@@ -57,13 +57,13 @@ export class CalculationExecutor {
      * @param {function(CalculationExecutionSnapshot):void} dependencies.onChange Updates the owning statistics controller with execution progress.
      * @param {function(Object|null):void} [dependencies.onActivity] Sends the working sampling area (or null) to composition for its activity indicator.
      * @param {function():string} [dependencies.requestId] Idempotency key factory.
-     * @param {function(Object,Readonly<Object>):boolean} [dependencies.canAutoSubmit] Caller-owned automatic admission policy.
+     * @param {function(Object,Readonly<Object>):boolean} [dependencies.canRunAutomatically] Given a plan and calculation, returns whether an edit/map update may submit without a Calculate click.
      * @param {function():number} [dependencies.now] Monotonic timestamp in milliseconds, normally performance.now().
      */
     constructor({ api, jobs, storage, onChange, onActivity = () => {},
-        requestId = () => crypto.randomUUID(), canAutoSubmit = () => true,
+        requestId = () => crypto.randomUUID(), canRunAutomatically = () => true,
         now = () => performance.now() }) {
-        Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, canAutoSubmit, now });
+        Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, canRunAutomatically, now });
         this.#executionStatus = { plan: null, phase: "idle", message: "", manualRequired: false,
             result: null, resultIntent: null, resultTiming: null, current: null, jobs: [], historyError: "" };
         this.#savedSubmission = storage.read();
@@ -169,7 +169,7 @@ export class CalculationExecutor {
      * batch size after checking formula syntax. Copy those settings so edits cannot
      * change an in-progress request; retain any matching confirmation plan.
      * @param {Object} calculation Raster source, sampling area, labeled formulas and optional targetChunkPixels.
-     * @param {boolean} [automatic=false] Whether caller policy must approve submission.
+     * @param {boolean} [automatic=false] True for an edit/map-triggered update; false for an explicit Calculate action.
      * @return {void}
      * @throws {TypeError} If the calculation settings violate the input contract.
      */
@@ -304,7 +304,9 @@ export class CalculationExecutor {
                 return;
             }
             target.plan = plan;
-            if (target.automatic && !this.canAutoSubmit(plan, target.intent)) {
+            // Automatic updates must meet the caller's size/scope policy. A manual
+            // Calculate already confirms this work; server resource limits still apply.
+            if (target.automatic && !this.canRunAutomatically(plan, target.intent)) {
                 this.#executionStatus.plan = plan;
                 this.#confirmationCalculation = target.intent;
                 this.#executionStatus.manualRequired = true;

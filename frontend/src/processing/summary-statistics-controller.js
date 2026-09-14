@@ -15,7 +15,14 @@ export const STATISTIC_PRESETS = Object.freeze({
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const sourceKey = source => source ? `${source.collectionId}\n${source.itemId}` : "";
 
-/** Conservative browser policy; backend resource limits still apply to every run. */
+/** Decide whether an edit or map click may run without another Calculate click.
+ * Only rectangular map selections within the block, memory and geometry limits
+ * below qualify. Larger areas, whole rasters and vector selections need Calculate.
+ * This UI policy does not replace the server's resource limits.
+ * @param {Object} plan Server plan with estimated grid work.
+ * @param {Object} intent Calculation settings including the sampling area.
+ * @return {boolean} Whether automatic submission is allowed.
+ */
 export function canAutomaticallyCalculate(plan, intent) {
     const grid = plan?.grid;
     return intent.area.kind === "selectedArea" && !!grid &&
@@ -41,7 +48,7 @@ export class SummaryStatisticsController {
         this.state.statistics.push(this.makeStatistic(STATISTIC_PRESETS.mean));
         this.executor = new CalculationExecutor({ api, jobs, storage: dependencies.storage,
             onActivity: dependencies.onActivity, requestId: dependencies.requestId, now,
-            canAutoSubmit: canAutomaticallyCalculate,
+            canRunAutomatically: canAutomaticallyCalculate,
             onChange: snapshot => this.receive(snapshot),
         });
         view.bind({ onOpen: () => this.open(), onClose: () => this.close(), onEditArea,
