@@ -188,3 +188,45 @@ unchanged until the job finishes. Failed or cancelled work does not publish a
 partial CSV. See [ground-area calculations](ground-area-calculations.md) for
 additional area-method limits and [clip storage](raster-clips.md#storage-and-limits)
 for result retention.
+
+
+### Direct Peru/Brazil sum benchmark
+
+From a checkout with Python 3.12+ and the EOLab dependencies installed, run:
+
+```console
+python run_raster_vector_sum_benchmark.py
+```
+
+The defaults use the 2018 human-footprint COG in
+`D:/wwf-connectivity/processed/human-footprint/` and
+`D:/easy_to_find_data_i_always_use/countries_without_antarctica.gpkg`.
+The script selects `iso3 == PER OR iso3 == BRA`, requires exactly two features,
+and calls the application's `selection_summary`, `plan_aggregate`, and
+`create_aggregate` for `sum(a)`. It uses the native pixel grid, source validity
+mask, cell-center polygon inclusion, normal work limits and default read/tile
+sizes. It does not contain its own clipping or summing algorithm.
+
+Use explicit inputs on another machine, and redirect the JSON report to save a baseline:
+
+```console
+python run_raster_vector_sum_benchmark.py --raster /scan-source/human-footprint/human-footprint_hfp_2018_wgs84_cog.tif --vector /scan-source/countries_without_antarctica.gpkg --repeat 3 > sum-baseline.json
+```
+
+Adjust the mounted paths to match the installation; `--layer` overrides the
+default `countries_without_antarctica` native layer name. Progress goes to stderr.
+Input files are read-only, and temporary kernel artifacts are deleted after each
+run. Ctrl+C interrupts the direct calculation.
+
+The report includes the result, CSV checksum, file identities, grid, limits,
+library versions, checkout revision and stage timings. Each repetition plans and
+executes again; caches are not cleared, so a first repetition is not necessarily
+cold. Compare identical inputs and grids: the local default COG is WGS84 whereas
+the current Connectivity deployment uses a Web Mercator copy.
+
+This is an offline kernel benchmark. It supplies explicit local file capabilities
+in place of Catalog lookup and job submission. It does not measure authorization,
+HTTP, queueing, worker startup, notifications or browser display. The app's
+performance details retain those end-to-end measurements. Import time is reported
+separately; inner kernel stages overlap the execution time and must not be added
+to it.
