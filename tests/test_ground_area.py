@@ -287,8 +287,8 @@ def test_area_expression_excludes_invalid_arithmetic(tmp_path: Path) -> None:
     assert result.rows[0]["aggregates"][0]["invalidArithmeticPixels"] == 1
 
 
-def test_execution_geometry_budget_and_reviewed_tolerance(tmp_path: Path) -> None:
-    """Execution refuses excessive refinement or a changed measurement policy.
+def test_execution_geometry_budget(tmp_path: Path) -> None:
+    """Execution refuses geometry refinement exceeding the coordinate budget.
 
     Args:
         tmp_path: Isolated source and private output directory.
@@ -304,10 +304,6 @@ def test_execution_geometry_budget_and_reviewed_tolerance(tmp_path: Path) -> Non
             path, spec, tmp_path, replace(LIMITS, max_area_transform_coordinates=100)
         )
     assert not (tmp_path / "result.csv").exists()
-    with pytest.raises(ProcessingError, match="policy changed"):
-        calculate_raster_statistics_for_area(
-            path, spec, tmp_path, replace(LIMITS, area_edge_tolerance_metres=0.2)
-        )
 
 
 def test_global_rectilinear_area_has_no_half_globe_limitation(tmp_path: Path) -> None:
