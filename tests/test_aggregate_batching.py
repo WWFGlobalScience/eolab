@@ -231,16 +231,19 @@ def test_polygon_masks_weights_and_mixed_statistics_across_batch_sizes(
             )
 
 
-def test_memory_plan_recheck_and_legacy_worker_contract(tmp_path, monkeypatch):
-    """Memory refusal precedes I/O; old plans remain executable and new jobs fenced.
+def test_memory_planning_and_execution_without_grid_recheck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Planning enforces memory limits; execution uses new and old saved plans.
 
     Args:
         tmp_path: Source fixture and output.
-        monkeypatch: Fail on any band read during refused metadata planning.
+        monkeypatch: Prevent band reads during planning and grid rebuilds
+            during execution.
     """
     path = write_source(tmp_path / "source.tif", np.ones((2048, 2048), dtype="uint8"))
 
-    def forbidden(*args):
+    def forbidden(*args: Any) -> None:
         """Reject accidental pixel reads.
 
         Args:
@@ -255,19 +258,6 @@ def test_memory_plan_recheck_and_legacy_worker_contract(tmp_path, monkeypatch):
             make_spec(path, ["sum(a)"], target_chunk_pixels=4194304)
         assert error.value.code == "expression_memory_limit"
         spec = make_spec(path, ["sum(a)"], target_chunk_pixels=65536)
-        changed = spec.model_copy(
-            update={
-                "grid": spec.grid.model_copy(
-                    update={
-                        "execution": spec.grid.execution.model_copy(
-                            update={"readWidth": 1}
-                        )
-                    }
-                )
-            }
-        )
-        with pytest.raises(ProcessingError, match="plan"):
-            kernel.calculate_raster_statistics_for_area(path, changed, tmp_path, LIMITS)
     assert prepare_aggregate_job(spec, LIMITS).minimum_claim_version == 4
     original = make_spec(path, ["sum(a)"])
     old_json = original.model_dump(mode="json", by_alias=True)
@@ -275,8 +265,23 @@ def test_memory_plan_recheck_and_legacy_worker_contract(tmp_path, monkeypatch):
     old = AggregateSpec.model_validate(old_json)
     assert old.model_dump(mode="json", by_alias=True) == old_json
     assert prepare_aggregate_job(old, LIMITS).minimum_claim_version == 2
-    result = kernel.calculate_raster_statistics_for_area(path, old, tmp_path, LIMITS)
-    assert float(result.rows[0]["value"]) == 2048**2
+
+    def unexpected_grid_recheck(*args: Any, **kwargs: Any) -> None:
+        """Fail if execution rebuilds a previously planned grid.
+
+        Args:
+            *args: Unexpected grid arguments.
+            **kwargs: Unexpected grid keyword arguments.
+        """
+        pytest.fail("execution rebuilt the saved grid")
+
+    monkeypatch.setattr(kernel, "grid", unexpected_grid_recheck)
+    for plan in (spec, old):
+        result = kernel.calculate_raster_statistics_for_area(
+            path, plan, tmp_path, LIMITS
+        )
+        assert float(result.rows[0]["value"]) == 2048**2
+        assert result.performance["stages"]["gridCheckSeconds"] == 0.0
 
 
 def test_large_polygon_boundary_counts_do_not_depend_on_tile_width(

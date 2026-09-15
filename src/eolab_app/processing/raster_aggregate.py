@@ -368,7 +368,6 @@ def calculate_raster_statistics_for_area(
         for item in calculation_plan.calculations
     ]
     calculations = [Calculation(root) for root in roots]
-    nodes = sum(sum(1 for _ in walk(root)) for root in roots)
     require_signature(raster_path, calculation_plan.sourceSignature)
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
@@ -391,28 +390,6 @@ def calculate_raster_statistics_for_area(
             if pixel_area_calculator is not None:
                 raster_window = pixel_area_calculator.window
             ground_ready = time.perf_counter()
-            if (
-                grid(
-                    dataset,
-                    raster_window,
-                    nodes,
-                    limits,
-                    pixel_area_calculator.metadata if pixel_area_calculator else None,
-                    (
-                        calculation_plan.grid.execution.targetChunkPixels
-                        if calculation_plan.grid.execution
-                        else None
-                    ),
-                    include_execution=calculation_plan.grid.execution is not None,
-                )
-                != calculation_plan.grid
-            ):
-                raise ProcessingError(
-                    "plan_changed",
-                    "The calculation grid or policy changed. Create a new plan.",
-                    409,
-                )
-            grid_ready = time.perf_counter()
             last_progress = 0.0
             tile_side = (
                 AREA_TILE_SIDE
@@ -576,7 +553,7 @@ def calculate_raster_statistics_for_area(
             sourceSetupSeconds=source_ready - started,
             selectionSetupSeconds=selection_ready - source_ready,
             groundAreaSetupSeconds=ground_ready - selection_ready,
-            gridCheckSeconds=grid_ready - ground_ready,
+            gridCheckSeconds=0.0,
             selectionMaskSeconds=mask_seconds,
             areaWeightsSeconds=weights_seconds,
             reductionSeconds=reduction_seconds,
