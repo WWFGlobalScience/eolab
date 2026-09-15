@@ -342,23 +342,25 @@ class ProjectedCatalogSelection:
             raise ValueError("A feature exceeds the transformed-coordinate buffer")
         return project_wgs84_polygons(self.dataset, (geometry,), count)
 
-    def mask(
+    def pixels_inside_area(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
-        invert: bool = False,
     ) -> NDArray[np.bool_]:
-        """Union exact per-feature masks using a bounded output grid.
+        """Return True for pixels included in the selected polygons.
 
         Args:
             out_shape: Already admitted raster output dimensions.
             affine: Existing numeric grid's affine transform.
             all_touched: Caller-owned pixel inclusion policy.
-            invert: Return inside membership instead of outside membership.
 
         Returns:
-            Boolean union mask, counting overlaps once and preserving holes.
+            Boolean inclusion mask, counting overlaps once and preserving holes.
+            True marks included pixels; False marks excluded pixels.
+
+        Raises:
+            ValueError: If source geometry or bounded reading is invalid.
         """
         inside = np.zeros(out_shape, dtype=bool)
         bbox = native_bbox_for_grid(self.resolved, self.dataset.crs, affine, out_shape)
@@ -374,37 +376,41 @@ class ProjectedCatalogSelection:
                     all_touched=all_touched,
                     invert=True,
                 )
-        return inside if invert else ~inside
+        return inside
 
 
-def selection_mask(
+def pixels_inside_area(
     geometries: tuple[dict[str, object], ...] | RasterAreaMask,
     *,
     out_shape: tuple[int, int],
     transform: Affine,
     all_touched: bool,
-    invert: bool = False,
 ) -> NDArray[np.bool_]:
-    """Apply an existing numeric mask policy to stored or direct-source polygons.
+    """Return a boolean inclusion mask for polygons on the supplied raster grid.
 
     Args:
-        geometries: Projected source reader or bounded historical/box geometries.
-        out_shape: Admitted output grid shape.
-        transform: Numeric grid affine.
-        all_touched: Caller-owned inclusion policy.
-        invert: Return inside membership when true.
+        geometries: Polygon coordinates in the raster CRS, or a reader that
+            projects selected catalog features into that CRS.
+        out_shape: Number of rows and columns in the output mask.
+        transform: Mapping from output pixel coordinates to the raster CRS.
+        all_touched: Include every pixel touched by a polygon when True;
+            otherwise use Rasterio's default pixel-center inclusion rule.
 
     Returns:
-        Boolean mask on exactly the supplied numeric grid.
+        Boolean array with out_shape dimensions: True for included pixels
+        and False for excluded pixels.
+
+    Raises:
+        ValueError: If source geometry or bounded reading is invalid.
     """
     if not isinstance(geometries, tuple):
-        return geometries.mask(out_shape, transform, all_touched, invert)
+        return geometries.pixels_inside_area(out_shape, transform, all_touched)
     return geometry_mask(
         geometries,
         out_shape=out_shape,
         transform=transform,
         all_touched=all_touched,
-        invert=invert,
+        invert=True,
     )
 
 

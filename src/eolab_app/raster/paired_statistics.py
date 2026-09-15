@@ -1,6 +1,6 @@
 """Bounded X-reference pairing and two-dimensional raster statistics."""
 
-from eolab_app.bounded_vector import selection_mask, selection_summary
+from eolab_app.bounded_vector import pixels_inside_area, selection_summary
 import math
 from pathlib import Path
 
@@ -400,7 +400,7 @@ def read_raster_paired_statistics(
             sample_transform = window_transform(x_window, x_dataset.transform) * rasterio.Affine.scale(
                 x_window.width / x_plan.width, x_window.height / x_plan.height,
             )
-            outside = selection_mask(
+            outside = ~pixels_inside_area(
                 polygon_area.projected_geometries,
                 out_shape=x_sample.shape,
                 transform=sample_transform,

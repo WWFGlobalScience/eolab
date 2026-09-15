@@ -106,14 +106,13 @@ def test_prepared_area_tools_window_and_masks(
         if whole_raster:
             assert tools.area_mask_source == ()
         else:
-            mask = kernel.selection_mask(
+            mask = kernel.pixels_inside_area(
                 tools.area_mask_source,
                 out_shape=shape,
                 transform=rasterio.windows.transform(
                     tools.raster_window, dataset.transform
                 ),
                 all_touched=False,
-                invert=True,
             )
             assert np.count_nonzero(mask) == 16
         if include_hectares:

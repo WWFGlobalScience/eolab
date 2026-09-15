@@ -1,6 +1,6 @@
 """Plan native single-raster calculations and stream scalar results to artifacts."""
 
-from eolab_app.bounded_vector import selection_mask
+from eolab_app.bounded_vector import pixels_inside_area
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import csv
@@ -396,12 +396,11 @@ def stable_selection_mask(
                 local = Window(
                     x - read.col_off, y - read.row_off, tile.width, tile.height
                 )
-                mask[local.toslices()] = selection_mask(
+                mask[local.toslices()] = pixels_inside_area(
                     geometries,
                     out_shape=(int(tile.height), int(tile.width)),
                     transform=window_transform(tile, dataset.transform),
                     all_touched=False,
-                    invert=True,
                 )
     return mask
 
@@ -550,12 +549,11 @@ def calculate_raster_statistics_for_area(
                         if selection_valid is not None:
                             valid &= selection_valid[local.toslices()]
                         elif raster_area_tools.area_mask_source:
-                            valid &= selection_mask(
+                            valid &= pixels_inside_area(
                                 raster_area_tools.area_mask_source,
                                 out_shape=data.shape,
                                 transform=window_transform(tile, dataset.transform),
                                 all_touched=False,
-                                invert=True,
                             )
                         mask_seconds += time.perf_counter() - mask_started
                         reduction_started = time.perf_counter()

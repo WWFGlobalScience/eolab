@@ -416,7 +416,7 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
         measured(kernel.read_native_raster_window, "read", 2),
     )
     monkeypatch.setattr(
-        kernel, "selection_mask", measured(kernel.selection_mask, "mask", 3)
+        kernel, "pixels_inside_area", measured(kernel.pixels_inside_area, "mask", 3)
     )
     monkeypatch.setattr(
         kernel.PixelAreaCalculator,

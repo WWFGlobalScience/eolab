@@ -1,6 +1,6 @@
 """Bounded full-resolution clip kernel; no job, HTTP, or rendering services."""
 
-from eolab_app.bounded_vector import selection_mask
+from eolab_app.bounded_vector import pixels_inside_area
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -228,12 +228,11 @@ def create_clip(
                         intersection.height,
                     )
                     values = native[local.toslices()]
-                    inside = selection_mask(
+                    inside = pixels_inside_area(
                         selected.projected_geometries,
                         out_shape=values.shape,
                         transform=window_transform(intersection, source.transform),
                         all_touched=True,
-                        invert=True,
                     )
                     valid = (
                         inside

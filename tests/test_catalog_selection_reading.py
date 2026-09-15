@@ -17,6 +17,7 @@ from shapely.geometry import Polygon, box, mapping
 
 from eolab_app.bounded_vector import (
     ProjectedCatalogSelection,
+    pixels_inside_area,
     polygon_features,
     selection_summary,
 )
@@ -282,7 +283,14 @@ def test_streamed_masks_match_complete_exact_geometry(
     affine: Affine,
     all_touched: bool,
 ) -> None:
-    """Compare overlapping polygons, holes and outside components on actual grids."""
+    """Verify inclusion and exclusion masks for both polygon source types.
+
+    Args:
+        tmp_path: Directory for the vector and raster fixtures.
+        crs: Raster coordinate reference system.
+        affine: Raster pixel-to-map transform.
+        all_touched: Whether any polygon contact includes a pixel.
+    """
     geometries = [
         mapping(
             Polygon(
@@ -316,9 +324,21 @@ def test_streamed_masks_match_complete_exact_geometry(
                 all_touched=all_touched,
                 invert=True,
             )
-            assert np.array_equal(
-                direct.mask(shape, transform, all_touched, True), expected
-            )
+            for mask_source in (direct, original.projected_geometries):
+                inside = pixels_inside_area(
+                    mask_source,
+                    out_shape=shape,
+                    transform=transform,
+                    all_touched=all_touched,
+                )
+                np.testing.assert_array_equal(inside, expected)
+                outside = geometry_mask(
+                    original.projected_geometries,
+                    out_shape=shape,
+                    transform=transform,
+                    all_touched=all_touched,
+                )
+                np.testing.assert_array_equal(~inside, outside)
 
 
 @pytest.mark.parametrize(
