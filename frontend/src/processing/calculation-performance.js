@@ -51,7 +51,7 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
         );
         const plan = stages.serverPlan;
         if (plan && !stages.planReused) lines.push(
-            `Inside server planning — admission: ${seconds(plan.reservationSeconds)}; source/selection preparation: ${seconds(plan.preparationSeconds)}; native process (including startup and transfer): ${seconds(plan.nativeProcessSeconds)}; source recheck and plan storage: ${seconds(plan.finalizationSeconds)}.`,
+            `Inside server planning — admission: ${seconds(plan.reservationSeconds)}; source/selection preparation: ${seconds(plan.preparationSeconds)}; native process (including startup and transfer): ${seconds(plan.nativeProcessSeconds)}; selection recheck and plan storage: ${seconds(plan.finalizationSeconds)}.`,
             ...processDescription("Planning", plan.process),
         );
     }
@@ -63,7 +63,7 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
             `Queue wait: ${seconds(execution.queueSeconds)}.`,
             `Worker preparation (source authorization and scratch): ${seconds(execution.preparationSeconds)}.`,
             `Native process including startup, execution and result transfer: ${seconds(execution.nativeProcessSeconds)}.`,
-            `Source recheck and file publication: ${seconds(execution.publicationSeconds)}.`,
+            `Selection recheck and file publication: ${seconds(execution.publicationSeconds)}.`,
             ...processDescription("Calculation", execution.process),
         );
         if (p && execution.nativeProcessSeconds >= p.kernelSeconds) lines.push(
@@ -86,9 +86,9 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
         const preparation = Math.max(0, p.calculationSeconds - k.selectionMaskSeconds - k.areaWeightsSeconds - k.reductionSeconds);
         const other = Math.max(0, p.kernelSeconds - setup - p.readSeconds - p.calculationSeconds - p.resultWriteSeconds);
         lines.push(
-            `Kernel setup: ${seconds(setup)}. Source opening, checks and expression compilation: ${seconds(k.sourceSetupSeconds)}; selection envelope reading/projection: ${seconds(k.selectionSetupSeconds)}; ground-area setup: ${seconds(k.groundAreaSetupSeconds)}; grid/admission recheck: ${seconds(k.gridCheckSeconds)}.`,
+            `Kernel setup: ${seconds(setup)}. Source opening, checks and expression compilation: ${seconds(k.sourceSetupSeconds)}; selection envelope reading/projection: ${seconds(k.selectionSetupSeconds)}; ground-area setup: ${seconds(k.groundAreaSetupSeconds)}; historical grid/admission recheck: ${seconds(k.gridCheckSeconds)}.`,
             `Inside Calculation - polygon selection masks: ${seconds(k.selectionMaskSeconds)}; ground-area weights: ${seconds(k.areaWeightsSeconds)}; formula evaluation and reductions: ${seconds(k.reductionSeconds)}; tile preparation and loop overhead (remainder): ${seconds(preparation)}.`,
-            `Other kernel work (remainder): ${seconds(other)}. Includes progress writes, source closing/rechecks and loop setup.`,
+            `Other kernel work (remainder): ${seconds(other)}. Includes progress writes, source closing and loop setup.`,
             "Polygon mask time includes vector reads, geometry projection and rasterization, plus applying the mask. Read/decode includes the raster's own validity mask and I/O waiting; it is not a pure disk-time measurement.",
             "Setup + Read/decode + Calculation + Write CSV + Other kernel work partition Kernel elapsed. Calculation's inner stages are already included in Calculation; do not add them again.",
         );

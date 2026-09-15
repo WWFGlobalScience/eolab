@@ -61,9 +61,7 @@ def make_spec(
         sourceSignature=signature,
         area=area,
         calculations=calculations,
-        grid=plan_aggregate(
-            path, signature, area, calculations, "a", limits, target_chunk_pixels
-        ),
+        grid=plan_aggregate(path, area, calculations, "a", limits, target_chunk_pixels),
     )
     return AggregateSpec.model_validate_json(spec.model_dump_json(by_alias=True))
 
@@ -261,7 +259,7 @@ def test_bounds_center_policy_missing_values_and_zero(tmp_path: Path) -> None:
     assert float(artifact.rows[1]["value"]) == 0
 
 
-def test_metadata_admission_signature_fence_and_csv_text(
+def test_metadata_admission_and_csv_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Planning reads metadata only and rejects excess native work before execution.
@@ -298,8 +296,3 @@ def test_metadata_admission_signature_fence_and_csv_text(
     )
     calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert "'=IMPORTXML(1)" in (tmp_path / "result.csv").read_text()
-    with rasterio.open(path, "r+") as dataset:
-        dataset.write(np.zeros((100, 100), dtype="uint8"), 1)
-    with pytest.raises(ProcessingError) as error:
-        calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
-    assert error.value.code == "source_changed"

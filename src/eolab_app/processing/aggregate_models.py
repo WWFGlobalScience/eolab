@@ -254,7 +254,7 @@ class AggregateMaskStages(BaseModel):
 class AggregateKernelStages(BaseModel):
     """Nested wall times; mask, weights and reductions are inside calculation.
 
-    Source setup includes compilation, signature checks and opening the raster.
+    Source setup includes expression compilation and opening the raster.
     Selection setup reads/projects the area envelope. Mask time includes vector
     source reads, projection and rasterization. Optional selectionMaskBreakdown
     records those inner stages; it is absent in older results. All times include

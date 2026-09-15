@@ -211,7 +211,7 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
         source=CatalogRasterRequest(**SOURCE),
         sourceSignature=signature,
         area=clip_area,
-        grid=plan_clip(path, signature, clip_area, limits),
+        grid=plan_clip(path, clip_area, limits),
     )
     output = tmp_path / "clip"
     output.mkdir()

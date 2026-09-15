@@ -147,7 +147,7 @@ def run_benchmark(raster: Path, vector: Path, layer: str) -> dict[str, Any]:
     )
     calculations = (NamedCalculation(label="Sum", expression="sum(a)"),)
     print("Planning native raster reads...", file=sys.stderr, flush=True)
-    grid = plan_aggregate(raster, signature, area, calculations, "a", limits)
+    grid = plan_aggregate(raster, area, calculations, "a", limits)
     planned = time.perf_counter()
     calculation_plan = AggregateSpec(
         sources={

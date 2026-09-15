@@ -195,7 +195,6 @@ class RasterStatisticsService:
                 work.waiter_count += 1
 
         if cached is not None:
-            await self._source_authorizer.require_current(authorized_raster)
             try:
                 await self._require_current_sampling_area(sampling_area)
             except SelectionUnavailableError as error:
@@ -322,10 +321,6 @@ class RasterStatisticsService:
                 work.waiter_count += 1
 
         if cached is not None:
-            await asyncio.gather(
-                self._source_authorizer.require_current(authorized_x),
-                self._source_authorizer.require_current(authorized_y),
-            )
             try:
                 await self._require_current_sampling_area(sampling_area)
             except SelectionUnavailableError as error:
@@ -400,11 +395,6 @@ class RasterStatisticsService:
                     work.started = True
                 require_active_raster_read(cancellation_requested.is_set)
                 await self._require_current_sampling_area(sampling_area)
-                await asyncio.gather(
-                    self._source_authorizer.require_current(authorized_x),
-                    self._source_authorizer.require_current(authorized_y),
-                )
-                await self._require_current_sampling_area(sampling_area)
                 options = (
                     {"catalog_selection": sampling_area}
                     if isinstance(sampling_area, CatalogSelectionSamplingArea)
@@ -420,10 +410,6 @@ class RasterStatisticsService:
                 )
                 require_active_raster_read(cancellation_requested.is_set)
                 await self._require_current_sampling_area(sampling_area)
-                await asyncio.gather(
-                    self._source_authorizer.require_current(authorized_x),
-                    self._source_authorizer.require_current(authorized_y),
-                )
                 async with self._state_lock:
                     work = self._inflight.get(cache_key)
                     if (
@@ -507,7 +493,6 @@ class RasterStatisticsService:
                         raise RasterReadCancelled
                     work.started = True
                 require_active_raster_read(cancellation_requested.is_set)
-                await self._source_authorizer.require_current(authorized_raster)
                 await self._require_current_sampling_area(sampling_area)
                 statistics = await asyncio.to_thread(
                     self._statistics_reader,
@@ -516,7 +501,6 @@ class RasterStatisticsService:
                     cancellation_requested.is_set,
                 )
                 require_active_raster_read(cancellation_requested.is_set)
-                await self._source_authorizer.require_current(authorized_raster)
                 await self._require_current_sampling_area(sampling_area)
                 async with self._state_lock:
                     work = self._inflight.get(cache_key)

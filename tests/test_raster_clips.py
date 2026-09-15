@@ -98,7 +98,7 @@ def make_spec(
         source=CatalogRasterRequest(**SOURCE),
         sourceSignature=signature,
         area=area,
-        grid=plan_clip(path, signature, area, limits),
+        grid=plan_clip(path, area, limits),
     )
 
 
@@ -278,11 +278,6 @@ def test_clips_reject_outside_empty_stale_and_excessive_work(tmp_path: Path) -> 
         create_clip(path, spec, attempt, LIMITS)
     assert empty.value.code == "no_valid_data"
     assert not (attempt / "result.tif").exists()
-    with path.open("ab") as stream:
-        stream.write(b"changed")
-    with pytest.raises(ProcessingError) as stale:
-        create_clip(path, spec, attempt, LIMITS)
-    assert stale.value.code == "source_changed"
 
 
 def _slow_writer(queue: object, path: Path) -> None:

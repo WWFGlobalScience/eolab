@@ -19,7 +19,6 @@ from rasterio.windows import Window, transform as window_transform
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.artifacts import write_progress as _progress
 from eolab_app.processing.raster_input import (
-    require_signature as _require_signature,
     validate_supported_raster as _validate_supported_raster,
     select_area,
     native_work,
@@ -108,26 +107,21 @@ def _grid(
     )
 
 
-def plan_clip(
-    path: Path, signature: tuple[int, ...], area: ClipArea, limits: RasterClipLimits
-) -> ClipGrid:
+def plan_clip(path: Path, area: ClipArea, limits: RasterClipLimits) -> ClipGrid:
     """Inspect only metadata and geometry under the caller's process deadline.
 
     Args:
         path: Authorized local source.
-        signature: Scanner-approved full source identity.
         area: Explicit immutable area value.
         limits: Processing-owned resource policy.
 
     Returns:
         Planned native grid; this function does not read raster values.
     """
-    _require_signature(path, signature)
     with rasterio.Env(GDAL_CACHEMAX=64 * 1024**2, GDAL_NUM_THREADS="2"):
         with rasterio.open(path) as dataset:
             _validate_supported_raster(dataset, path)
             grid = _grid(dataset, _selection(dataset, area, limits), limits)
-    _require_signature(path, signature)
     return grid
 
 
@@ -146,10 +140,9 @@ def create_clip(
         Validated artifact metadata. Publication remains the job owner's duty.
 
     Raises:
-        ProcessingError: For stale source, changed plan, or no valid pixels.
+        ProcessingError: For unsupported input, invalid area, or no valid pixels.
         OSError: If writing or validating the private artifact fails.
     """
-    _require_signature(path, spec.sourceSignature)
     stage = directory / "window.tif"
     result = directory / "result.tif"
     valid_count = 0
@@ -162,12 +155,6 @@ def create_clip(
         with rasterio.open(path) as source:
             _validate_supported_raster(source, path)
             selected = _selection(source, spec.area, limits)
-            if _grid(source, selected, limits) != spec.grid:
-                raise ProcessingError(
-                    "plan_changed",
-                    "The source grid changed; create a new clip plan.",
-                    409,
-                )
             window = selected.source_window
             blocks = source_block_indexes_for_window(window, source.block_shapes[0])
             profile = dict(
@@ -263,7 +250,6 @@ def create_clip(
                     "no_valid_data",
                     "There are no valid raster pixels in the selected area.",
                 )
-        _require_signature(path, spec.sourceSignature)
         _progress(directory, "creating_cog", len(blocks), len(blocks))
         copy_raster(
             stage,
@@ -305,7 +291,6 @@ def create_clip(
                     "The generated clip failed validity-mask validation.",
                     500,
                 )
-    _require_signature(path, spec.sourceSignature)
     _progress(directory, "checksumming", len(blocks), len(blocks))
     with result.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()

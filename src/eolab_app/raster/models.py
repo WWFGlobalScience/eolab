@@ -48,8 +48,8 @@ def _exclude_none_from_response(value: object) -> bool:
 class AuthorizedRaster:
     """Current mounted source approved for one public raster operation.
 
-    Authorization here establishes only scanner-owned catalog identity, a path
-    confined to the raster mount, and an unchanged filesystem signature. It
+    Authorization establishes scanner-owned catalog identity and a path
+    confined to the raster mount. Raster inputs are immutable. It
     does not select or approve WMS, sample-grid, statistics, or pixel rendering.
 
     Attributes:

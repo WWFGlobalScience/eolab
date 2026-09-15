@@ -37,9 +37,7 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
     authorized = SimpleNamespace(
         source_path=path, source_signature=RasterSourceIdentity.read(path)
     )
-    authorizer = SimpleNamespace(
-        authorize=AsyncMock(return_value=authorized), require_current=AsyncMock()
-    )
+    authorizer = SimpleNamespace(authorize=AsyncMock(return_value=authorized))
     store = Mock()
     identifier = "a" * 32
     store.reserve_plan.return_value = identifier

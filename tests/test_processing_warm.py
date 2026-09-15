@@ -39,7 +39,7 @@ def test_warm_service_and_worker_reopen_sources_and_preserve_timing(tmp_path: Pa
         planner, executor = create_native_process(limits), create_native_process(limits)
         planner.warm()
         executor.warm()
-        authorizer = SimpleNamespace(authorize=AsyncMock(), require_current=AsyncMock())
+        authorizer = SimpleNamespace(authorize=AsyncMock())
         store = Mock()
         store.finish_plan.return_value = {
             "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5)
@@ -86,7 +86,8 @@ def test_warm_service_and_worker_reopen_sources_and_preserve_timing(tmp_path: Pa
                 row = dict(
                     id=identifier,
                     attempt_id=str(index + 3) * 32,
-                    spec=prepared.specification,
+                    # Retained identity is provenance, not a worker precondition.
+                    spec={**prepared.specification, "sourceSignature": [0, 0, 0, 0]},
                     reserved_bytes=prepared.reserved_bytes,
                     created_at=now,
                     updated_at=now,
@@ -135,15 +136,6 @@ def test_warm_service_and_worker_reopen_sources_and_preserve_timing(tmp_path: Pa
                 )
                 assert str(tmp_path) not in response.model_dump_json()
             assert authorizer.authorize.await_count == 4
-            assert authorizer.require_current.await_count == 4
-            # An accepted source signature is still fenced on a reused worker.
-            authorizer.authorize.return_value = SimpleNamespace(
-                source_path=path,
-                source_signature=SimpleNamespace(to_catalog=lambda: [0, 0, 0, 0]),
-            )
-            assert await worker.run_once()
-            assert store.finish.call_args.args[2] is None
-            assert store.finish.call_args.args[3]["code"] == "source_changed"
         finally:
             await planner.close()
             await executor.close()
@@ -170,7 +162,7 @@ def test_warm_clip_plan_and_execution_preserve_pixels(tmp_path: Path):
         output.mkdir()
         try:
             planned = await lane.run(
-                clip_process_target, ("plan", (path, signature, area, limits)), 15
+                clip_process_target, ("plan", (path, area, limits)), 15
             )
             assert planned.value[0] == "ok"
             spec = ClipSpec(

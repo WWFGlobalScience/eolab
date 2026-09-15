@@ -63,6 +63,6 @@ accepted. Prepare a self-contained source upstream if those checks fail.
 
 Moving or changing a selection cancels obsolete requests. An already-running
 native read may finish its current block before stopping. Capacity conflicts
-retry briefly; a persistent error offers **Retry**. A source changed since its
-Catalog scan must be rescanned. Failure to draw the optional vector outline does
+retry briefly; a persistent error offers **Retry**. Cataloged rasters are immutable;
+analysis does not poll file metadata for changes. Failure to draw the optional vector outline does
 not invalidate its analysis area.

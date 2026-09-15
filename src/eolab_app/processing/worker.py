@@ -110,12 +110,6 @@ class ProcessingWorker:
                 }
             )
         authorized = await self.authorizer.authorize(source)
-        if tuple(authorized.source_signature.to_catalog()) != spec.sourceSignature:
-            raise ProcessingError(
-                "source_changed",
-                "The raster changed before processing. Create a new plan.",
-                409,
-            )
         directory = await asyncio.to_thread(
             self.artifacts.prepare,
             row["attempt_id"],
@@ -133,7 +127,6 @@ class ProcessingWorker:
         calculated = time.perf_counter()
         if status != "ok":
             raise ProcessingError(*value)
-        await self.authorizer.require_current(authorized)
         if resolved_area is not None:
             await self.areas.resolve_for_sampling(resolved_area.selection)
         # The heartbeat/fencing check in finish is still required after rename;

@@ -38,7 +38,6 @@ from eolab_app.processing.ground_area import PixelAreaCalculator
 from eolab_app.processing.raster_expression import Calculation, compile_expression, walk
 from eolab_app.processing.raster_input import (
     native_work,
-    require_signature,
     validate_supported_raster,
     select_area,
 )
@@ -193,7 +192,6 @@ def grid(
     limits: RasterAggregateLimits,
     ground_area: GroundAreaPlan | None = None,
     target_chunk_pixels: int | None = None,
-    include_execution: bool = True,
 ) -> AggregateGrid:
     """Admit native work and bounded expression memory for one plan.
 
@@ -204,7 +202,6 @@ def grid(
         limits: Work and memory ceilings.
         ground_area: Optional ellipsoidal measurement metadata and geometry work.
         target_chunk_pixels: Opt-in total-pixel budget for combined windows/tiles.
-        include_execution: False only when rechecking a pre-batching stored plan.
 
     Returns:
         Deterministic metadata and conservative memory estimate.
@@ -273,13 +270,12 @@ def grid(
         offset=str(dataset.offsets[0]),
         storedUnit=dataset.units[0],
         groundArea=ground_area,
-        execution=execution if include_execution else None,
+        execution=execution,
     )
 
 
 def plan_aggregate(
     path: Path,
-    signature: tuple[int, ...],
     area: AggregateArea,
     calculations: tuple[NamedCalculation, ...],
     alias: str,
@@ -290,7 +286,6 @@ def plan_aggregate(
 
     Args:
         path: Catalog-authorized mounted source.
-        signature: Scanner-approved source signature.
         area: Explicit immutable selection.
         calculations: Validated named result expressions.
         alias: Single bound source alias.
@@ -302,7 +297,6 @@ def plan_aggregate(
     """
     roots = [compile_expression(item.expression, alias) for item in calculations]
     nodes = sum(sum(1 for _ in walk(root)) for root in roots)
-    require_signature(path, signature)
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
@@ -327,7 +321,6 @@ def plan_aggregate(
                 pixel_area_calculator.metadata if pixel_area_calculator else None,
                 target_chunk_pixels,
             )
-    require_signature(path, signature)
     return result
 
 
@@ -426,7 +419,7 @@ def calculate_raster_statistics_for_area(
     Args:
         raster_path: Path to the input raster.
         calculation_plan: Expressions to evaluate, area to summarize,
-            expected source signature, and grid produced by plan_aggregate.
+            catalog source identity, and grid produced by plan_aggregate.
         directory: Existing directory for result files and progress updates.
         limits: Limits on raster reads, memory use, and geometry processing.
 
@@ -449,7 +442,6 @@ def calculate_raster_statistics_for_area(
         for item in calculation_plan.calculations
     ]
     calculations = [Calculation(root) for root in roots]
-    require_signature(raster_path, calculation_plan.sourceSignature)
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
@@ -583,7 +575,6 @@ def calculate_raster_statistics_for_area(
                         calculation_plan.grid.nativeBlocks,
                     )
                     last_progress = time.monotonic()
-    require_signature(raster_path, calculation_plan.sourceSignature)
     calculate_started = time.perf_counter()
     rows = [
         {"label": item.label, "expression": item.expression, **calculation.result()}
@@ -668,7 +659,6 @@ def calculate_raster_statistics_for_area(
     (directory / "provenance.json").write_text(
         json.dumps(provenance, allow_nan=False), encoding="utf-8"
     )
-    require_signature(raster_path, calculation_plan.sourceSignature)
     return artifact
 
 

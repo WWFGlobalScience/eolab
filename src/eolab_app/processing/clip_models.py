@@ -132,7 +132,7 @@ class ClipGrid(BaseModel):
 
 
 class ClipSpec(BaseModel):
-    """Durable, path-free job specification fenced to a catalog signature."""
+    """Durable, path-free clip plan with catalog identity retained for provenance."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     operation: Literal["raster.clip.v1"] = OPERATION_VERSION
