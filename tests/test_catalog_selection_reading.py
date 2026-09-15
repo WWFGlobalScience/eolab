@@ -23,7 +23,7 @@ from eolab_app.bounded_vector import (
 from eolab_app.bounded_vector import native_bbox_for_grid
 from eolab_app.catalog_selection import SelectionUnavailableError
 from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregateLimits
-from eolab_app.processing.ground_area import GroundArea
+from eolab_app.processing.ground_area import PixelAreaCalculator
 from eolab_app.raster.bounded_window import selected_raster_area_for_wgs84_polygons
 from eolab_app.vector.filters import VectorFilter
 from catalog_selection_support import write_selection
@@ -220,12 +220,12 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
         kind="aoi", bounds=summary["bbox"], geometries=tuple(geometries)
     )
     with rasterio.open(path) as dataset:
-        baseline = GroundArea(dataset, historical, RasterAggregateLimits())
-        direct = GroundArea(dataset, native_area, RasterAggregateLimits())
+        baseline = PixelAreaCalculator(dataset, historical, RasterAggregateLimits())
+        direct = PixelAreaCalculator(dataset, native_area, RasterAggregateLimits())
         assert direct.window == baseline.window
         np.testing.assert_allclose(
-            direct.weights(direct.window),
-            baseline.weights(baseline.window),
+            direct.calculate_hectares(direct.window),
+            baseline.calculate_hectares(baseline.window),
             rtol=1e-11,
             atol=1e-7,
         )
@@ -361,8 +361,8 @@ def test_fractional_union_matches_historical_exact_area(
         resolved=resolved,
     )
     with rasterio.open(path) as dataset:
-        baseline = GroundArea(dataset, old, RasterAggregateLimits())
-        direct = GroundArea(dataset, new, RasterAggregateLimits())
+        baseline = PixelAreaCalculator(dataset, old, RasterAggregateLimits())
+        direct = PixelAreaCalculator(dataset, new, RasterAggregateLimits())
         assert direct.window == baseline.window
         for y in range(
             int(direct.window.row_off),
@@ -381,7 +381,10 @@ def test_fractional_union_matches_historical_exact_area(
                     min(4, direct.window.row_off + direct.window.height - y),
                 )
                 np.testing.assert_allclose(
-                    direct.weights(tile), baseline.weights(tile), rtol=1e-12, atol=1e-7
+                    direct.calculate_hectares(tile),
+                    baseline.calculate_hectares(tile),
+                    rtol=1e-12,
+                    atol=1e-7,
                 )
 
 

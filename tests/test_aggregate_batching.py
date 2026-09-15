@@ -407,7 +407,9 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
         kernel, "selection_mask", measured(kernel.selection_mask, "mask", 3)
     )
     monkeypatch.setattr(
-        kernel.GroundArea, "weights", measured(kernel.GroundArea.weights, "weights", 5)
+        kernel.PixelAreaCalculator,
+        "calculate_hectares",
+        measured(kernel.PixelAreaCalculator.calculate_hectares, "weights", 5),
     )
     monkeypatch.setattr(
         kernel.Calculation,

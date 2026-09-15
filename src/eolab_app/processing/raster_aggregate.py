@@ -30,7 +30,7 @@ from eolab_app.processing.aggregate_models import (
 from eolab_app.processing.aggregate_windows import execution_plan, read_windows
 from eolab_app.processing.artifacts import write_progress
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.ground_area import GroundArea
+from eolab_app.processing.ground_area import PixelAreaCalculator
 from eolab_app.processing.raster_expression import Calculation, compile_expression, walk
 from eolab_app.processing.raster_input import (
     native_work,
@@ -231,19 +231,22 @@ def plan_aggregate(
         with rasterio.open(path) as dataset:
             require_source(dataset, path)
             raster_window, _ = get_raster_window_and_mask_source(dataset, area, limits)
-            ground = (
-                GroundArea(dataset, area, limits, planning=True)
-                if any(node.op == "areaha" for root in roots for node in walk(root))
-                else None
+            needs_ground_area = any(
+                node.op == "areaha" for root in roots for node in walk(root)
             )
-            if ground is not None:
-                raster_window = ground.window
+            pixel_area_calculator = None
+            if needs_ground_area:
+                pixel_area_calculator = PixelAreaCalculator(
+                    dataset, area, limits, planning=True
+                )
+            if pixel_area_calculator is not None:
+                raster_window = pixel_area_calculator.window
             result = grid(
                 dataset,
                 raster_window,
                 nodes,
                 limits,
-                ground.metadata if ground else None,
+                pixel_area_calculator.metadata if pixel_area_calculator else None,
                 target_chunk_pixels,
             )
     require_signature(path, signature)
@@ -377,13 +380,16 @@ def calculate_raster_statistics_for_area(
                 dataset, calculation_plan.area, limits
             )
             selection_ready = time.perf_counter()
-            ground = (
-                GroundArea(dataset, calculation_plan.area, limits)
-                if any(node.op == "areaha" for root in roots for node in walk(root))
-                else None
+            needs_ground_area = any(
+                node.op == "areaha" for root in roots for node in walk(root)
             )
-            if ground is not None:
-                raster_window = ground.window
+            pixel_area_calculator = None
+            if needs_ground_area:
+                pixel_area_calculator = PixelAreaCalculator(
+                    dataset, calculation_plan.area, limits
+                )
+            if pixel_area_calculator is not None:
+                raster_window = pixel_area_calculator.window
             ground_ready = time.perf_counter()
             if (
                 grid(
@@ -391,7 +397,7 @@ def calculate_raster_statistics_for_area(
                     raster_window,
                     nodes,
                     limits,
-                    ground.metadata if ground else None,
+                    pixel_area_calculator.metadata if pixel_area_calculator else None,
                     (
                         calculation_plan.grid.execution.targetChunkPixels
                         if calculation_plan.grid.execution
@@ -409,7 +415,9 @@ def calculate_raster_statistics_for_area(
             grid_ready = time.perf_counter()
             last_progress = 0.0
             tile_side = (
-                AREA_TILE_SIDE if ground and not ground.rectilinear else TILE_SIDE
+                AREA_TILE_SIDE
+                if pixel_area_calculator and not pixel_area_calculator.rectilinear
+                else TILE_SIDE
             )
             execution = calculation_plan.grid.execution or execution_plan(
                 raster_window,
@@ -479,7 +487,11 @@ def calculate_raster_statistics_for_area(
                         data = values.data.astype(np.float64)
                         valid = ~np.ma.getmaskarray(values) & np.isfinite(data)
                         weights_started = time.perf_counter()
-                        hectares = ground.weights(tile) if ground is not None else None
+                        hectares = (
+                            pixel_area_calculator.calculate_hectares(tile)
+                            if pixel_area_calculator is not None
+                            else None
+                        )
                         weights_seconds += time.perf_counter() - weights_started
                         area_valid = (
                             valid & (hectares > 0) if hectares is not None else None

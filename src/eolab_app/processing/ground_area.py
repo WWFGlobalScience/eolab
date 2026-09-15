@@ -205,8 +205,12 @@ def transformed_polygon(
     return result
 
 
-class GroundArea:
-    """Measure selected ground hectares on one native grid with bounded geometry."""
+class PixelAreaCalculator:
+    """Calculate each raster pixel's area inside the selected region, in hectares.
+
+    Reuse coordinate transformations and cached grid coordinates across tiles.
+    Raster pixel values are read and evaluated separately by the caller.
+    """
 
     def __init__(
         self,
@@ -505,8 +509,8 @@ class GroundArea:
             )
         return result
 
-    def weights(self, tile: Window) -> np.ndarray:
-        """Return fractional intersection hectares for a bounded native tile.
+    def calculate_hectares(self, tile: Window) -> np.ndarray:
+        """Calculate hectares inside the selected region for each pixel in a tile.
 
         Args:
             tile: Window contained in the admitted native area.
