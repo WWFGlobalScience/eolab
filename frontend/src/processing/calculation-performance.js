@@ -51,7 +51,7 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
         );
         const plan = stages.serverPlan;
         if (plan && !stages.planReused) lines.push(
-            `Inside server planning — admission: ${seconds(plan.reservationSeconds)}; source/selection preparation: ${seconds(plan.preparationSeconds)}; native process (including startup and transfer): ${seconds(plan.nativeProcessSeconds)}; selection recheck and plan storage: ${seconds(plan.finalizationSeconds)}.`,
+            `Inside server planning - admission: ${seconds(plan.reservationSeconds)}; source/selection preparation: ${seconds(plan.preparationSeconds)}; native process (including startup and transfer): ${seconds(plan.nativeProcessSeconds)}; selection recheck and plan storage: ${seconds(plan.finalizationSeconds)}.`,
             ...processDescription("Planning", plan.process),
         );
     }
