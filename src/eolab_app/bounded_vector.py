@@ -276,7 +276,7 @@ class ProjectedCatalogSelection:
     def __init__(
         self,
         dataset: DatasetReader,
-        resolved: ResolvedCatalogSelection,
+        filtered_vector: ResolvedCatalogSelection,
         maximum_coordinates: int,
         cancellation_requested: RasterReadCancellationCheck | None = None,
     ) -> None:
@@ -284,7 +284,7 @@ class ProjectedCatalogSelection:
 
         Args:
             dataset: Open, georeferenced raster metadata.
-            resolved: Authorized source capability.
+            filtered_vector: Vector source and filter identifying the features to read.
             maximum_coordinates: Existing projection-buffer policy.
             cancellation_requested: Optional cancellation predicate.
 
@@ -293,10 +293,10 @@ class ProjectedCatalogSelection:
             ValueError: If a source feature cannot fit the projection buffer.
         """
         self.dataset = dataset
-        self.resolved = resolved
+        self.filtered_vector = filtered_vector
         self.maximum_coordinates = maximum_coordinates
         self.cancellation_requested = cancellation_requested
-        summary = selection_summary(resolved, cancellation_requested)
+        summary = selection_summary(filtered_vector, cancellation_requested)
         segments = summary["coordinates"] - summary["rings"]
         self.densify = min(
             BOUNDED_WGS84_DENSIFY_POINTS,
@@ -306,7 +306,7 @@ class ProjectedCatalogSelection:
         right = bottom = -math.inf
         inverse = ~dataset.transform
         with polygon_features(
-            resolved, cancellation_requested=cancellation_requested
+            filtered_vector, cancellation_requested=cancellation_requested
         ) as features:
             for geometry in features:
                 for projected in self.project(geometry):
@@ -363,9 +363,11 @@ class ProjectedCatalogSelection:
             ValueError: If source geometry or bounded reading is invalid.
         """
         inside = np.zeros(out_shape, dtype=bool)
-        bbox = native_bbox_for_grid(self.resolved, self.dataset.crs, affine, out_shape)
+        bbox = native_bbox_for_grid(
+            self.filtered_vector, self.dataset.crs, affine, out_shape
+        )
         with polygon_features(
-            self.resolved, bbox, self.cancellation_requested
+            self.filtered_vector, bbox, self.cancellation_requested
         ) as features:
             for geometry in features:
                 projected = self.project(geometry)
