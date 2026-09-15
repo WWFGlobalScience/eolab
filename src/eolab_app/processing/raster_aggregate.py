@@ -1,6 +1,7 @@
 """Plan native single-raster calculations and stream scalar results to artifacts."""
 
-from eolab_app.bounded_vector import pixels_inside_area
+from eolab_app.bounded_vector import pixels_inside_area, ProjectedCatalogSelection
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import csv
@@ -60,6 +61,9 @@ NATIVE_MASK_BYTES_PER_PIXEL = np.dtype(np.bool_).itemsize
 GDAL_CACHE_BYTES = 64 * 1024**2
 NATIVE_BOOKKEEPING_BYTES = 64 * 1024**2
 GDAL_THREADS = 2
+# Additional calculation-local polygons must fit alongside the planned raster
+# buffers. This is a ceiling, not a cross-job cache or an unconditional allocation.
+RETAINED_POLYGON_MEMORY_BYTES = 128 * 1024**2
 # A cached expression node holds float64 values (8 bytes) and validity (1 byte).
 # Round up to 16 bytes per pixel to allow evaluation temporaries. Eight additional
 # tile-sized allocations cover input conversion, polygon selection/eligibility masks, selected
@@ -78,6 +82,8 @@ def get_raster_window_and_mask_source(
     dataset: rasterio.io.DatasetReader,
     area: AggregateArea,
     limits: RasterAggregateLimits,
+    *,
+    retain_projected_bytes: int = 0,
 ) -> tuple[Window, tuple[dict[str, object], ...] | RasterAreaMask]:
     """Get the raster pixel window and the source for per-tile area masks.
 
@@ -88,6 +94,8 @@ def get_raster_window_and_mask_source(
         area: Sampling box, filtered catalog features, historical polygon
             geometry, or the whole raster.
         limits: Processing limits; max_coordinates bounds geometry work here.
+        retain_projected_bytes: Optional allowance to retain catalog polygons
+            for this calculation; zero uses the streaming reader.
 
     Returns:
         A window in raster rows and columns, and projected polygons or a
@@ -107,6 +115,7 @@ def get_raster_window_and_mask_source(
         area.geometries,
         limits.max_coordinates,
         area.resolved,
+        retain_projected_bytes=retain_projected_bytes,
     )
     return selected.source_window, selected.projected_geometries
 
@@ -125,6 +134,8 @@ class RasterAreaTools:
         pixel_area_calculator: Per-pixel hectare calculator, or None when
             the plan contains no area-measurement formulas.
         selection_setup_seconds: Time spent preparing the window and selected polygons.
+        retained_polygon_bytes: Conservative retained geometry size, additional
+            to the saved plan's raster-buffer estimate.
         pixel_area_setup_seconds: Time spent preparing the hectare calculator
             and choosing the final window.
     """
@@ -134,6 +145,7 @@ class RasterAreaTools:
     pixel_area_calculator: PixelAreaCalculator | None
     selection_setup_seconds: float
     pixel_area_setup_seconds: float
+    retained_polygon_bytes: int
 
 
 def prepare_raster_area_tools(
@@ -156,25 +168,47 @@ def prepare_raster_area_tools(
 
     Returns:
         Tools with one final pixel window and the separate setup timings.
-        No raster pixel values are read during setup.
+        No raster pixel values are read during setup. The caller must close any
+        returned ProjectedCatalogSelection when the calculation ends.
 
     Raises:
         ProcessingError: If the area cannot be read or projected, does not
             overlap the raster, or exceeds geometry-processing limits.
     """
     started = time.perf_counter()
+    polygon_budget = 0
+    if calculation_plan.area.kind == "catalogSelection":
+        polygon_budget = min(
+            RETAINED_POLYGON_MEMORY_BYTES,
+            limits.max_memory_bytes - calculation_plan.grid.estimatedMemoryBytes,
+        )
+        if polygon_budget <= 0:
+            raise ProcessingError(
+                "polygon_memory_limit",
+                "The planned raster buffers leave no memory for selected polygons. "
+                "Use a smaller batch or simplify the calculation.",
+                413,
+            )
     selection_window, selected_polygons = get_raster_window_and_mask_source(
-        dataset, calculation_plan.area, limits
+        dataset,
+        calculation_plan.area,
+        limits,
+        retain_projected_bytes=polygon_budget,
     )
     selection_ready = time.perf_counter()
-    pixel_area_calculator = None
-    if calculation_plan.grid.groundArea is not None:
-        pixel_area_calculator = PixelAreaCalculator(
-            dataset, calculation_plan.area, limits
-        )
-        raster_window = pixel_area_calculator.window
-    else:
-        raster_window = selection_window
+    try:
+        pixel_area_calculator = None
+        if calculation_plan.grid.groundArea is not None:
+            pixel_area_calculator = PixelAreaCalculator(
+                dataset, calculation_plan.area, limits
+            )
+            raster_window = pixel_area_calculator.window
+        else:
+            raster_window = selection_window
+    except BaseException:
+        if isinstance(selected_polygons, ProjectedCatalogSelection):
+            selected_polygons.close()
+        raise
     area_ready = time.perf_counter()
     return RasterAreaTools(
         raster_window=raster_window,
@@ -182,6 +216,11 @@ def prepare_raster_area_tools(
         pixel_area_calculator=pixel_area_calculator,
         selection_setup_seconds=selection_ready - started,
         pixel_area_setup_seconds=area_ready - selection_ready,
+        retained_polygon_bytes=(
+            selected_polygons.retained_bytes
+            if isinstance(selected_polygons, ProjectedCatalogSelection)
+            else 0
+        ),
     )
 
 
@@ -428,8 +467,8 @@ def calculate_raster_statistics_for_area(
         timings, and the CSV filename, size, and checksum.
 
     Raises:
-        ProcessingError: If the source differs from the plan, or
-            the calculation exceeds a processing limit.
+        ProcessingError: If the raster or area is unsupported, or the
+            calculation exceeds a processing limit.
     """
     started = time.perf_counter()
     read_seconds = calculation_seconds = 0.0
@@ -445,12 +484,16 @@ def calculate_raster_statistics_for_area(
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
-        with rasterio.open(raster_path) as dataset:
+        with rasterio.open(raster_path) as dataset, ExitStack() as resources:
             validate_supported_raster(dataset, raster_path)
             source_ready = time.perf_counter()
             raster_area_tools = prepare_raster_area_tools(
                 dataset, calculation_plan, limits
             )
+            if isinstance(
+                raster_area_tools.selected_polygons, ProjectedCatalogSelection
+            ):
+                resources.callback(raster_area_tools.selected_polygons.close)
             pixel_area_calculator = raster_area_tools.pixel_area_calculator
             last_progress = 0.0
             tile_side = (
@@ -619,6 +662,7 @@ def calculate_raster_statistics_for_area(
         calculationSeconds=calculation_seconds,
         resultWriteSeconds=time.perf_counter() - writing_started,
         kernelSeconds=time.perf_counter() - started,
+        retainedPolygonBytes=raster_area_tools.retained_polygon_bytes,
         stages=AggregateKernelStages(
             sourceSetupSeconds=source_ready - started,
             selectionSetupSeconds=raster_area_tools.selection_setup_seconds,

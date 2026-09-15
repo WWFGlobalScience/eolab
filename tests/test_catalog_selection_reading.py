@@ -316,6 +316,10 @@ def test_streamed_masks_match_complete_exact_geometry(
             dataset, tuple(geometries), 500000
         )
         direct = ProjectedCatalogSelection(dataset, resolved, 500000)
+        retained = ProjectedCatalogSelection(
+            dataset, resolved, 500000, retain_projected_bytes=128 * 1024**2
+        )
+        assert retained.source_window == direct.source_window
         assert direct.source_window == original.source_window
         for tile in [Window(0, 0, 32, 32), Window(8, 8, 8, 8), Window(24, 24, 8, 8)]:
             shape = (int(tile.height), int(tile.width))
@@ -327,7 +331,7 @@ def test_streamed_masks_match_complete_exact_geometry(
                 all_touched=all_touched,
                 invert=True,
             )
-            for mask_source in (direct, original.projected_geometries):
+            for mask_source in (direct, retained, original.projected_geometries):
                 inside = pixels_inside_area(
                     mask_source,
                     out_shape=shape,

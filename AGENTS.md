@@ -130,7 +130,11 @@ behavior into the nearest controller, route, viewer, service, or utility module.
 - Catalog-vector analysis selections must use immutable, path-free source and
   predicate descriptors. Read original sources through neutral bounded contracts;
   do not introduce selection storage, filtered copies, or complete geometry
-  snapshots. Optional display outlines must not authorize or gate analysis.
+  snapshots. The approved #423 exception allows Processing raster statistics to
+  retain exact projected polygons in memory for one calculation, within an
+  explicit cumulative memory budget alongside raster buffers. Release them when
+  that calculation ends; do not persist, share across jobs, or send them to the
+  browser. Optional display outlines must not authorize or gate analysis.
 
 - Infrastructure components must not import or call application-level
   services.

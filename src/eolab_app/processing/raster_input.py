@@ -1,6 +1,9 @@
 """Shared source checks and native-area planning for clip and aggregate kernels."""
 
-from eolab_app.bounded_vector import ProjectedCatalogSelection
+from eolab_app.bounded_vector import (
+    ProjectedCatalogSelection,
+    ProjectedGeometryMemoryError,
+)
 from eolab_app.catalog_selection import ResolvedCatalogSelection
 import math
 from pathlib import Path
@@ -49,6 +52,8 @@ def select_area(
     geometries: tuple[dict[str, object], ...],
     max_coordinates: int,
     resolved: ResolvedCatalogSelection | None = None,
+    *,
+    retain_projected_bytes: int = 0,
 ) -> SelectedRasterArea:
     """Project an already-validated bounds/polygon selection value through neutral mechanisms.
 
@@ -59,6 +64,8 @@ def select_area(
         geometries: Immutable polygon selection polygons.
         max_coordinates: Transformation budget.
         resolved: Reauthorized original vector source for catalog selections only.
+        retain_projected_bytes: Optional calculation-local polygon memory budget;
+            zero preserves the streaming reader used by clips and planning.
 
     Returns:
         Native window and projected geometry for operation-owned inclusion rules.
@@ -72,7 +79,12 @@ def select_area(
                 raise ValueError(
                     "Catalog source must be authorized before native execution"
                 )
-            reader = ProjectedCatalogSelection(dataset, resolved, max_coordinates)
+            reader = ProjectedCatalogSelection(
+                dataset,
+                resolved,
+                max_coordinates,
+                retain_projected_bytes=retain_projected_bytes,
+            )
             return SelectedRasterArea(
                 source_window=reader.source_window, projected_geometries=reader
             )
@@ -81,6 +93,14 @@ def select_area(
         return selected_raster_area_for_wgs84_polygons(
             dataset, geometries, max_coordinates
         )
+    except ProjectedGeometryMemoryError as error:
+        raise ProcessingError(
+            "polygon_memory_limit",
+            f"Selected polygons cannot fit within the "
+            f"{retain_projected_bytes / 1024**2:.1f} MiB geometry allowance. "
+            "Filter the vector more narrowly or select a smaller area.",
+            413,
+        ) from error
     except NoRasterBoundsOverlapError as error:
         raise ProcessingError(
             "no_overlap", "The selected area does not overlap this raster."

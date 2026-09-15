@@ -233,3 +233,23 @@ HTTP, queueing, worker startup, notifications or browser display. The app's
 performance details retain those end-to-end measurements. Import time is reported
 separately; inner kernel stages overlap the execution time and must not be added
 to it.
+
+
+### Polygon preparation memory
+
+For summaries over a filtered vector layer, EOLab prepares the exact projected
+polygons before reading raster blocks, then reuses them for pixel-center masks.
+They are released when that calculation finishes or fails; nothing is saved as
+a filtered vector copy or shared between jobs. Planning and validation still
+read the source separately. Hectare weighting uses its existing separate path.
+
+Retained polygons have a 128 MiB ceiling per calculation, further reduced by the
+memory needed for the planned raster buffers. Preparation checks each feature
+before projection and counts its projected containers and coordinates afterward.
+If it cannot fit, filter the layer more narrowly or use a smaller raster batch.
+EOLab does not simplify the analysis polygons to fit.
+
+Selection setup timing includes this preparation. Mask timing measures the
+remaining per-tile rasterization. The result's retainedPolygonBytes estimates
+retained Python geometry memory in addition to the plan's raster-buffer estimate;
+it is not measured process RAM usage.

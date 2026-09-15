@@ -255,7 +255,8 @@ class AggregateKernelStages(BaseModel):
     """Nested wall times; mask, weights and reductions are inside calculation.
 
     Source setup includes expression compilation and opening the raster.
-    Selection setup reads/projects the area envelope. Mask time includes vector
+    Selection setup reads/projects the area envelope and, for catalog summaries,
+    retains those polygons for the calculation. Mask time includes vector
     source reads, projection and rasterization. Optional selectionMaskBreakdown
     records those inner stages; it is absent in older results. All times include
     I/O waits.
@@ -273,7 +274,11 @@ class AggregateKernelStages(BaseModel):
 
 
 class AggregatePerformance(BaseModel):
-    """Final bounded wall-time measurements, independent of transient progress."""
+    """Final measurements, independent of transient progress.
+
+    retainedPolygonBytes estimates Python geometry memory additional to the
+    plan's raster-buffer allowance; it is not process RSS. Older results omit it.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     execution: AggregateExecutionPlan
@@ -285,6 +290,7 @@ class AggregatePerformance(BaseModel):
     resultWriteSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     kernelSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     stages: AggregateKernelStages | None = None
+    retainedPolygonBytes: Annotated[int, Field(ge=0)] = 0
 
 
 class AggregateGrid(BaseModel):

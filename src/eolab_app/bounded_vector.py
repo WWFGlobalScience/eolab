@@ -271,8 +271,36 @@ def native_bbox_for_grid(
     )
 
 
+class ProjectedGeometryMemoryError(ValueError):
+    """The caller's calculation-local polygon memory allowance was exhausted."""
+
+
+def _geometry_memory_bytes(value: object) -> int:
+    """Count retained Python containers and coordinates conservatively.
+
+    Shared references are counted again, so this is an upper estimate rather
+    than a process RSS measurement. Projection output contains only shallow
+    GeoJSON containers and scalar values.
+
+    Args:
+        value: Projected polygon mappings or their coordinate containers.
+
+    Returns:
+        Bytes occupied by the value and its children.
+    """
+    total = sys.getsizeof(value)
+    if isinstance(value, dict):
+        total += sum(
+            _geometry_memory_bytes(key) + _geometry_memory_bytes(child)
+            for key, child in value.items()
+        )
+    elif isinstance(value, (tuple, list)):
+        total += sum(_geometry_memory_bytes(child) for child in value)
+    return total
+
+
 class ProjectedCatalogSelection:
-    """Read original polygons for exact raster masks without a geometry snapshot."""
+    """Project selected polygons for streaming or caller-bounded reusable masks."""
 
     def __init__(
         self,
@@ -280,16 +308,22 @@ class ProjectedCatalogSelection:
         filtered_vector: ResolvedCatalogSelection,
         maximum_coordinates: int,
         cancellation_requested: RasterReadCancellationCheck | None = None,
+        *,
+        retain_projected_bytes: int = 0,
     ) -> None:
-        """Measure the exact projected envelope with one bounded feature at a time.
+        """Measure the projected envelope, optionally retaining polygons for reuse.
 
         Args:
             dataset: Open, georeferenced raster metadata.
             filtered_vector: Vector source and filter identifying the features to read.
             maximum_coordinates: Existing projection-buffer policy.
             cancellation_requested: Optional cancellation predicate.
+            retain_projected_bytes: Caller-owned cumulative memory allowance.
+                Zero keeps streaming behavior. A positive allowance retains exact
+                polygons until close(); no files or cross-request cache are used.
 
         Raises:
+            ProjectedGeometryMemoryError: If projected polygons cannot fit.
             NoRasterBoundsOverlapError: If all polygons miss the raster.
             ValueError: If a source feature cannot fit the projection buffer.
         """
@@ -297,33 +331,89 @@ class ProjectedCatalogSelection:
         self.filtered_vector = filtered_vector
         self.maximum_coordinates = maximum_coordinates
         self.cancellation_requested = cancellation_requested
-        summary = selection_summary(filtered_vector, cancellation_requested)
-        segments = summary["coordinates"] - summary["rings"]
-        self.densify = min(
-            BOUNDED_WGS84_DENSIFY_POINTS,
-            max(0, (maximum_coordinates - summary["rings"]) // segments - 1),
+        self._retained: (
+            list[
+                tuple[tuple[float, float, float, float], tuple[dict[str, object], ...]]
+            ]
+            | None
+        ) = ([] if retain_projected_bytes else None)
+        self.retained_bytes = (
+            sys.getsizeof(self._retained) if self._retained is not None else 0
         )
-        left = top = math.inf
-        right = bottom = -math.inf
-        inverse = ~dataset.transform
-        with polygon_features(
-            filtered_vector, cancellation_requested=cancellation_requested
-        ) as features:
-            for geometry in features:
-                for projected in self.project(geometry):
-                    for ring in _polygon_rings(projected):
-                        for position in ring:
-                            x, y = inverse * position
-                            left, top = min(left, x), min(top, y)
-                            right, bottom = max(right, x), max(bottom, y)
-        pad = BOUNDED_SOURCE_WINDOW_PADDING_PIXELS
-        left, top = max(0, math.floor(left) - pad), max(0, math.floor(top) - pad)
-        right, bottom = min(dataset.width, math.ceil(right) + pad), min(
-            dataset.height, math.ceil(bottom) + pad
-        )
-        if left >= right or top >= bottom:
-            raise NoRasterBoundsOverlapError
-        self.source_window = Window(left, top, right - left, bottom - top)
+        self._closed = False
+        try:
+            summary = selection_summary(filtered_vector, cancellation_requested)
+            segments = summary["coordinates"] - summary["rings"]
+            self.densify = min(
+                BOUNDED_WGS84_DENSIFY_POINTS,
+                max(0, (maximum_coordinates - summary["rings"]) // segments - 1),
+            )
+            left = top = math.inf
+            right = bottom = -math.inf
+            inverse = ~dataset.transform
+            with polygon_features(
+                filtered_vector, cancellation_requested=cancellation_requested
+            ) as features:
+                for geometry in features:
+                    require_active_raster_read(cancellation_requested)
+                    if self._retained is not None:
+                        rings = _polygon_rings(geometry)
+                        count = sum(len(ring) - 1 for ring in rings) * (
+                            self.densify + 1
+                        ) + len(rings)
+                        # Coordinate tuples/floats, projection temporaries, ring and
+                        # feature containers; reserve before expanding this feature.
+                        required = count * 256 + len(rings) * 1024 + 4096
+                        if self.retained_bytes + required > retain_projected_bytes:
+                            raise ProjectedGeometryMemoryError(
+                                "Selected polygons exceed the retained geometry allowance"
+                            )
+                    projected_group = self.project(geometry)
+                    require_active_raster_read(cancellation_requested)
+                    feature_left = feature_top = math.inf
+                    feature_right = feature_bottom = -math.inf
+                    for projected in projected_group:
+                        for ring in _polygon_rings(projected):
+                            for position in ring:
+                                x, y = inverse * position
+                                feature_left = min(feature_left, x)
+                                feature_top = min(feature_top, y)
+                                feature_right = max(feature_right, x)
+                                feature_bottom = max(feature_bottom, y)
+                    left, top = min(left, feature_left), min(top, feature_top)
+                    right, bottom = max(right, feature_right), max(
+                        bottom, feature_bottom
+                    )
+                    if self._retained is not None:
+                        entry = (
+                            (feature_left, feature_top, feature_right, feature_bottom),
+                            projected_group,
+                        )
+                        required = _geometry_memory_bytes(entry) + 64
+                        if self.retained_bytes + required > retain_projected_bytes:
+                            raise ProjectedGeometryMemoryError(
+                                "Selected polygons exceed the retained geometry allowance"
+                            )
+                        self._retained.append(entry)
+                        self.retained_bytes += required
+            pad = BOUNDED_SOURCE_WINDOW_PADDING_PIXELS
+            left, top = max(0, math.floor(left) - pad), max(0, math.floor(top) - pad)
+            right, bottom = min(dataset.width, math.ceil(right) + pad), min(
+                dataset.height, math.ceil(bottom) + pad
+            )
+            if left >= right or top >= bottom:
+                raise NoRasterBoundsOverlapError
+            self.source_window = Window(left, top, right - left, bottom - top)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Release retained polygons and prevent use after the calculation ends."""
+        if self._retained is not None:
+            self._retained.clear()
+        self.retained_bytes = 0
+        self._closed = True
 
     def project(self, geometry: dict[str, Any]) -> tuple[dict[str, object], ...]:
         """Project one feature with the selection-wide legacy densification rate.
@@ -350,7 +440,7 @@ class ProjectedCatalogSelection:
         all_touched: bool,
         timings: RasterMaskTimings | None = None,
     ) -> NDArray[np.bool_]:
-        """Read selected vector polygons and return their inclusion mask.
+        """Rasterize retained polygons, or read/project them in streaming mode.
 
         Args:
             out_shape: Already admitted raster output dimensions.
@@ -365,7 +455,48 @@ class ProjectedCatalogSelection:
         Raises:
             ValueError: If source geometry or bounded reading is invalid.
         """
+        if self._closed:
+            raise ValueError("Selected polygons have been released")
+        require_active_raster_read(self.cancellation_requested)
         inside = np.zeros(out_shape, dtype=bool)
+        if self._retained is not None:
+            # A conservative tile envelope in source pixels avoids rasterizing
+            # distant features without a spatial index or changing tile edges.
+            height, width = out_shape
+            to_pixels = ~self.dataset.transform * affine
+            corners = [
+                to_pixels * point
+                for point in (
+                    (-1, -1),
+                    (width + 1, -1),
+                    (width + 1, height + 1),
+                    (-1, height + 1),
+                )
+            ]
+            left, right = min(p[0] for p in corners), max(p[0] for p in corners)
+            top, bottom = min(p[1] for p in corners), max(p[1] for p in corners)
+            for bounds, projected in self._retained:
+                require_active_raster_read(self.cancellation_requested)
+                if (
+                    bounds[2] < left
+                    or bounds[0] > right
+                    or bounds[3] < top
+                    or bounds[1] > bottom
+                ):
+                    continue
+                started = time.perf_counter()
+                feature_mask = geometry_mask(
+                    projected,
+                    out_shape=out_shape,
+                    transform=affine,
+                    all_touched=all_touched,
+                    invert=True,
+                )
+                if timings is not None:
+                    timings.rasterization_seconds += time.perf_counter() - started
+                inside |= feature_mask
+                del feature_mask
+            return inside
         reading_started = time.perf_counter() if timings is not None else 0.0
         bbox = native_bbox_for_grid(
             self.filtered_vector, self.dataset.crs, affine, out_shape
