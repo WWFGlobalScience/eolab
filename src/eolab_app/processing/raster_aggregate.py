@@ -461,14 +461,17 @@ def calculate_raster_statistics_for_area(
                 if pixel_area_calculator and not pixel_area_calculator.rectilinear
                 else TILE_SIDE
             )
-            raster_batch_plan = calculation_plan.grid.execution or execution_plan(
-                raster_area_tools.raster_window,
-                dataset.block_shapes[0],
-                dataset.width,
-                dataset.height,
-                None,
-                tile_side,
-            )
+            if calculation_plan.grid.execution:
+                raster_batch_plan = calculation_plan.grid.execution
+            else:
+                raster_batch_plan = execution_plan(
+                    raster_area_tools.raster_window,
+                    dataset.block_shapes[0],
+                    dataset.width,
+                    dataset.height,
+                    None,
+                    tile_side,
+                )
             iter_windows = iter_raster_read_windows(
                 raster_area_tools.raster_window,
                 dataset.block_shapes[0],
