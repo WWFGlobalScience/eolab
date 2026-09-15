@@ -35,7 +35,7 @@ from eolab_app.processing.raster_expression import Calculation, compile_expressi
 from eolab_app.processing.raster_input import (
     native_work,
     require_signature,
-    require_source,
+    validate_supported_raster,
     select_area,
 )
 from eolab_app.raster.source_contract import (
@@ -229,7 +229,7 @@ def plan_aggregate(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
         with rasterio.open(path) as dataset:
-            require_source(dataset, path)
+            validate_supported_raster(dataset, path)
             raster_window, _ = get_raster_window_and_mask_source(dataset, area, limits)
             needs_ground_area = any(
                 node.op == "areaha" for root in roots for node in walk(root)
@@ -374,7 +374,7 @@ def calculate_raster_statistics_for_area(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
         with rasterio.open(raster_path) as dataset:
-            require_source(dataset, raster_path)
+            validate_supported_raster(dataset, raster_path)
             source_ready = time.perf_counter()
             raster_window, area_mask_source = get_raster_window_and_mask_source(
                 dataset, calculation_plan.area, limits
