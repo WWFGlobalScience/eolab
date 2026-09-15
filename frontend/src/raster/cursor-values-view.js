@@ -52,7 +52,7 @@ export function formatRasterCursorValuesForClipboard(snapshot) {
         lines.push(`${sample.label}\t${value}`);
     }
     if (snapshot.omittedCount > 0) {
-        lines.push(`Additional in-bounds rasters omitted\t${snapshot.omittedCount}`);
+        lines.push(`Additional rasters omitted\t${snapshot.omittedCount}`);
     }
     return lines.join("\n");
 }
@@ -237,7 +237,7 @@ export class RasterCursorValuesView {
         this.position.textContent = formatPosition(snapshot.position);
         this.list.replaceChildren(...rows);
         this.limit.textContent = snapshot.omittedCount > 0
-            ? `${snapshot.omittedCount} additional in-bounds rasters omitted.`
+            ? `${snapshot.omittedCount} additional rasters omitted.`
             : "";
         this.limit.hidden = snapshot.omittedCount === 0;
         this.root.setAttribute(
