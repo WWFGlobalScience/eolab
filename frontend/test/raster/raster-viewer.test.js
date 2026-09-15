@@ -1476,11 +1476,46 @@ test('cursor sampling and DOM hand off positions atomically and reject stale rea
     }
 });
 
+test('2D click requests both axes even when neither published extent contains the point', async () => {
+    const requests = [];
+    const h = visibleLayerFixture(undefined, {
+        publishRaster: async item => ({
+            layerName: `eolab:${item.id}`,
+            bbox: [-180, -85.05127083678795, -179.99835325853354, 85.05112877980659],
+        }),
+        samplePixel: async item => {
+            requests.push(item.id);
+            return { inBounds: true, value: 2.55 };
+        },
+    });
+    await h.viewer.show(createRasterItem('first'));
+    await h.viewer.show(createRasterItem('second'));
+    h.controlsView.handlers.onBivariateModeChange('bivariate');
+    await flushPromises();
+    assert.equal(h.viewer.exploreAt({ lng: -87.44567871093751, lat: 36.798288873837045 }), false);
+    await flushPromises();
+    assert.deepEqual(requests, ['geotiff-second', 'geotiff-first']);
+    assert.deepEqual(
+        h.controlsView.pointSamples.samples.map(({ axis, state, value }) => ({ axis, state, value })),
+        [
+            { axis: 'X', state: 'value', value: 2.55 },
+            { axis: 'Y', state: 'value', value: 2.55 },
+        ],
+    );
+    h.destroy();
+});
+
 test('active 2D analysis follows the top raster pair and exposes X Y badges', async () => {
     const pairedRequests = [];
     const pointRequests = [];
     const renderingSelections = [];
     const h = visibleLayerFixture(undefined, {
+        publishRaster: async item => ({
+            layerName: `eolab:${item.id}`,
+            bbox: item.id.endsWith('middle')
+                ? [-180, -85.05127083678795, -179.99835325853354, 85.05112877980659]
+                : [-180, -90, 180, 90],
+        }),
         loadPairedStatistics: async (xItem, yItem) => {
             pairedRequests.push([
                 xItem.id.replace(/^geotiff-/, ''),
@@ -2410,6 +2445,10 @@ test("raster viewer samples click values only inside the single map world", asyn
     );
 
     await viewer.show(MOUNTED_GEOTIFF_ITEM);
+    for (const invalid of [{ lng: 238, lat: 48 }, { lng: 0, lat: 91 }, { lng: NaN, lat: 0 }]) {
+        assert.equal(viewer.exploreAt(invalid), false);
+    }
+    assert.equal(pixelRequests.length, 0);
     leafletMap.emit("mousemove", { latlng: { lng: 238, lat: 48 } });
     assert.equal(pixelRequests.length, 0);
     assert.equal(rectangleLayers.length, 0);
@@ -3268,7 +3307,7 @@ test("map box starts at map center and resizes after a debounce", async () => {
     viewer.destroy();
 });
 
-test("raster viewer ignores clicks outside every retained raster", async () => {
+test("click pixel requests use backend coverage independently of histogram opening", async () => {
     const leafletMap = createFakeMap();
     const { leaflet, rectangleLayers } = createFakeLeaflet();
     const controlsView = createFakeControlsView();
@@ -3294,7 +3333,7 @@ test("raster viewer ignores clicks outside every retained raster", async () => {
             loadStatistics: () => new Promise(() => {}),
             samplePixel: async (item, point) => {
                 pixelRequests.push({ item, point });
-                return { inBounds: true, value: 1 };
+                return { inBounds: point.longitude !== 0, value: point.longitude === 0 ? null : 1 };
             },
             viewport: { innerWidth: 1280, innerHeight: 720 },
         }
@@ -3303,9 +3342,9 @@ test("raster viewer ignores clicks outside every retained raster", async () => {
     await viewer.show(MOUNTED_GEOTIFF_ITEM);
     assert.equal(viewer.exploreAt({ lng: 0, lat: 20 }), false);
     await flushPromises();
-    assert.deepEqual(pixelRequests, []);
+    assert.equal(pixelRequests.length, 1);
     assert.equal(histogramPresentationRequests, 0);
-    assert.equal(controlsView.pointSamples ?? null, null);
+    assert.equal(controlsView.pointSamples.samples[0].state, "outside");
     assert.equal(
         rectangleLayers.some((layer) => layer.kind === "selection"),
         false
@@ -3313,9 +3352,15 @@ test("raster viewer ignores clicks outside every retained raster", async () => {
 
     assert.equal(viewer.exploreAt({ lng: 80, lat: 20 }), true);
     await flushPromises();
-    assert.equal(pixelRequests.length, 1);
+    assert.equal(pixelRequests.length, 2);
     assert.equal(histogramPresentationRequests, 1);
     assert.ok(rectangleLayers.some((layer) => layer.kind === "selection"));
+    assert.equal(viewer.exploreAt({ lng: -50, lat: 20 }), false);
+    await flushPromises();
+    assert.equal(pixelRequests.length, 3);
+    assert.equal(controlsView.pointSamples.samples[0].state, "value");
+    assert.equal(controlsView.pointSamples.samples[0].value, 1);
+    assert.equal(histogramPresentationRequests, 1);
     viewer.destroy();
 });
 
