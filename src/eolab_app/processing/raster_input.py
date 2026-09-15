@@ -21,30 +21,6 @@ from eolab_app.raster.source_contract import (
     require_raster_analysis_georeferencing,
     require_bounded_source_structure,
 )
-from eolab_app.raster.source_identity import RasterSourceIdentity
-
-
-def require_signature(path: Path, signature: tuple[int, ...]) -> None:
-    """Fence both kernels to the complete catalog-approved source signature.
-
-    Args:
-        path: Authorized mounted source.
-        signature: Expected inode, size, mtime, and ctime tuple.
-
-    Raises:
-        ProcessingError: If the source is missing or changed.
-    """
-    try:
-        current = tuple(RasterSourceIdentity.read(path).to_catalog())
-    except OSError:
-        current = ()
-    if current != signature:
-        raise ProcessingError(
-            "source_changed",
-            "The raster changed; scan it again and create a new processing plan.",
-            409,
-        )
-
 
 def validate_supported_raster(dataset: Any, path: Path) -> None:
     """Validate that an opened raster is supported for calculations and clipping.

@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx2
 import pytest
 
-from eolab_app.raster.errors import RasterConflictError, RasterPublicationError
+from eolab_app.raster.errors import RasterPublicationError
 from eolab_app.raster.geoserver import (
     GEOSERVER_ERROR_EXCERPT_LIMIT,
     GeoServerRasterPublisher,
@@ -299,7 +299,6 @@ def test_publication_coordinates_upstream_contract_and_authorization(
         _Resolver(source_path),
         publisher,
         registry,
-        signature_reader=source_signature,
     )
 
     result = asyncio.run(service.publish(_catalog_request()))
@@ -307,33 +306,6 @@ def test_publication_coordinates_upstream_contract_and_authorization(
     assert result.layer_name == f"eolab:{RESOURCE_NAME}"
     assert publisher.calls == [(RESOURCE_NAME, source_path)]
     assert registry.require_current(result.layer_name).source_path == source_path
-
-
-def test_publication_rejects_a_source_changed_since_discovery(
-    tmp_path: Path,
-) -> None:
-    """Keep stale Catalog spatial metadata from authorizing a replacement.
-
-    Args:
-        tmp_path: Temporary directory containing the controlled source.
-    """
-    source_path = tmp_path / "raster.tif"
-    source_path.write_bytes(b"discovered source")
-    item = _catalog_item(source_path)
-    source_path.write_bytes(b"replacement source with another size")
-    publisher = _Publisher()
-    service = RasterPublicationService(
-        _Catalog(item),
-        _Resolver(source_path),
-        publisher,
-        PublishedRasterRegistry(),
-        signature_reader=source_signature,
-    )
-
-    with pytest.raises(RasterConflictError, match="scan it again"):
-        asyncio.run(service.publish(_catalog_request()))
-
-    assert publisher.calls == []
 
 
 def test_clean_publication_creates_verifies_and_styles_exactly_once(
@@ -600,7 +572,6 @@ def test_app_restart_reauthorizes_existing_complete_publication(
                     "http://geoserver:8080/geoserver",
                 ),
                 registry,
-                signature_reader=source_signature,
             )
             return await service.publish(_catalog_request())
 

@@ -559,8 +559,6 @@ def test_wms_proxy_allows_bounded_png_rendering(
         malformed_environment_response = client.get(
             f"{tile_url.partition('&env=')[0]}&env="
         )
-        source_path.write_bytes(b"replacement")
-        changed_source_response = client.get(tile_url)
 
     assert publication_response.status_code == 200
     assert response.status_code == 200
@@ -598,19 +596,13 @@ def test_wms_proxy_allows_bounded_png_rendering(
     }
     failure_document = failure_diagnostics.json()
     assert failure_document["state"] == "degraded"
-    assert failure_document["metrics"]["requests"] | {
-        "latestGetMapSeconds": None
-    } == {
+    assert failure_document["metrics"]["requests"] | {"latestGetMapSeconds": None} == {
         "activeGetMap": 0,
         "concurrencyLimit": 2,
         "completedGetMap": 2,
         "latestGetMapSeconds": None,
         "recentGetMapFailures": 1,
         "recentWindowSize": 2,
-    }
-    assert changed_source_response.status_code == 409
-    assert changed_source_response.json() == {
-        "detail": "The visualized GeoTIFF changed; select it again"
     }
 
 

@@ -6,7 +6,6 @@ import pytest
 
 from eolab_app.raster.errors import RasterAssetError
 from eolab_app.rendering.errors import (
-    PublishedLayerChangedError,
     PublishedLayerNotAuthorizedError,
 )
 from eolab_app.raster.sources import (
@@ -52,8 +51,8 @@ def test_mounted_raster_resolver_confines_assets_to_the_scan_mount(
             resolver.resolve(_item(unsafe_href))
 
 
-def test_registry_requires_an_approved_unchanged_source(tmp_path: Path) -> None:
-    """Reject unknown layers and invalidate an approved replaced source."""
+def test_registry_requires_an_approved_layer(tmp_path: Path) -> None:
+    """Reject unknown layers and retain the recorded catalog identity."""
     source_path = tmp_path / "raster.tif"
     source_path.write_bytes(b"first")
     layer_name = "eolab:geotiff-0123456789abcdef01234567"
@@ -69,8 +68,4 @@ def test_registry_requires_an_approved_unchanged_source(tmp_path: Path) -> None:
     )
 
     source_path.write_bytes(b"replacement source")
-    with pytest.raises(PublishedLayerChangedError) as error:
-        registry.require_current(layer_name)
-    assert str(error.value) == (
-        "The visualized GeoTIFF changed; select it again"
-    )
+    assert registry.require_current(layer_name).source_signature == approved_signature

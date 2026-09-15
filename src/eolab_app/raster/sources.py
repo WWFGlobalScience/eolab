@@ -11,7 +11,6 @@ from eolab_app.raster.errors import (
 )
 from eolab_app.raster.source_identity import RasterSourceIdentity
 from eolab_app.rendering.errors import (
-    PublishedLayerChangedError,
     PublishedLayerNotAuthorizedError,
 )
 from eolab_app.raster.wms_authorization import PublishedRasterAuthorization
@@ -104,7 +103,7 @@ class MountedRasterResolver:
 
 
 class PublishedRasterRegistry:
-    """Allow WMS access only to current files approved by this app process."""
+    """Allow WMS access only to raster layers approved by this app process."""
 
     def __init__(self) -> None:
         """Create an empty process-local raster authorization registry."""
@@ -116,29 +115,17 @@ class PublishedRasterRegistry:
         source_path: Path,
         inspected_signature: RasterSourceIdentity,
     ) -> None:
-        """Authorize a layer if its source is unchanged since inspection.
+        """Record authorization for a published immutable raster.
 
         Args:
             layer_name: Workspace-qualified GeoServer layer name.
             source_path: Mounted GeoTIFF backing the layer.
-            inspected_signature: Source identity captured before publication.
-
-        Raises:
-            PublishedLayerChangedError: If the source changed or disappeared
-                during publication.
+            inspected_signature: Source identity recorded in the catalog.
         """
-        try:
-            current_signature = source_signature(source_path)
-        except OSError:
-            current_signature = None
-        if current_signature != inspected_signature:
-            raise PublishedLayerChangedError(
-                "The GeoTIFF changed while it was being published"
-            )
         self._sources[layer_name] = (source_path, inspected_signature)
 
     def require_current(self, layer_name: str) -> PublishedRasterAuthorization:
-        """Require a layer authorized from a source that has not changed.
+        """Look up an authorized raster layer.
 
         Args:
             layer_name: Workspace-qualified GeoServer layer name.
@@ -148,8 +135,6 @@ class PublishedRasterRegistry:
 
         Raises:
             PublishedLayerNotAuthorizedError: If the layer is not authorized.
-            PublishedLayerChangedError: If its source changed since
-                publication.
         """
         authorization = self._sources.get(layer_name)
         if authorization is None:
@@ -157,12 +142,4 @@ class PublishedRasterRegistry:
                 "The WMS layer has not been approved for visualization"
             )
         source_path, approved_signature = authorization
-        try:
-            current_signature = source_signature(source_path)
-        except OSError:
-            current_signature = None
-        if current_signature != approved_signature:
-            raise PublishedLayerChangedError(
-                "The visualized GeoTIFF changed; select it again"
-            )
         return PublishedRasterAuthorization(source_path, approved_signature)

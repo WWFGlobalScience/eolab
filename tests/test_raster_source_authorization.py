@@ -137,10 +137,10 @@ def test_source_authorization_accepts_legacy_identity_after_remount(
     assert authorized.source_signature == signature
 
 
-def test_source_authorization_rejects_missing_and_stale_scan_identity(
+def test_source_authorization_retains_catalog_identity_without_file_rechecks(
     tmp_path: Path,
 ) -> None:
-    """Keep stale catalog sources actionable without consulting rendering.
+    """Use catalog identity without mutation checks; reject missing identity.
 
     Args:
         tmp_path: Temporary controlled source directory.
@@ -158,8 +158,8 @@ def test_source_authorization_rejects_missing_and_stale_scan_identity(
         _Resolver(source_path),
     )
 
-    with pytest.raises(RasterConflictError, match="scan it again"):
-        asyncio.run(stale_authorizer.authorize(request))
+    authorized = asyncio.run(stale_authorizer.authorize(request))
+    assert authorized.source_signature == scanned_signature
 
     missing_signature_item = _item(scanned_signature)
     metadata = missing_signature_item["assets"]["data"][

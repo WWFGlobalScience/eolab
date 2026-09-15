@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from eolab_app.raster.errors import RasterConflictError, RasterStatisticsCapacityError
+from eolab_app.raster.errors import RasterStatisticsCapacityError
 from eolab_app.raster.models import (
     AuthorizedRaster,
     CatalogRasterPairRequest,
@@ -34,10 +34,6 @@ class _SourceAuthorizer:
     async def authorize(self, _: object) -> AuthorizedRaster:
         """Return the current controlled authorization."""
         return self.authorization
-
-    async def require_current(self, authorized: AuthorizedRaster) -> None:
-        """Require the supplied authorization to remain current."""
-        assert authorized == self.authorization
 
 
 def _statistics(value: float) -> RasterStatistics:
@@ -138,18 +134,6 @@ class _PairSourceAuthorizer:
             Current controlled source authorization.
         """
         return self.authorizations[request.item_id]
-
-    async def require_current(self, authorized: AuthorizedRaster) -> None:
-        """Require the supplied authorization to remain current.
-
-        Args:
-            authorized: Source authorization captured around the read.
-
-        Returns:
-            None while an exact controlled value remains present.
-        """
-        if authorized not in self.authorizations.values():
-            raise RasterConflictError("The controlled raster source changed")
 
 
 def test_statistics_service_caches_by_approved_source_signature(
@@ -485,74 +469,6 @@ def test_paired_last_waiter_cancellation_retains_shared_capacity(
         assert (await service.get(ordinary_request)).sample_minimum == 1
 
     asyncio.run(exercise_capacity())
-
-
-def test_paired_statistics_rechecks_y_source_after_read(
-    tmp_path: Path,
-) -> None:
-    """Reject and avoid caching a pair whose Y signature changes in flight.
-
-    Args:
-        tmp_path: Directory used for controlled source path identities.
-
-    Returns:
-        None after verifying the changed Y source forces recomputation.
-    """
-    source_authorizer = _PairSourceAuthorizer(tmp_path)
-    read_started = threading.Event()
-    release_read = threading.Event()
-    read_count = 0
-
-    def reader(*_: object) -> RasterPairedStatistics:
-        """Return a distinguishable result after controlled source mutation.
-
-        Args:
-            *_: Ignored paired-reader arguments.
-
-        Returns:
-            Valid paired statistics carrying the current read count.
-        """
-        nonlocal read_count
-        read_count += 1
-        read_started.set()
-        assert release_read.wait(timeout=2)
-        return _paired_statistics(float(read_count))
-
-    service = RasterStatisticsService(
-        source_authorizer,
-        read_concurrency=1,
-        cache_entries=4,
-        paired_statistics_reader=reader,
-    )
-    request = CatalogRasterPairRequest.model_validate({
-        "xRaster": {
-            "collectionId": "eolab-mounted-geotiffs",
-            "itemId": "geotiff-0123456789abcdef01234567",
-        },
-        "yRaster": {
-            "collectionId": "eolab-mounted-geotiffs",
-            "itemId": "geotiff-abcdef0123456789abcdef01",
-        },
-    })
-
-    async def exercise_recheck() -> None:
-        """Replace Y during the first read and recompute under its new key.
-
-        Returns:
-            None after verifying stale work is rejected and recomputed.
-        """
-        first = asyncio.create_task(service.get_paired(request))
-        assert await asyncio.to_thread(read_started.wait, 2)
-        source_authorizer.authorizations[request.y_raster.item_id] = (
-            AuthorizedRaster(tmp_path / "y.tif", (6, 7, 8, 9, 11))
-        )
-        release_read.set()
-        with pytest.raises(RasterConflictError, match="source changed"):
-            await first
-        assert (await service.get_paired(request)).x_minimum == 2
-
-    asyncio.run(exercise_recheck())
-    assert read_count == 2
 
 
 def test_statistics_service_shares_one_completed_cache_budget(

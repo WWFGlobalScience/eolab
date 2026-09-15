@@ -81,20 +81,3 @@ class RasterSourceAuthorizer(Protocol):
                 validation fails.
         """
         ...
-
-    async def require_current(
-        self,
-        authorized_raster: AuthorizedRaster,
-    ) -> None:
-        """Recheck one source identity around analysis work.
-
-        Args:
-            authorized_raster: Source identity established at request start.
-
-        Returns:
-            None when the source remains current.
-
-        Raises:
-            RasterConflictError: If the source disappeared or changed.
-        """
-        ...

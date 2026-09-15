@@ -1,8 +1,6 @@
 """Test rendering-independent raster statistics and service contracts."""
 
 import asyncio
-import threading
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy
@@ -17,7 +15,6 @@ from rasterio.windows import Window
 
 from eolab_app.raster.errors import RasterConflictError, RasterStatisticsCapacityError
 from eolab_app.raster import paired_statistics
-from eolab_app.rendering.errors import PublishedLayerChangedError
 from eolab_app.raster.models import (
     AuthorizedRaster,
     CatalogPixelRequest,
@@ -34,8 +31,6 @@ from eolab_app.raster.models import (
 from eolab_app.raster.paired_statistics import read_raster_paired_statistics
 from eolab_app.raster.pixel import read_raster_pixel
 from eolab_app.raster.pixel_service import RasterPixelService
-from eolab_app.raster.sources import PublishedRasterRegistry, source_signature
-from eolab_app.raster.source_identity import RasterSourceIdentity
 from eolab_app.raster.statistics import (
     NoRasterBoundsOverlapError,
     NoValidRasterSamplesError,
@@ -72,7 +67,6 @@ class _SourceAuthorizer:
             ITEM_ID: AuthorizedRaster(Path("raster.tif"), (1, 2, 3, 4, 5))
         }
         self.authorization_count = 0
-        self.current_check_count = 0
 
     async def authorize(
         self,
@@ -88,32 +82,6 @@ class _SourceAuthorizer:
         """
         self.authorization_count += 1
         return self.authorizations[request.item_id]
-
-    async def require_current(self, authorized_raster: AuthorizedRaster) -> None:
-        """Reject a source identity replaced after authorization.
-
-        Args:
-            authorized_raster: Previously authorized source identity.
-
-        Returns:
-            None when the identity remains current.
-
-        Raises:
-            RasterConflictError: If the controlled source was replaced.
-        """
-        self.current_check_count += 1
-        current = next(
-            (
-                value
-                for value in self.authorizations.values()
-                if value.source_path == authorized_raster.source_path
-            ),
-            None,
-        )
-        if current != authorized_raster:
-            raise RasterConflictError(
-                "The cataloged raster changed; scan it again before analysis."
-            )
 
 
 class _RasterSample:
@@ -1609,7 +1577,6 @@ def test_pixel_sampler_limits_concurrent_raster_reads(
         release_reads.set()
         await asyncio.gather(*tasks)
         assert authorizer.authorization_count == 3
-        assert authorizer.current_check_count == 6
 
     asyncio.run(sample_three_pixels())
 
@@ -1968,90 +1935,25 @@ def test_statistics_service_keys_cache_by_fixed_policy_parameters(
     assert len(service._cache) == 2
 
 
-def test_statistics_service_rejects_source_changed_during_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Never return or cache statistics spanning two source identities."""
-    authorizer = _SourceAuthorizer()
-    read_count = 0
-
-    async def to_thread(
-        _: object,
-        __: Path,
-        area: RasterSamplingArea,
-        ___: object,
-    ) -> RasterStatistics:
-        """Replace source identity during the first fake read.
-
-        Args:
-            _: Ignored reader callable.
-            __: Ignored authorized source path.
-            area: Normalized sampling area.
-            ___: Ignored cancellation predicate.
-
-        Returns:
-            Controlled statistics for ``area``.
-        """
-        nonlocal read_count
-        read_count += 1
-        if read_count == 1:
-            original = authorizer.authorizations[ITEM_ID]
-            authorizer.authorizations[ITEM_ID] = AuthorizedRaster(
-                original.source_path,
-                (1, 2, 3, 4, 6),
-            )
-        return _statistics_result(float(read_count), area)
-
-    monkeypatch.setattr(
-        "eolab_app.raster.statistics_service.asyncio.to_thread",
-        to_thread,
-    )
-    service = RasterStatisticsService(authorizer, 1, 32)
-    request = CatalogRasterStatisticsRequest.model_validate({
-        "collectionId": "eolab-mounted-geotiffs",
-        "itemId": ITEM_ID,
-    })
-
-    async def change_during_read() -> None:
-        """Verify stale computation rejection and subsequent recovery.
-
-        Returns:
-            None.
-        """
-        with pytest.raises(RasterConflictError, match="changed"):
-            await service.get(request)
-        assert not service._cache
-
-        statistics = await service.get(request)
-        assert statistics.sample_minimum == 2
-
-    asyncio.run(change_during_read())
-    assert read_count == 2
-
-
 def test_final_waiter_cancelled_during_postcheck_is_not_cached() -> None:
-    """Reject abandoned work canceled inside the post-read identity check."""
+    """Reject abandoned work canceled after reading and before caching."""
     postcheck_started = asyncio.Event()
     release_postcheck = asyncio.Event()
     read_count = 0
 
-    class BlockingPostcheckAuthorizer(_SourceAuthorizer):
-        """Pause the source recheck immediately after the first read."""
+    class BlockingPostcheckService(RasterStatisticsService):
+        """Pause after reading so the last request can cancel before caching."""
 
-        async def require_current(
-            self,
-            authorized_raster: AuthorizedRaster,
+        async def _require_current_sampling_area(
+            self, sampling_area: RasterSamplingArea
         ) -> None:
-            """Block only the first worker's post-read source check.
+            """Check the area, then pause after the first read.
 
             Args:
-                authorized_raster: Source identity established for the worker.
-
-            Returns:
-                None after the controlled post-read check is released.
+                sampling_area: Area whose lifecycle must remain valid.
             """
-            await super().require_current(authorized_raster)
-            if self.current_check_count == 2:
+            await super()._require_current_sampling_area(sampling_area)
+            if read_count == 1:
                 postcheck_started.set()
                 await release_postcheck.wait()
 
@@ -2074,8 +1976,8 @@ def test_final_waiter_cancelled_during_postcheck_is_not_cached() -> None:
         read_count += 1
         return _statistics_result(float(read_count), area)
 
-    service = RasterStatisticsService(
-        BlockingPostcheckAuthorizer(),
+    service = BlockingPostcheckService(
+        _SourceAuthorizer(),
         1,
         32,
         statistics_reader=statistics_reader,  # type: ignore[arg-type]
@@ -2352,67 +2254,3 @@ def test_statistics_service_caps_distinct_work_and_coalesces_at_capacity(
     asyncio.run(exercise_admission())
     assert set(read_order[:2]) == {"active", "stale"}
     assert read_order[2:] == ["current"]
-
-
-def test_stale_registry_check_does_not_remove_new_authorization(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Preserve a concurrently refreshed rendering registry authorization."""
-    source_path = tmp_path / "raster.tif"
-    source_path.write_bytes(b"old source")
-    layer_name = f"eolab:{ITEM_ID}"
-    registry = PublishedRasterRegistry()
-    registry.authorize(layer_name, source_path, source_signature(source_path))
-
-    source_path.write_bytes(b"new source is larger")
-    new_signature = source_signature(source_path)
-    stale_check_started = threading.Event()
-    release_stale_check = threading.Event()
-    real_source_signature = source_signature
-
-    def coordinated_source_signature(path: Path) -> RasterSourceIdentity:
-        """Pause only the old authorization's background signature check.
-
-        Args:
-            path: Source path whose identity is requested.
-
-        Returns:
-            Current filesystem signature.
-        """
-        if threading.current_thread().name == "stale-signature-check":
-            stale_check_started.set()
-            assert release_stale_check.wait(timeout=1)
-        return real_source_signature(path)
-
-    monkeypatch.setattr(
-        "eolab_app.raster.sources.source_signature",
-        coordinated_source_signature,
-    )
-    stale_error: list[PublishedLayerChangedError] = []
-
-    def require_stale_authorization() -> None:
-        """Run the coordinated stale check in one background thread.
-
-        Returns:
-            None after recording the expected conflict.
-        """
-        try:
-            registry.require_current(layer_name)
-        except PublishedLayerChangedError as error:
-            stale_error.append(error)
-
-    stale_thread = threading.Thread(
-        target=require_stale_authorization,
-        name="stale-signature-check",
-    )
-    stale_thread.start()
-    assert stale_check_started.wait(timeout=1)
-
-    registry.authorize(layer_name, source_path, new_signature)
-    release_stale_check.set()
-    stale_thread.join(timeout=1)
-
-    assert not stale_thread.is_alive()
-    assert len(stale_error) == 1
-    assert registry.require_current(layer_name).source_signature == new_signature

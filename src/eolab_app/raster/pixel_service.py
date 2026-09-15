@@ -58,14 +58,13 @@ class RasterPixelService:
             rasterio.errors.RasterioError: If GDAL cannot sample it.
             ValueError: If its CRS cannot transform the position.
         """
-        await self._source_authorizer.require_current(authorized_raster)
+
         pixel = await asyncio.to_thread(
             self._pixel_reader,
             authorized_raster.source_path,
             request.longitude,
             request.latitude,
         )
-        await self._source_authorizer.require_current(authorized_raster)
         return pixel
 
     async def get(self, request: CatalogPixelRequest) -> RasterPixel:

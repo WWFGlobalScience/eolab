@@ -160,7 +160,7 @@ and timings. These are wall times, including waiting within each operation:
   selection was observed in this tab. It excludes optional display-outline work.
   A later Calculate click starts a new measurement.
 - Kernel setup, read, calculation, CSV/checksum and the labelled remaining kernel
-  work partition Kernel elapsed. Progress writes and source close/rechecks are
+  work partition Kernel elapsed. Progress writes and source closing are
   included in that remainder. Timings describe the entire shared batch when
   several statistic cards run together.
 - Native-process time also includes communication and cleanup. Readiness wait

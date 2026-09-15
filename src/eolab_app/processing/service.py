@@ -323,14 +323,13 @@ class ProcessingService:
                 signature = tuple(authorized.source_signature.to_catalog())
                 outcome = await run_process(
                     clip_process_target,
-                    ("plan", (authorized.source_path, signature, area, self.limits)),
+                    ("plan", (authorized.source_path, area, self.limits)),
                     self.limits.plan_timeout_seconds,
                     self.native,
                 )
                 status, value = outcome.value
                 if status != "ok":
                     raise ProcessingError(*value)
-                await self.authorizer.require_current(authorized)
                 if area.catalogSelection is not None:
                     try:
                         await self.areas.resolve_for_sampling(area.catalogSelection)
@@ -417,13 +416,7 @@ class ProcessingService:
                 409,
             )
         spec = ClipSpec.model_validate(plan["spec"])
-        authorized = await self.authorizer.authorize(spec.source)
-        if tuple(authorized.source_signature.to_catalog()) != spec.sourceSignature:
-            raise ProcessingError(
-                "source_changed",
-                "The raster changed since planning. Create a new clip plan.",
-                409,
-            )
+        await self.authorizer.authorize(spec.source)
         area = await self._area(
             ClipPlanRequest.model_validate(
                 {
@@ -511,7 +504,6 @@ class ProcessingService:
                         "plan",
                         (
                             authorized.source_path,
-                            signature,
                             area,
                             request.calculations,
                             alias,
@@ -526,7 +518,6 @@ class ProcessingService:
                 calculated = time.perf_counter()
                 if status != "ok":
                     raise ProcessingError(*value)
-                await self.authorizer.require_current(authorized)
                 if area.catalogSelection is not None:
                     try:
                         await self.areas.resolve_for_sampling(area.catalogSelection)
@@ -627,13 +618,7 @@ class ProcessingService:
                 409,
             )
         spec = AggregateSpec.model_validate(plan["spec"])
-        authorized = await self.authorizer.authorize(next(iter(spec.sources.values())))
-        if tuple(authorized.source_signature.to_catalog()) != spec.sourceSignature:
-            raise ProcessingError(
-                "source_changed",
-                "The raster changed since planning. Create a new calculation plan.",
-                409,
-            )
+        await self.authorizer.authorize(next(iter(spec.sources.values())))
         area = await self._aggregate_area(
             AggregatePlanRequest.model_validate(
                 {

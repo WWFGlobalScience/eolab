@@ -232,7 +232,7 @@ recovers updates if streaming is unavailable.
 | Rendering configuration error | GeoServer initialization logs and workspace/layer resources; ambiguous partial resources are preserved for administrator inspection. |
 | Polygon outline unavailable | Jobs logs, token, Catalog connection and read-only source mount; numeric analysis is independent of the outline. |
 | Processing admission or disk-space refusal | Active jobs, result retention and free disk space; wait, cancel unnecessary work or delete finished exports. |
-| Source changed | Rescan the dataset and select it again; accepted jobs require unchanged original sources. |
+| Vector source changed | Rescan the vector and select it again; accepted jobs require unchanged original vector sources. |
 
 ## Build information
 
@@ -263,3 +263,18 @@ builds.
   the Catalog. Do this only when intentionally creating a new empty Catalog.
 - Catalog-vector selections read the original mounted source. The web application,
   Processing worker and Job service need the same read-only source mount.
+
+## Immutable raster inputs
+
+Treat every cataloged raster as immutable for its catalog lifetime. Do not overwrite
+its data, grid, or embedded metadata in place. This also applies while jobs are
+queued, executing, or recoverable, and across deployments that retain those jobs.
+Publish changed data as a new asset with a new catalog identity; keep old sources
+available until their jobs and recovery lifetimes have ended.
+
+Raster operations authorize the catalog item and resolve its path inside the
+configured mount. They do not compare filesystem timestamps or source signatures
+to detect edits. Missing or unreadable sources still fail during resolution or
+opening. Stored source identities remain in plans, provenance and cache keys;
+changing those records is not a substitute for publishing a new asset. Vector
+source checks, job ownership, cancellation and output checksum checks are unchanged.

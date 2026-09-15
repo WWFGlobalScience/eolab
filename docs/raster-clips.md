@@ -35,8 +35,9 @@ The existing `/docs#/processing` API page also remains available.
 
 ## Raster correctness
 
-The worker reauthorizes the Catalog Item at execution and checks the full scanner
-signature (inode, size, mtime, ctime) around native reads and before publication.
+The worker reauthorizes the Catalog Item at execution. Raster inputs are immutable;
+execution does not recheck file timestamps or rebuild the grid to detect changes.
+The scanned source identity remains in saved plans and result provenance.
 Existing signed-source restrictions remain: one supported numeric band, bounded
 native blocks, embedded georeferencing and nodata, and no unsigned sidecars,
 alpha, or input dataset masks. Supported datatypes are uint8, uint16, int16,
