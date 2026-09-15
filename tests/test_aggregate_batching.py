@@ -21,7 +21,10 @@ from eolab_app.processing.aggregate_models import (
     AggregatePerformance,
     AggregateSpec,
 )
-from eolab_app.processing.aggregate_windows import execution_plan, read_windows
+from eolab_app.processing.aggregate_windows import (
+    execution_plan,
+    iter_raster_read_windows,
+)
 from eolab_app.processing.models import ProcessingError
 import eolab_app.processing.raster_aggregate as kernel
 from eolab_app.processing.service import prepare_aggregate_job
@@ -55,7 +58,11 @@ def test_streamed_windows_cover_only_admitted_blocks_once(
         tile_side: Legacy numerical or geometry-fallback tile ceiling.
     """
     plan = execution_plan(window, shape, width, height, target, tile_side)
-    seen, counts, reads = [], [], list(read_windows(window, shape, width, height, plan))
+    seen, counts, reads = (
+        [],
+        [],
+        list(iter_raster_read_windows(window, shape, width, height, plan)),
+    )
     for read, count in reads:
         blocks = source_block_indexes_for_window(read, shape)
         assert len(blocks) == count

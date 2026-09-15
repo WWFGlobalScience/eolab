@@ -27,7 +27,10 @@ from eolab_app.processing.aggregate_models import (
     NamedCalculation,
     RasterAggregateLimits,
 )
-from eolab_app.processing.aggregate_windows import execution_plan, read_windows
+from eolab_app.processing.aggregate_windows import (
+    execution_plan,
+    iter_raster_read_windows,
+)
 from eolab_app.processing.artifacts import write_progress
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.ground_area import PixelAreaCalculator
@@ -370,7 +373,7 @@ def stable_selection_mask(
     legacy = execution_plan(
         read, dataset.block_shapes[0], dataset.width, dataset.height, None, tile_side
     )
-    for block, _ in read_windows(
+    for block, _ in iter_raster_read_windows(
         read, dataset.block_shapes[0], dataset.width, dataset.height, legacy
     ):
         intersection = block.intersection(selected)
@@ -466,7 +469,7 @@ def calculate_raster_statistics_for_area(
                 None,
                 tile_side,
             )
-            windows = read_windows(
+            iter_windows = iter_raster_read_windows(
                 raster_area_tools.raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
@@ -478,7 +481,7 @@ def calculate_raster_statistics_for_area(
                 if raster_batch_plan.targetChunkPixels is None
                 else read_native_raster_window
             )
-            for block, native_blocks in windows:
+            for block, native_blocks in iter_windows:
                 read_started = time.perf_counter()
                 native = reader(dataset, block)
                 read_seconds += time.perf_counter() - read_started
