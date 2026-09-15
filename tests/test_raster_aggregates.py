@@ -104,10 +104,10 @@ def test_prepared_area_tools_window_and_masks(
         assert tuple(tools.raster_window.flatten()) == expected_window
         shape = (int(tools.raster_window.height), int(tools.raster_window.width))
         if whole_raster:
-            assert tools.area_mask_source == ()
+            assert tools.selected_polygons == ()
         else:
             mask = kernel.pixels_inside_area(
-                tools.area_mask_source,
+                tools.selected_polygons,
                 out_shape=shape,
                 transform=rasterio.windows.transform(
                     tools.raster_window, dataset.transform

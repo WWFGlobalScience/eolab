@@ -406,7 +406,7 @@ class ProjectedCatalogSelection:
 
 
 def pixels_inside_area(
-    geometries: tuple[dict[str, object], ...] | RasterAreaMask,
+    selected_polygons: tuple[dict[str, object], ...] | RasterAreaMask,
     *,
     out_shape: tuple[int, int],
     transform: Affine,
@@ -416,7 +416,7 @@ def pixels_inside_area(
     """Return a boolean inclusion mask for polygons on the supplied raster grid.
 
     Args:
-        geometries: Polygon coordinates in the raster CRS, or a reader that
+        selected_polygons: Polygon coordinates in the raster CRS, or a reader that
             projects selected catalog features into that CRS.
         out_shape: Number of rows and columns in the output mask.
         transform: Mapping from output pixel coordinates to the raster CRS.
@@ -431,11 +431,13 @@ def pixels_inside_area(
     Raises:
         ValueError: If source geometry or bounded reading is invalid.
     """
-    if not isinstance(geometries, tuple):
-        return geometries.read_polygon_mask(out_shape, transform, all_touched, timings)
+    if not isinstance(selected_polygons, tuple):
+        return selected_polygons.read_polygon_mask(
+            out_shape, transform, all_touched, timings
+        )
     rasterization_started = time.perf_counter() if timings is not None else 0.0
     inside = geometry_mask(
-        geometries,
+        selected_polygons,
         out_shape=out_shape,
         transform=transform,
         all_touched=all_touched,

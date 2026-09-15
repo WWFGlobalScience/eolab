@@ -121,16 +121,17 @@ class RasterAreaTools:
 
     Attributes:
         raster_window: Final rectangle of source pixels to process.
-        area_mask_source: Projected polygons or a reader for per-tile masks.
+        selected_polygons: Polygon coordinates or a reader for the selected features.
+            An empty tuple means no additional polygon mask is needed.
         pixel_area_calculator: Per-pixel hectare calculator, or None when
             the plan contains no area-measurement formulas.
-        selection_setup_seconds: Time spent preparing the window and mask source.
+        selection_setup_seconds: Time spent preparing the window and selected polygons.
         pixel_area_setup_seconds: Time spent preparing the hectare calculator
             and choosing the final window.
     """
 
     raster_window: Window
-    area_mask_source: tuple[dict[str, object], ...] | RasterAreaMask
+    selected_polygons: tuple[dict[str, object], ...] | RasterAreaMask
     pixel_area_calculator: PixelAreaCalculator | None
     selection_setup_seconds: float
     pixel_area_setup_seconds: float
@@ -141,7 +142,7 @@ def prepare_raster_area_tools(
     calculation_plan: AggregateSpec,
     limits: RasterAggregateLimits,
 ) -> RasterAreaTools:
-    """Prepare the final window, polygon masks and optional hectare calculator.
+    """Prepare the final window, selected polygons and optional hectare calculator.
 
     The saved plan records whether its formulas require area measurement.
     For those plans, use the hectare calculator's window, matching its cached
@@ -163,7 +164,7 @@ def prepare_raster_area_tools(
             overlap the raster, or exceeds geometry-processing limits.
     """
     started = time.perf_counter()
-    selection_window, area_mask_source = get_raster_window_and_mask_source(
+    selection_window, selected_polygons = get_raster_window_and_mask_source(
         dataset, calculation_plan.area, limits
     )
     selection_ready = time.perf_counter()
@@ -178,7 +179,7 @@ def prepare_raster_area_tools(
     area_ready = time.perf_counter()
     return RasterAreaTools(
         raster_window=raster_window,
-        area_mask_source=area_mask_source,
+        selected_polygons=selected_polygons,
         pixel_area_calculator=pixel_area_calculator,
         selection_setup_seconds=selection_ready - started,
         pixel_area_setup_seconds=area_ready - selection_ready,
@@ -351,7 +352,7 @@ def stable_selection_mask(
     dataset: rasterio.io.DatasetReader,
     selected: Window,
     read: Window,
-    geometries: tuple[dict[str, object], ...] | RasterAreaMask,
+    selected_polygons: tuple[dict[str, object], ...] | RasterAreaMask,
     tile_side: int,
     timings: RasterMaskTimings | None = None,
 ) -> NDArray[np.bool_]:
@@ -365,7 +366,7 @@ def stable_selection_mask(
         dataset: Source metadata; no band reads are performed here.
         selected: Full admitted selection window.
         read: Combined block-aligned read inside that admitted block rectangle.
-        geometries: Projected selection geometries using the established policy.
+        selected_polygons: Polygon coordinates or a reader for the selected features.
         tile_side: Legacy numeric or geometry-fallback evaluation ceiling.
         timings: Optional accumulator for the component mask operations.
 
@@ -400,7 +401,7 @@ def stable_selection_mask(
                     x - read.col_off, y - read.row_off, tile.width, tile.height
                 )
                 mask[local.toslices()] = pixels_inside_area(
-                    geometries,
+                    selected_polygons,
                     out_shape=(int(tile.height), int(tile.width)),
                     transform=window_transform(tile, dataset.transform),
                     all_touched=False,
@@ -501,11 +502,11 @@ def calculate_raster_statistics_for_area(
                         dataset,
                         raster_area_tools.raster_window,
                         block,
-                        raster_area_tools.area_mask_source,
+                        raster_area_tools.selected_polygons,
                         tile_side,
                         timings=mask_timings,
                     )
-                    if raster_area_tools.area_mask_source
+                    if raster_area_tools.selected_polygons
                     and raster_batch_plan.targetChunkPixels
                     else None
                 )
@@ -554,9 +555,9 @@ def calculate_raster_statistics_for_area(
                         mask_started = time.perf_counter()
                         if selection_valid is not None:
                             valid &= selection_valid[local.toslices()]
-                        elif raster_area_tools.area_mask_source:
+                        elif raster_area_tools.selected_polygons:
                             valid &= pixels_inside_area(
-                                raster_area_tools.area_mask_source,
+                                raster_area_tools.selected_polygons,
                                 out_shape=data.shape,
                                 transform=window_transform(tile, dataset.transform),
                                 all_touched=False,
