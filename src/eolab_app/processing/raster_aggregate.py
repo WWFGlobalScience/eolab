@@ -1,7 +1,7 @@
 """Plan native single-raster calculations and stream scalar results to artifacts."""
 
-from eolab_app.bounded_vector import selection_mask
-from dataclasses import asdict
+from eolab_app.bounded_vector import pixels_inside_area
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import csv
 import hashlib
@@ -22,26 +22,31 @@ from eolab_app.processing.aggregate_models import (
     AggregateGrid,
     AggregateSpec,
     AggregatePerformance,
+    AggregateKernelStages,
+    AggregateMaskStages,
     GroundAreaPlan,
     NamedCalculation,
     RasterAggregateLimits,
 )
-from eolab_app.processing.aggregate_windows import execution_plan, read_windows
+from eolab_app.processing.aggregate_windows import (
+    execution_plan,
+    iter_raster_read_windows,
+)
 from eolab_app.processing.artifacts import write_progress
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.ground_area import GroundArea
+from eolab_app.processing.ground_area import PixelAreaCalculator
 from eolab_app.processing.raster_expression import Calculation, compile_expression, walk
 from eolab_app.processing.raster_input import (
     native_work,
     require_signature,
-    require_source,
+    validate_supported_raster,
     select_area,
 )
 from eolab_app.raster.source_contract import (
     read_native_raster_block,
     read_native_raster_window,
 )
-from eolab_app.raster.models import RasterAreaMask
+from eolab_app.raster.models import RasterAreaMask, RasterMaskTimings
 
 # Evaluate at most 65,536 pixels per expression tile, even when the source's
 # native blocks are larger. Keep admission and execution on this same tile size.
@@ -70,20 +75,29 @@ AREA_MASK_BYTES_PER_PIXEL = 160
 PROGRESS_INTERVAL_SECONDS = 0.5
 
 
-def selection(
+def get_raster_window_and_mask_source(
     dataset: rasterio.io.DatasetReader,
     area: AggregateArea,
     limits: RasterAggregateLimits,
 ) -> tuple[Window, tuple[dict[str, object], ...] | RasterAreaMask]:
-    """Resolve one explicit operation area without reading pixel values.
+    """Get the raster pixel window and the source for per-tile area masks.
+
+    This does not read raster pixel values or create the per-tile masks.
 
     Args:
-        dataset: Validated native dataset.
-        area: Frozen box/polygon selection or explicit whole-source selection.
-        limits: Coordinate-transformation limits.
+        dataset: Open raster with validated georeferencing.
+        area: Sampling box, filtered catalog features, historical polygon
+            geometry, or the whole raster.
+        limits: Processing limits; max_coordinates bounds geometry work here.
 
     Returns:
-        Integral source window and optional projected masking geometries.
+        A window in raster rows and columns, and projected polygons or a
+        reader that creates polygon masks for each tile. An empty tuple
+        indicates that no additional polygon mask is needed.
+
+    Raises:
+        ProcessingError: If the area does not overlap the raster, cannot be
+            projected, or exceeds the geometry limits.
     """
     if area.kind == "wholeRaster":
         return Window(0, 0, dataset.width, dataset.height), ()
@@ -96,6 +110,80 @@ def selection(
         area.resolved,
     )
     return selected.source_window, selected.projected_geometries
+
+
+@dataclass(frozen=True)
+class RasterAreaTools:
+    """Hold the final raster window and tools for processing the selected area.
+
+    Use these tools only while their source raster remains open. They are
+    local to one calculation and are not serialized into the saved plan.
+
+    Attributes:
+        raster_window: Final rectangle of source pixels to process.
+        selected_polygons: Polygon coordinates or a reader for the selected features.
+            An empty tuple means no additional polygon mask is needed.
+        pixel_area_calculator: Per-pixel hectare calculator, or None when
+            the plan contains no area-measurement formulas.
+        selection_setup_seconds: Time spent preparing the window and selected polygons.
+        pixel_area_setup_seconds: Time spent preparing the hectare calculator
+            and choosing the final window.
+    """
+
+    raster_window: Window
+    selected_polygons: tuple[dict[str, object], ...] | RasterAreaMask
+    pixel_area_calculator: PixelAreaCalculator | None
+    selection_setup_seconds: float
+    pixel_area_setup_seconds: float
+
+
+def prepare_raster_area_tools(
+    dataset: rasterio.io.DatasetReader,
+    calculation_plan: AggregateSpec,
+    limits: RasterAggregateLimits,
+) -> RasterAreaTools:
+    """Prepare the final window, selected polygons and optional hectare calculator.
+
+    The saved plan records whether its formulas require area measurement.
+    For those plans, use the hectare calculator's window, matching its cached
+    pixel coordinates. Other plans use the ordinary selection window. This
+    retains the existing projection and boundary rules of both tools.
+
+    Args:
+        dataset: Open, validated raster; it must remain open while tools are used.
+        calculation_plan: Accepted calculation plan, including its selected area
+            and the ground-area metadata produced by plan_aggregate.
+        limits: Limits used by the existing geometry readers and area calculator.
+
+    Returns:
+        Tools with one final pixel window and the separate setup timings.
+        No raster pixel values are read during setup.
+
+    Raises:
+        ProcessingError: If the area cannot be read or projected, does not
+            overlap the raster, or exceeds geometry-processing limits.
+    """
+    started = time.perf_counter()
+    selection_window, selected_polygons = get_raster_window_and_mask_source(
+        dataset, calculation_plan.area, limits
+    )
+    selection_ready = time.perf_counter()
+    pixel_area_calculator = None
+    if calculation_plan.grid.groundArea is not None:
+        pixel_area_calculator = PixelAreaCalculator(
+            dataset, calculation_plan.area, limits
+        )
+        raster_window = pixel_area_calculator.window
+    else:
+        raster_window = selection_window
+    area_ready = time.perf_counter()
+    return RasterAreaTools(
+        raster_window=raster_window,
+        selected_polygons=selected_polygons,
+        pixel_area_calculator=pixel_area_calculator,
+        selection_setup_seconds=selection_ready - started,
+        pixel_area_setup_seconds=area_ready - selection_ready,
+    )
 
 
 def grid(
@@ -219,21 +307,24 @@ def plan_aggregate(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
         with rasterio.open(path) as dataset:
-            require_source(dataset, path)
-            window, _ = selection(dataset, area, limits)
-            ground = (
-                GroundArea(dataset, area, limits, planning=True)
-                if any(node.op == "areaha" for root in roots for node in walk(root))
-                else None
+            validate_supported_raster(dataset, path)
+            raster_window, _ = get_raster_window_and_mask_source(dataset, area, limits)
+            needs_ground_area = any(
+                node.op == "areaha" for root in roots for node in walk(root)
             )
-            if ground is not None:
-                window = ground.window
+            pixel_area_calculator = None
+            if needs_ground_area:
+                pixel_area_calculator = PixelAreaCalculator(
+                    dataset, area, limits, planning=True
+                )
+            if pixel_area_calculator is not None:
+                raster_window = pixel_area_calculator.window
             result = grid(
                 dataset,
-                window,
+                raster_window,
                 nodes,
                 limits,
-                ground.metadata if ground else None,
+                pixel_area_calculator.metadata if pixel_area_calculator else None,
                 target_chunk_pixels,
             )
     require_signature(path, signature)
@@ -261,8 +352,9 @@ def stable_selection_mask(
     dataset: rasterio.io.DatasetReader,
     selected: Window,
     read: Window,
-    geometries: tuple[dict[str, object], ...] | RasterAreaMask,
+    selected_polygons: tuple[dict[str, object], ...] | RasterAreaMask,
     tile_side: int,
+    timings: RasterMaskTimings | None = None,
 ) -> NDArray[np.bool_]:
     """Preserve legacy GDAL cell-center decisions independently of batch dimensions.
 
@@ -274,8 +366,9 @@ def stable_selection_mask(
         dataset: Source metadata; no band reads are performed here.
         selected: Full admitted selection window.
         read: Combined block-aligned read inside that admitted block rectangle.
-        geometries: Projected selection geometries using the established policy.
+        selected_polygons: Polygon coordinates or a reader for the selected features.
         tile_side: Legacy numeric or geometry-fallback evaluation ceiling.
+        timings: Optional accumulator for the component mask operations.
 
     Returns:
         Boolean cell-center membership with the same shape as the combined read.
@@ -284,7 +377,7 @@ def stable_selection_mask(
     legacy = execution_plan(
         read, dataset.block_shapes[0], dataset.width, dataset.height, None, tile_side
     )
-    for block, _ in read_windows(
+    for block, _ in iter_raster_read_windows(
         read, dataset.block_shapes[0], dataset.width, dataset.height, legacy
     ):
         intersection = block.intersection(selected)
@@ -307,127 +400,136 @@ def stable_selection_mask(
                 local = Window(
                     x - read.col_off, y - read.row_off, tile.width, tile.height
                 )
-                mask[local.toslices()] = selection_mask(
-                    geometries,
+                mask[local.toslices()] = pixels_inside_area(
+                    selected_polygons,
                     out_shape=(int(tile.height), int(tile.width)),
                     transform=window_transform(tile, dataset.transform),
                     all_touched=False,
-                    invert=True,
+                    timings=timings,
                 )
     return mask
 
 
-def create_aggregate(
-    path: Path, spec: AggregateSpec, directory: Path, limits: RasterAggregateLimits
+def calculate_raster_statistics_for_area(
+    raster_path: Path,
+    calculation_plan: AggregateSpec,
+    directory: Path,
+    limits: RasterAggregateLimits,
 ) -> AggregateArtifact:
-    """Reduce native blocks to a small validated CSV and provenance artifact.
+    """Calculate summary statistics for a selected area of a raster.
+
+    Read the raster in blocks, exclude nodata pixels and pixels outside the
+    selected area, and evaluate the expressions in calculation_plan. Write the
+    results to CSV and record the inputs and calculation details in a
+    provenance file.
 
     Args:
-        path: Source reauthorized by the worker.
-        spec: Reviewed immutable intent and metadata plan.
-        directory: Confined private attempt directory.
-        limits: Native execution policy matching admission.
+        raster_path: Path to the input raster.
+        calculation_plan: Expressions to evaluate, area to summarize,
+            expected source signature, and grid produced by plan_aggregate.
+        directory: Existing directory for result files and progress updates.
+        limits: Limits on raster reads, memory use, and geometry processing.
 
     Returns:
-        Final closed artifact metadata and bounded inline result rows.
+        An AggregateArtifact containing the calculated values, performance
+        timings, and the CSV filename, size, and checksum.
+
+    Raises:
+        ProcessingError: If the source differs from the plan, or
+            the calculation exceeds a processing limit.
     """
     started = time.perf_counter()
     read_seconds = calculation_seconds = 0.0
+    mask_seconds = weights_seconds = reduction_seconds = 0.0
+    mask_timings = RasterMaskTimings()
     read_count = tile_count = completed_blocks = 0
-    alias = next(iter(spec.sources))
-    roots = [compile_expression(item.expression, alias) for item in spec.calculations]
-    reducers = [Calculation(root) for root in roots]
-    nodes = sum(sum(1 for _ in walk(root)) for root in roots)
-    require_signature(path, spec.sourceSignature)
+    alias = next(iter(calculation_plan.sources))
+    roots = [
+        compile_expression(item.expression, alias)
+        for item in calculation_plan.calculations
+    ]
+    calculations = [Calculation(root) for root in roots]
+    require_signature(raster_path, calculation_plan.sourceSignature)
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
-        with rasterio.open(path) as dataset:
-            require_source(dataset, path)
-            window, geometries = selection(dataset, spec.area, limits)
-            ground = (
-                GroundArea(dataset, spec.area, limits)
-                if any(node.op == "areaha" for root in roots for node in walk(root))
-                else None
+        with rasterio.open(raster_path) as dataset:
+            validate_supported_raster(dataset, raster_path)
+            source_ready = time.perf_counter()
+            raster_area_tools = prepare_raster_area_tools(
+                dataset, calculation_plan, limits
             )
-            if ground is not None:
-                window = ground.window
-            if (
-                grid(
-                    dataset,
-                    window,
-                    nodes,
-                    limits,
-                    ground.metadata if ground else None,
-                    (
-                        spec.grid.execution.targetChunkPixels
-                        if spec.grid.execution
-                        else None
-                    ),
-                    include_execution=spec.grid.execution is not None,
-                )
-                != spec.grid
-            ):
-                raise ProcessingError(
-                    "plan_changed",
-                    "The calculation grid or policy changed. Create a new plan.",
-                    409,
-                )
+            pixel_area_calculator = raster_area_tools.pixel_area_calculator
             last_progress = 0.0
             tile_side = (
-                AREA_TILE_SIDE if ground and not ground.rectilinear else TILE_SIDE
+                AREA_TILE_SIDE
+                if pixel_area_calculator and not pixel_area_calculator.rectilinear
+                else TILE_SIDE
             )
-            execution = spec.grid.execution or execution_plan(
-                window,
+            if calculation_plan.grid.execution:
+                raster_batch_plan = calculation_plan.grid.execution
+            else:
+                raster_batch_plan = execution_plan(
+                    raster_area_tools.raster_window,
+                    dataset.block_shapes[0],
+                    dataset.width,
+                    dataset.height,
+                    None,
+                    tile_side,
+                )
+            iter_windows = iter_raster_read_windows(
+                raster_area_tools.raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
                 dataset.height,
-                None,
-                tile_side,
-            )
-            windows = read_windows(
-                window,
-                dataset.block_shapes[0],
-                dataset.width,
-                dataset.height,
-                execution,
+                raster_batch_plan,
             )
             reader = (
                 read_native_raster_block
-                if execution.targetChunkPixels is None
+                if raster_batch_plan.targetChunkPixels is None
                 else read_native_raster_window
             )
-            for block, native_blocks in windows:
+            for block, native_blocks in iter_windows:
                 read_started = time.perf_counter()
                 native = reader(dataset, block)
                 read_seconds += time.perf_counter() - read_started
                 read_count += 1
                 calculate_started = time.perf_counter()
-                intersection = block.intersection(window)
+                intersection = block.intersection(raster_area_tools.raster_window)
+                mask_started = time.perf_counter()
                 selection_valid = (
-                    stable_selection_mask(dataset, window, block, geometries, tile_side)
-                    if geometries and execution.targetChunkPixels
+                    stable_selection_mask(
+                        dataset,
+                        raster_area_tools.raster_window,
+                        block,
+                        raster_area_tools.selected_polygons,
+                        tile_side,
+                        timings=mask_timings,
+                    )
+                    if raster_area_tools.selected_polygons
+                    and raster_batch_plan.targetChunkPixels
                     else None
                 )
+                mask_seconds += time.perf_counter() - mask_started
                 for y in range(
                     int(intersection.row_off),
                     int(intersection.row_off + intersection.height),
-                    execution.evaluationHeight,
+                    raster_batch_plan.evaluationHeight,
                 ):
                     for x in range(
                         int(intersection.col_off),
                         int(intersection.col_off + intersection.width),
-                        execution.evaluationWidth,
+                        raster_batch_plan.evaluationWidth,
                     ):
                         tile = Window(
                             x,
                             y,
                             min(
-                                execution.evaluationWidth,
+                                raster_batch_plan.evaluationWidth,
                                 intersection.col_off + intersection.width - x,
                             ),
                             min(
-                                execution.evaluationHeight,
+                                raster_batch_plan.evaluationHeight,
                                 intersection.row_off + intersection.height - y,
                             ),
                         )
@@ -440,22 +542,32 @@ def create_aggregate(
                         values = native[local.toslices()]
                         data = values.data.astype(np.float64)
                         valid = ~np.ma.getmaskarray(values) & np.isfinite(data)
-                        hectares = ground.weights(tile) if ground is not None else None
+                        weights_started = time.perf_counter()
+                        hectares = (
+                            pixel_area_calculator.calculate_hectares(tile)
+                            if pixel_area_calculator is not None
+                            else None
+                        )
+                        weights_seconds += time.perf_counter() - weights_started
                         area_valid = (
                             valid & (hectares > 0) if hectares is not None else None
                         )
+                        mask_started = time.perf_counter()
                         if selection_valid is not None:
                             valid &= selection_valid[local.toslices()]
-                        elif geometries:
-                            valid &= selection_mask(
-                                geometries,
+                        elif raster_area_tools.selected_polygons:
+                            valid &= pixels_inside_area(
+                                raster_area_tools.selected_polygons,
                                 out_shape=data.shape,
                                 transform=window_transform(tile, dataset.transform),
                                 all_touched=False,
-                                invert=True,
+                                timings=mask_timings,
                             )
-                        for reducer in reducers:
-                            reducer.update(data, valid, hectares, area_valid)
+                        mask_seconds += time.perf_counter() - mask_started
+                        reduction_started = time.perf_counter()
+                        for calculation in calculations:
+                            calculation.process_tile(data, valid, hectares, area_valid)
+                        reduction_seconds += time.perf_counter() - reduction_started
                         tile_count += 1
                         # Release the tile before allocating the next one; no old
                         # source view may retain the previous combined read.
@@ -468,18 +580,25 @@ def create_aggregate(
                         directory,
                         "calculating",
                         completed_blocks,
-                        spec.grid.nativeBlocks,
+                        calculation_plan.grid.nativeBlocks,
                     )
                     last_progress = time.monotonic()
-    require_signature(path, spec.sourceSignature)
+    require_signature(raster_path, calculation_plan.sourceSignature)
     calculate_started = time.perf_counter()
     rows = [
-        {"label": item.label, "expression": item.expression, **reducer.result()}
-        for item, reducer in zip(spec.calculations, reducers, strict=True)
+        {"label": item.label, "expression": item.expression, **calculation.result()}
+        for item, calculation in zip(
+            calculation_plan.calculations, calculations, strict=True
+        )
     ]
-    calculation_seconds += time.perf_counter() - calculate_started
+    final_reduction_seconds = time.perf_counter() - calculate_started
+    calculation_seconds += final_reduction_seconds
+    reduction_seconds += final_reduction_seconds
     write_progress(
-        directory, "writing_results", completed_blocks, spec.grid.nativeBlocks
+        directory,
+        "writing_results",
+        completed_blocks,
+        calculation_plan.grid.nativeBlocks,
     )
     writing_started = time.perf_counter()
     result = directory / "result.csv"
@@ -499,16 +618,30 @@ def create_aggregate(
             )
     with result.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    source = next(iter(spec.sources.values()))
+    source = next(iter(calculation_plan.sources.values()))
     performance = AggregatePerformance(
-        execution=execution,
+        execution=raster_batch_plan,
         readWindows=read_count,
         evaluationTiles=tile_count,
-        reducerUpdates=tile_count * len(reducers),
+        reducerUpdates=tile_count * len(calculations),
         readSeconds=read_seconds,
         calculationSeconds=calculation_seconds,
         resultWriteSeconds=time.perf_counter() - writing_started,
         kernelSeconds=time.perf_counter() - started,
+        stages=AggregateKernelStages(
+            sourceSetupSeconds=source_ready - started,
+            selectionSetupSeconds=raster_area_tools.selection_setup_seconds,
+            groundAreaSetupSeconds=raster_area_tools.pixel_area_setup_seconds,
+            gridCheckSeconds=0.0,
+            selectionMaskSeconds=mask_seconds,
+            selectionMaskBreakdown=AggregateMaskStages(
+                featureReadingSeconds=mask_timings.feature_reading_seconds,
+                projectionSeconds=mask_timings.projection_seconds,
+                rasterizationSeconds=mask_timings.rasterization_seconds,
+            ),
+            areaWeightsSeconds=weights_seconds,
+            reductionSeconds=reduction_seconds,
+        ),
     )
     artifact = AggregateArtifact(
         size=result.stat().st_size,
@@ -518,13 +651,15 @@ def create_aggregate(
         performance=performance.model_dump(mode="json"),
     )
     provenance = {
-        **spec.model_dump(mode="json", by_alias=True),
+        **calculation_plan.model_dump(mode="json", by_alias=True),
         "resolution": "native",
         "valueDomain": "stored",
-        "inclusion": "per_function" if spec.grid.groundArea else "cell_center",
+        "inclusion": (
+            "per_function" if calculation_plan.grid.groundArea else "cell_center"
+        ),
         "functionInclusion": (
             {"numeric": "cell_center", "areaha": "fractional_cell_intersection"}
-            if spec.grid.groundArea
+            if calculation_plan.grid.groundArea
             else {"numeric": "cell_center"}
         ),
         "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -533,7 +668,7 @@ def create_aggregate(
     (directory / "provenance.json").write_text(
         json.dumps(provenance, allow_nan=False), encoding="utf-8"
     )
-    require_signature(path, spec.sourceSignature)
+    require_signature(raster_path, calculation_plan.sourceSignature)
     return artifact
 
 
@@ -553,7 +688,7 @@ def aggregate_process_target(
         if operation == "plan":
             value = plan_aggregate(*arguments)
         elif operation == "calculate":
-            value = create_aggregate(*arguments)
+            value = calculate_raster_statistics_for_area(*arguments)
         else:
             raise ValueError("Unsupported calculation operation")
         queue.put(("ok", value))

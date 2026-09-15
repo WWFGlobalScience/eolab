@@ -108,7 +108,7 @@ function visibleText(node) { return [node.textContent, ...node.children.map(visi
  * @return {Object} Bound selection view and lifecycle cleanup.
  */
 function composedVectorSelection(h, bbox) {
-    const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8");
+    const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
     const start = main.indexOf("onActivate: (area, calculate) => {");
     const end = main.indexOf("\n        onInvalidate:", start);
     assert.ok(start >= 0 && end > start, "Production vector activation callback exists");
@@ -383,7 +383,7 @@ test("histogram action opens and runs all valid configured cards without Calcula
     const [mean, sum, invalid] = h.controller.state.statistics;
     h.controller.editStatistic(sum.id, { source: resistance });
     h.controller.editStatistic(invalid.id, { expression: "bad(a)" });
-    const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8");
+    const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8").replaceAll("\r\n", "\n");
     const callback = main.slice(main.indexOf("onCalculateRequested: ") + "onCalculateRequested: ".length,
         main.indexOf(",\n        onSamplingAreaChange:"));
     const action = new Function("calculations", "clipSource", `return (${callback});`)(h.controller, item => item);
@@ -946,15 +946,45 @@ test("performance details retain measured timings and source-work units in cards
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.request(card.id,"manual");await flush();await h.finish();
     const execution={targetChunkPixels:65536,readWidth:512,readHeight:128,evaluationWidth:512,evaluationHeight:128,readWindows:1};
-    const performance={execution,readWindows:1,evaluationTiles:1,reducerUpdates:1,readSeconds:.125,calculationSeconds:.25,resultWriteSeconds:.01,kernelSeconds:.6};
+    const performance={execution,readWindows:1,evaluationTiles:1,reducerUpdates:1,readSeconds:.125,calculationSeconds:.25,resultWriteSeconds:.01,kernelSeconds:.6,stages:{sourceSetupSeconds:.05,selectionSetupSeconds:.1,groundAreaSetupSeconds:0,gridCheckSeconds:.01,selectionMaskSeconds:.2,areaWeightsSeconds:0,reductionSeconds:.03}};
     const job=card.result.job;
     card.result.job={...job,grid:{...job.grid,execution,estimatedMemoryBytes:150*1024**2},result:{...job.result,performance}};
     const root=h.document.createElement("div");h.view.renderValueDetails(root,card.result);
     const text=node=>[node.textContent,...node.children.map(text)].join(" ");
     assert.match(text(root),/4 native blocks in 1 reads/);
     assert.match(text(root),/Kernel elapsed: 0.600 s/);
+    assert.match(text(root),/polygon selection masks: 0.200 s/);
     assert.match(text(root),/Queueing, worker startup/);
     h.controller.state.saved = card.result.job;
     h.controller.render();
     assert.match(text(h.view.elements.result),/Read\/decode and source mask: 0.125 s/);
+    assert.match(text(h.view.elements.result),/formula evaluation and reductions: 0.030 s/);
+});
+
+test("vector selection wait contributes once to total and resets for later manual requests", async () => {
+    const h = fixture(); await h.open();
+    const card = h.controller.state.statistics[0];
+    h.controller.setVectorSelectionState({ analysis: true, phase: "reading", message: "Reading" });
+    h.elapse(3000);
+    h.controller.setVectorSelectionState({ analysis: true, phase: "selected", message: "Selected" });
+    h.controller.setVectorSamplingArea({ selection: CATALOG_SELECTION, label: "Peru/Brazil" }, true);
+    await h.tick(); h.elapse(2000); await h.finish();
+    assert.equal(card.result.stages.vectorSelectionSeconds, 3);
+    assert.ok(card.result.totalWaitSeconds >= 5);
+    assert.ok(card.result.stages.beforePlanningSeconds >= 3);
+    h.controller.request(card.id, "manual"); await flush(); h.elapse(1000); await h.finish();
+    assert.equal(card.result.totalWaitSeconds, 1);
+    assert.equal(card.result.stages.vectorSelectionSeconds, undefined);
+});
+
+test("cancelled selection wait is not charged to a replacement selection", async () => {
+    const h = fixture(); await h.open();
+    h.controller.setVectorSelectionState({ analysis: true, phase: "reading", message: "Reading" });
+    h.elapse(9000);
+    h.controller.setVectorSelectionState({ analysis: true, phase: "idle", message: "Cancelled" });
+    h.controller.setVectorSelectionState({ analysis: true, phase: "reading", message: "Replacement" });
+    h.elapse(1000);
+    h.controller.setVectorSamplingArea({ selection: CATALOG_SELECTION, label: "Replacement" }, true);
+    await h.tick(); await h.finish();
+    assert.equal(h.controller.state.statistics[0].result.stages.vectorSelectionSeconds, 1);
 });

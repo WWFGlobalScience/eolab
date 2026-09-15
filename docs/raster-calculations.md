@@ -1,5 +1,8 @@
 # Raster calculations
 
+This guide is for people using EOLab to write raster formulas, interpret their
+results, and understand the reported timings and limits.
+
 Use **Summarize** to calculate statistics over a sampling box, a filtered
 [vector layer](vector-sampling.md), or an explicitly selected whole raster.
 Each of the five available cards has a name, formula, raster binding (`a`),
@@ -138,13 +141,28 @@ batch sizes; floating results can differ in last-place rounding.
 Performance details show requested and effective read/tile sizes, memory estimates
 and timings. These are wall times, including waiting within each operation:
 
-- **Total wait → result displayed** includes debounce, planning, queueing and
+- **Total wait → result displayed** includes vector selection when initiated for the calculation in this tab,
+  debounce, planning, queueing and
   result delivery through the UI update. It excludes earlier confirmation time
   and the browser's subsequent paint.
 - Browser stages divide that total. Server stages overlap them; do not add the
   browser and server groups together.
 - **Kernel elapsed** covers source opening and calculation through the CSV
-  checksum. Its read, calculation and write subtotals do not include all setup.
+  checksum. New results also break out source setup, selection-envelope
+  reading/projection and ground-area setup.
+- **Inside Calculation** splits polygon masking, ground-area weights, formula
+  evaluation/reductions, and remaining tile/loop work. Masking includes any vector
+  reads, projection and rasterization required for each tile. These are nested
+  parts of Calculation, not additional time.
+- **Read/decode and source mask** includes native raster I/O, decompression and
+  its validity mask. It includes waiting, so it is not pure disk time.
+- **Vector selection before calculation** is part of Before planning when that
+  selection was observed in this tab. It excludes optional display-outline work.
+  A later Calculate click starts a new measurement.
+- Kernel setup, read, calculation, CSV/checksum and the labelled remaining kernel
+  work partition Kernel elapsed. Progress writes and source close/rechecks are
+  included in that remainder. Timings describe the entire shared batch when
+  several statistic cards run together.
 - Native-process time also includes communication and cleanup. Readiness wait
   includes any startup required for this request; earlier prewarming is excluded.
 - **Queued → ready** includes server queueing and execution. The estimated
@@ -173,3 +191,45 @@ unchanged until the job finishes. Failed or cancelled work does not publish a
 partial CSV. See [ground-area calculations](ground-area-calculations.md) for
 additional area-method limits and [clip storage](raster-clips.md#storage-and-limits)
 for result retention.
+
+
+### Direct Peru/Brazil sum benchmark
+
+From a checkout with Python 3.12+ and the EOLab dependencies installed, run:
+
+```console
+python run_raster_vector_sum_benchmark.py
+```
+
+The defaults use the 2018 human-footprint COG in
+`D:/wwf-connectivity/processed/human-footprint/` and
+`D:/easy_to_find_data_i_always_use/countries_without_antarctica.gpkg`.
+The script selects `iso3 == PER OR iso3 == BRA`, requires exactly two features,
+and calls the application's `selection_summary`, `plan_aggregate`, and
+`calculate_raster_statistics_for_area` for `sum(a)`. It uses the native pixel grid,
+source validity mask, cell-center polygon inclusion, normal work limits and default read/tile
+sizes. It does not contain its own clipping or summing algorithm.
+
+Use explicit inputs on another machine, and redirect the JSON report to save a baseline:
+
+```console
+python run_raster_vector_sum_benchmark.py --raster /scan-source/human-footprint/human-footprint_hfp_2018_wgs84_cog.tif --vector /scan-source/countries_without_antarctica.gpkg --repeat 3 > sum-baseline.json
+```
+
+Adjust the mounted paths to match the installation; `--layer` overrides the
+default `countries_without_antarctica` native layer name. Progress goes to stderr.
+Input files are read-only, and temporary kernel artifacts are deleted after each
+run. Ctrl+C interrupts the direct calculation.
+
+The report includes the result, CSV checksum, file identities, grid, limits,
+library versions, checkout revision and stage timings. Each repetition plans and
+executes again; caches are not cleared, so a first repetition is not necessarily
+cold. Compare identical inputs and grids: the local default COG is WGS84 whereas
+the current Connectivity deployment uses a Web Mercator copy.
+
+This is an offline kernel benchmark. It supplies explicit local file capabilities
+in place of Catalog lookup and job submission. It does not measure authorization,
+HTTP, queueing, worker startup, notifications or browser display. The app's
+performance details retain those end-to-end measurements. Import time is reported
+separately; inner kernel stages overlap the execution time and must not be added
+to it.

@@ -19,7 +19,10 @@ from eolab_app.processing.aggregate_models import (
     RasterAggregateLimits,
 )
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.raster_aggregate import create_aggregate, plan_aggregate
+from eolab_app.processing.raster_aggregate import (
+    calculate_raster_statistics_for_area,
+    plan_aggregate,
+)
 import eolab_app.processing.raster_aggregate as kernel
 from eolab_app.raster.models import CatalogRasterRequest
 from eolab_app.raster.source_identity import RasterSourceIdentity
@@ -65,6 +68,66 @@ def make_spec(
     return AggregateSpec.model_validate_json(spec.model_dump_json(by_alias=True))
 
 
+@pytest.mark.parametrize("whole_raster", [False, True])
+@pytest.mark.parametrize("include_hectares", [False, True])
+def test_prepared_area_tools_window_and_masks(
+    tmp_path: Path, whole_raster: bool, include_hectares: bool
+) -> None:
+    """Return usable masks and the final window for numeric and hectare plans.
+
+    Args:
+        tmp_path: Directory for a real georeferenced raster fixture.
+        whole_raster: Select every pixel instead of a fractional-boundary box.
+        include_hectares: Include an area formula alongside the numeric sum.
+    """
+    path = write_source(
+        tmp_path / "area-tools.tif",
+        np.ones((10, 10), dtype="uint8"),
+        transform=from_origin(0, 10, 1, 1),
+    )
+    area = (
+        AggregateArea(kind="wholeRaster")
+        if whole_raster
+        else AggregateArea(kind="bounds", bounds=(2.25, 4.25, 5.75, 7.75))
+    )
+    expressions = ["sum(a)"]
+    if include_hectares:
+        expressions.append("areaha(a>0)")
+    calculation_plan = make_spec(path, expressions, area)
+    with rasterio.open(path) as dataset:
+        tools = kernel.prepare_raster_area_tools(dataset, calculation_plan, LIMITS)
+        expected_window = (
+            (0, 0, 10, 10)
+            if whole_raster
+            else ((2, 2, 4, 4) if include_hectares else (1, 1, 6, 6))
+        )
+        assert tuple(tools.raster_window.flatten()) == expected_window
+        shape = (int(tools.raster_window.height), int(tools.raster_window.width))
+        if whole_raster:
+            assert tools.selected_polygons == ()
+        else:
+            mask = kernel.pixels_inside_area(
+                tools.selected_polygons,
+                out_shape=shape,
+                transform=rasterio.windows.transform(
+                    tools.raster_window, dataset.transform
+                ),
+                all_touched=False,
+            )
+            assert np.count_nonzero(mask) == 16
+        if include_hectares:
+            assert tools.pixel_area_calculator is not None
+            hectares = tools.pixel_area_calculator.calculate_hectares(
+                tools.raster_window
+            )
+            assert hectares.shape == shape
+            assert np.all(hectares > 0)
+        else:
+            assert tools.pixel_area_calculator is None
+        assert tools.selection_setup_seconds >= 0
+        assert tools.pixel_area_setup_seconds >= 0
+
+
 def test_native_values_not_overviews_scale_or_histogram_statistics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,7 +162,7 @@ def test_native_values_not_overviews_scale_or_histogram_statistics(
         return reader(dataset, window)
 
     monkeypatch.setattr(kernel, "read_native_raster_block", observed)
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     selected = values[values != -9999]
     expected = [
         selected.sum(),
@@ -166,7 +229,7 @@ def test_aoi_hole_center_inclusion_on_rotated_and_projected_grids(
     )
     area = AggregateArea(kind="aoi", bounds=bounds, geometries=(geometry,))
     spec = make_spec(path, ["count(a)", "sum(a)"], area)
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert artifact.rows[0]["value"] == "60"
     assert (
         float(artifact.rows[1]["value"])
@@ -186,12 +249,12 @@ def test_bounds_center_policy_missing_values_and_zero(tmp_path: Path) -> None:
         transform=from_origin(0, 3, 1, 1),
     )
     area = AggregateArea(kind="bounds", bounds=(0.6, 0.6, 2.9, 2.9))
-    artifact = create_aggregate(
+    artifact = calculate_raster_statistics_for_area(
         path, make_spec(path, ["count(a)", "sum(a)"], area), tmp_path, LIMITS
     )
     assert artifact.rows[0]["value"] == "3"
     assert float(artifact.rows[1]["value"]) == 8
-    artifact = create_aggregate(
+    artifact = calculate_raster_statistics_for_area(
         path, make_spec(path, ["count(a)", "min(a)"]), tmp_path, LIMITS
     )
     assert artifact.rows[0]["value"] == "8"
@@ -233,10 +296,10 @@ def test_metadata_admission_signature_fence_and_csv_text(
             )
         }
     )
-    create_aggregate(path, spec, tmp_path, LIMITS)
+    calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert "'=IMPORTXML(1)" in (tmp_path / "result.csv").read_text()
     with rasterio.open(path, "r+") as dataset:
         dataset.write(np.zeros((100, 100), dtype="uint8"), 1)
     with pytest.raises(ProcessingError) as error:
-        create_aggregate(path, spec, tmp_path, LIMITS)
+        calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert error.value.code == "source_changed"

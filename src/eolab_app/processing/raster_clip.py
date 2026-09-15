@@ -1,6 +1,6 @@
 """Bounded full-resolution clip kernel; no job, HTTP, or rendering services."""
 
-from eolab_app.bounded_vector import selection_mask
+from eolab_app.bounded_vector import pixels_inside_area
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -20,7 +20,7 @@ from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.artifacts import write_progress as _progress
 from eolab_app.processing.raster_input import (
     require_signature as _require_signature,
-    require_source as _require_source,
+    validate_supported_raster as _validate_supported_raster,
     select_area,
     native_work,
 )
@@ -125,7 +125,7 @@ def plan_clip(
     _require_signature(path, signature)
     with rasterio.Env(GDAL_CACHEMAX=64 * 1024**2, GDAL_NUM_THREADS="2"):
         with rasterio.open(path) as dataset:
-            _require_source(dataset, path)
+            _validate_supported_raster(dataset, path)
             grid = _grid(dataset, _selection(dataset, area, limits), limits)
     _require_signature(path, signature)
     return grid
@@ -160,7 +160,7 @@ def create_clip(
         CPL_TMPDIR=str(directory),
     ):
         with rasterio.open(path) as source:
-            _require_source(source, path)
+            _validate_supported_raster(source, path)
             selected = _selection(source, spec.area, limits)
             if _grid(source, selected, limits) != spec.grid:
                 raise ProcessingError(
@@ -228,12 +228,11 @@ def create_clip(
                         intersection.height,
                     )
                     values = native[local.toslices()]
-                    inside = selection_mask(
+                    inside = pixels_inside_area(
                         selected.projected_geometries,
                         out_shape=values.shape,
                         transform=window_transform(intersection, source.transform),
                         all_touched=True,
-                        invert=True,
                     )
                     valid = (
                         inside

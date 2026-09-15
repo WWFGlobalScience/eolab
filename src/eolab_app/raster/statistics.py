@@ -1,6 +1,6 @@
 """Bounded raster sampling and distribution algorithms."""
 
-from eolab_app.bounded_vector import ProjectedCatalogSelection, selection_mask
+from eolab_app.bounded_vector import ProjectedCatalogSelection, pixels_inside_area
 import math
 from pathlib import Path
 
@@ -329,7 +329,7 @@ def read_raster_statistics(
                 source_width / sample_width,
                 source_height / sample_height,
             )
-            outside_selection = selection_mask(
+            outside_selection = ~pixels_inside_area(
                 selected_area.projected_geometries,
                 out_shape=(sample_height, sample_width),
                 transform=source_sample_transform,

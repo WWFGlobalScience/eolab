@@ -74,26 +74,43 @@ class SelectedRasterArea:
     projected_geometries: "tuple[dict[str, object], ...] | RasterAreaMask"
 
 
+@dataclass
+class RasterMaskTimings:
+    """Accumulated wall times for generating polygon inclusion masks.
+
+    Attributes:
+        feature_reading_seconds: Bounding-box lookup, source opening, feature
+            iteration/filtering/validation, exhaustion and source closing.
+        projection_seconds: Projecting selected features into the raster CRS.
+        rasterization_seconds: Rasterio geometry-mask calls.
+    """
+
+    feature_reading_seconds: float = 0.0
+    projection_seconds: float = 0.0
+    rasterization_seconds: float = 0.0
+
+
 class RasterAreaMask(Protocol):
     """A bounded polygon-membership reader independent of its invoking feature."""
 
-    def mask(
+    def read_polygon_mask(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
-        invert: bool = False,
+        timings: RasterMaskTimings | None = None,
     ) -> NDArray[bool_]:
-        """Read exact polygon membership on a caller-admitted numeric grid.
+        """Read polygon membership as an inclusion mask on the supplied raster grid.
 
         Args:
             out_shape: Admitted grid rows and columns.
             affine: Grid-to-source-CRS transformation.
             all_touched: Caller-owned pixel inclusion rule.
-            invert: Return inside membership when true.
+            timings: Optional accumulator for work performed by this call.
 
         Returns:
-            Boolean membership with the supplied shape and inclusion policy.
+            Boolean array with the supplied shape: True for included pixels
+            and False for excluded pixels, using the requested inclusion rule.
 
         Raises:
             ValueError: If source integrity or bounded reading fails.

@@ -46,8 +46,8 @@ def require_signature(path: Path, signature: tuple[int, ...]) -> None:
         )
 
 
-def require_source(dataset: Any, path: Path) -> None:
-    """Preserve the signed single-band GeoTIFF input policy for both operations.
+def validate_supported_raster(dataset: Any, path: Path) -> None:
+    """Validate that an opened raster is supported for calculations and clipping.
 
     Args:
         dataset: Open catalog-authorized dataset.

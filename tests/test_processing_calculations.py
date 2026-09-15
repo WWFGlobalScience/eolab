@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 import psycopg
 import pytest
 
-from eolab_app.processing.raster_aggregate import create_aggregate
+from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 import eolab_app.processing.worker as worker_module
 from test_processing_jobs import (
     boundary,
@@ -399,7 +399,7 @@ def paused_calculation(queue: Any, operation: str, arguments: tuple) -> None:
         arguments: Native kernel inputs.
     """
     assert operation == "calculate"
-    artifact = create_aggregate(*arguments)
+    artifact = calculate_raster_statistics_for_area(*arguments)
     directory = arguments[2]
     (directory / "checkpoint").write_text("ready")
     time.sleep(5)

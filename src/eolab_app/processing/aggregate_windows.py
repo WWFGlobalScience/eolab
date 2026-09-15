@@ -74,21 +74,21 @@ def execution_plan(
     )
 
 
-def read_windows(
+def iter_raster_read_windows(
     window: Window,
     block_shape: tuple[int, int],
     source_width: int,
     source_height: int,
     plan: AggregateExecutionPlan,
 ) -> Iterator[tuple[Window, int]]:
-    """Stream disjoint block-aligned reads, with truthful native-block progress.
+    """Yield nonoverlapping raster read windows without reading pixel values.
 
     Args:
         window: The original admitted selection.
         block_shape: Native block height and width.
         source_width: Full source width.
         source_height: Full source height.
-        plan: Effective execution dimensions recomputed and checked by the worker.
+        plan: Read dimensions from the raster batch plan.
 
     Yields:
         A source-edge-clipped window and the number of native blocks it covers.

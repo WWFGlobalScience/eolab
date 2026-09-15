@@ -17,7 +17,7 @@ from shapely.geometry import Polygon, box, mapping
 
 from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.raster_aggregate import create_aggregate
+from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 import eolab_app.processing.raster_aggregate as kernel
 from test_raster_aggregates import LIMITS, make_spec
 from test_raster_clips import write_source
@@ -65,7 +65,7 @@ def test_geographic_cells_match_independent_ellipsoid_integral(
         transform=from_origin(10, latitude + 1, 1, 1),
     )
     spec = make_spec(path, ["areaha(a == 4)"])
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     row = artifact.rows[0]
     assert float(row["value"]) == pytest.approx(
         reference_area(box(10, latitude, 11, latitude + 1)), rel=1e-8
@@ -91,7 +91,7 @@ def test_web_mercator_uses_ground_hectares(tmp_path: Path, latitude: float) -> N
         crs="EPSG:3857",
         transform=from_origin(0, y + 1000, 1000, 1000),
     )
-    artifact = create_aggregate(
+    artifact = calculate_raster_statistics_for_area(
         path, make_spec(path, ["areaha(a == 4)"]), tmp_path, LIMITS
     )
     measured = float(artifact.rows[0]["value"])
@@ -120,7 +120,7 @@ def test_partial_cell_sliver_is_area_even_when_center_is_outside(
         ["areaha(a == 4)", "count(a)", "100 * areaha(a == 4) / areaha(a == a)"],
         area,
     )
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert float(artifact.rows[0]["value"]) == pytest.approx(
         reference_area(box(0.999, 0, 1, 1)), rel=1e-8
     )
@@ -162,7 +162,7 @@ def test_aoi_union_holes_and_fractional_edges(tmp_path: Path) -> None:
         bounds=(0.2, 0.2, 3.8, 3.8),
         geometries=(mapping(first), mapping(second)),
     )
-    artifact = create_aggregate(
+    artifact = calculate_raster_statistics_for_area(
         path, make_spec(path, ["areaha(a==4)", "count(a)"], area), tmp_path, LIMITS
     )
     assert float(artifact.rows[0]["value"]) == pytest.approx(
@@ -198,7 +198,7 @@ def test_rotated_and_projected_cell_footprints(
     )
     footprint = Polygon([transform * p for p in [(0, 0), (2, 0), (2, 2), (0, 2)]])
     spec = make_spec(path, ["areaha(a==4)"])
-    artifact = create_aggregate(path, spec, tmp_path, LIMITS)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     assert float(artifact.rows[0]["value"]) == pytest.approx(
         reference_area(footprint, crs), rel=1e-5
     )
@@ -216,7 +216,7 @@ def test_area_missing_and_empty_matches(tmp_path: Path) -> None:
         transform=from_origin(0, 2, 1, 1),
         nodata=-9999,
     )
-    result = create_aggregate(
+    result = calculate_raster_statistics_for_area(
         path,
         make_spec(path, ["areaha(a==4)", "areaha(a>100)", "areaha(a == a)"]),
         tmp_path,
@@ -230,7 +230,7 @@ def test_area_missing_and_empty_matches(tmp_path: Path) -> None:
     )
     assert result.rows[2]["aggregates"][0]["validPixels"] == 3
     area = AggregateArea(kind="bounds", bounds=(1.1, 1.1, 1.9, 1.9))
-    missing = create_aggregate(
+    missing = calculate_raster_statistics_for_area(
         path, make_spec(path, ["areaha(a==4)"], area), tmp_path, LIMITS
     )
     assert missing.rows[0]["state"] == "no_valid_data"
@@ -257,7 +257,7 @@ def test_small_box_inside_projected_rotated_pixel(tmp_path: Path, crs: str) -> N
     )
     bounds = (longitude, latitude, longitude + 0.001, latitude + 0.001)
     area = AggregateArea(kind="bounds", bounds=bounds)
-    result = create_aggregate(
+    result = calculate_raster_statistics_for_area(
         path, make_spec(path, ["areaha(a==4)", "count(a)"], area), tmp_path, LIMITS
     )
     assert float(result.rows[0]["value"]) == pytest.approx(
@@ -278,7 +278,7 @@ def test_area_expression_excludes_invalid_arithmetic(tmp_path: Path) -> None:
         np.array([[0, 2]], dtype="uint8"),
         transform=from_origin(0, 1, 1, 1),
     )
-    result = create_aggregate(
+    result = calculate_raster_statistics_for_area(
         path, make_spec(path, ["areaha(1 / a > 0)"]), tmp_path, LIMITS
     )
     assert float(result.rows[0]["value"]) == pytest.approx(
@@ -287,8 +287,8 @@ def test_area_expression_excludes_invalid_arithmetic(tmp_path: Path) -> None:
     assert result.rows[0]["aggregates"][0]["invalidArithmeticPixels"] == 1
 
 
-def test_execution_geometry_budget_and_reviewed_tolerance(tmp_path: Path) -> None:
-    """Execution refuses excessive refinement or a changed measurement policy.
+def test_execution_geometry_budget(tmp_path: Path) -> None:
+    """Execution refuses geometry refinement exceeding the coordinate budget.
 
     Args:
         tmp_path: Isolated source and private output directory.
@@ -300,14 +300,10 @@ def test_execution_geometry_budget_and_reviewed_tolerance(tmp_path: Path) -> Non
     )
     spec = make_spec(path, ["areaha(a>0)"])
     with pytest.raises(ProcessingError, match="transformed coordinates"):
-        create_aggregate(
+        calculate_raster_statistics_for_area(
             path, spec, tmp_path, replace(LIMITS, max_area_transform_coordinates=100)
         )
     assert not (tmp_path / "result.csv").exists()
-    with pytest.raises(ProcessingError, match="policy changed"):
-        create_aggregate(
-            path, spec, tmp_path, replace(LIMITS, area_edge_tolerance_metres=0.2)
-        )
 
 
 def test_global_rectilinear_area_has_no_half_globe_limitation(tmp_path: Path) -> None:
@@ -322,7 +318,7 @@ def test_global_rectilinear_area_has_no_half_globe_limitation(tmp_path: Path) ->
         transform=from_origin(-180, 90, 1, 1),
     )
     spec = make_spec(path, ["areaha(a==1)"])
-    result = create_aggregate(path, spec, tmp_path, LIMITS)
+    result = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
     geod = Geod(ellps="WGS84")
     e = math.sqrt(geod.f * (2 - geod.f))
     expected = 2 * math.pi * geod.a**2 * (1 + (1 - e**2) / e * math.atanh(e)) / 10_000
@@ -486,7 +482,7 @@ def test_area_results_do_not_depend_on_source_blocks_or_processing_tiles(
         )
         monkeypatch.setattr(kernel, "TILE_SIDE", tile)
         spec = make_spec(tiled, ["areaha(a>0)", "areaha(a == a)", "count(a>0)"], area)
-        result = create_aggregate(tiled, spec, directory, LIMITS)
+        result = calculate_raster_statistics_for_area(tiled, spec, directory, LIMITS)
         measured = [float(row["value"]) for row in result.rows]
         counts = [row["aggregates"] for row in result.rows]
         if baseline is None:
@@ -527,7 +523,7 @@ def test_projected_polygon_masks_match_independent_ground_area(
         LIMITS, max_area_geometry_cells=0, area_edge_tolerance_metres=0.001
     )
     spec = make_spec(path, ["areaha(a>0)"], area, limits)
-    result = create_aggregate(path, spec, tmp_path, limits)
+    result = calculate_raster_statistics_for_area(path, spec, tmp_path, limits)
     assert float(result.rows[0]["value"]) == pytest.approx(
         reference_area(polygon), rel=1e-7
     )

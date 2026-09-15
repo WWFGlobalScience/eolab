@@ -431,20 +431,25 @@ class Calculation:
             node: Reduction(node) for node in walk(root) if node.op in FUNCTIONS
         }
 
-    def update(
+    def process_tile(
         self,
         data: np.ndarray,
         valid: np.ndarray,
         hectares: np.ndarray | None = None,
         area_valid: np.ndarray | None = None,
     ) -> None:
-        """Feed the same native tile to each aggregate.
+        """Process one raster tile and accumulate its contribution to the result.
+
+        Call result() after all tiles have been processed.
 
         Args:
-            data: Bounded numerical values.
-            valid: Source validity intersected with geographic inclusion.
-            hectares: Native cell/selection intersection hectares, or None.
-            area_valid: Source validity intersected with positive-area overlap.
+            data: Raster pixel values for this tile.
+            valid: Boolean mask selecting valid pixels inside the requested area.
+            hectares: Selected area within each pixel, in hectares, for areaha.
+            area_valid: Boolean mask selecting valid pixels with positive area.
+
+        Raises:
+            ValueError: If an area calculation has no hectare weights or area mask.
         """
         for reduction in self.reductions.values():
             if reduction.node.op == "areaha":

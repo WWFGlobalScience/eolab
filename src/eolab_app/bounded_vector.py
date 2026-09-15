@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 import math
+import time
 import json
 from time import monotonic
 from typing import Any
@@ -38,7 +39,7 @@ from eolab_app.raster.bounded_window import (
 )
 from eolab_app.raster.read_cancellation import require_active_raster_read
 from eolab_app.raster.read_cancellation import RasterReadCancellationCheck
-from eolab_app.raster.models import RasterAreaMask
+from eolab_app.raster.models import RasterAreaMask, RasterMaskTimings
 from eolab_app.attribute_filter import matches_filter, validate_filter
 
 # Existing native-read and projection budgets now bound actual streamed work
@@ -276,7 +277,7 @@ class ProjectedCatalogSelection:
     def __init__(
         self,
         dataset: DatasetReader,
-        resolved: ResolvedCatalogSelection,
+        filtered_vector: ResolvedCatalogSelection,
         maximum_coordinates: int,
         cancellation_requested: RasterReadCancellationCheck | None = None,
     ) -> None:
@@ -284,7 +285,7 @@ class ProjectedCatalogSelection:
 
         Args:
             dataset: Open, georeferenced raster metadata.
-            resolved: Authorized source capability.
+            filtered_vector: Vector source and filter identifying the features to read.
             maximum_coordinates: Existing projection-buffer policy.
             cancellation_requested: Optional cancellation predicate.
 
@@ -293,10 +294,10 @@ class ProjectedCatalogSelection:
             ValueError: If a source feature cannot fit the projection buffer.
         """
         self.dataset = dataset
-        self.resolved = resolved
+        self.filtered_vector = filtered_vector
         self.maximum_coordinates = maximum_coordinates
         self.cancellation_requested = cancellation_requested
-        summary = selection_summary(resolved, cancellation_requested)
+        summary = selection_summary(filtered_vector, cancellation_requested)
         segments = summary["coordinates"] - summary["rings"]
         self.densify = min(
             BOUNDED_WGS84_DENSIFY_POINTS,
@@ -306,7 +307,7 @@ class ProjectedCatalogSelection:
         right = bottom = -math.inf
         inverse = ~dataset.transform
         with polygon_features(
-            resolved, cancellation_requested=cancellation_requested
+            filtered_vector, cancellation_requested=cancellation_requested
         ) as features:
             for geometry in features:
                 for projected in self.project(geometry):
@@ -342,70 +343,109 @@ class ProjectedCatalogSelection:
             raise ValueError("A feature exceeds the transformed-coordinate buffer")
         return project_wgs84_polygons(self.dataset, (geometry,), count)
 
-    def mask(
+    def read_polygon_mask(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
-        invert: bool = False,
+        timings: RasterMaskTimings | None = None,
     ) -> NDArray[np.bool_]:
-        """Union exact per-feature masks using a bounded output grid.
+        """Read selected vector polygons and return their inclusion mask.
 
         Args:
             out_shape: Already admitted raster output dimensions.
             affine: Existing numeric grid's affine transform.
             all_touched: Caller-owned pixel inclusion policy.
-            invert: Return inside membership instead of outside membership.
+            timings: Optional accumulator; excludes mask allocation and union.
 
         Returns:
-            Boolean union mask, counting overlaps once and preserving holes.
+            Boolean inclusion mask, counting overlaps once and preserving holes.
+            True marks included pixels; False marks excluded pixels.
+
+        Raises:
+            ValueError: If source geometry or bounded reading is invalid.
         """
         inside = np.zeros(out_shape, dtype=bool)
-        bbox = native_bbox_for_grid(self.resolved, self.dataset.crs, affine, out_shape)
+        reading_started = time.perf_counter() if timings is not None else 0.0
+        bbox = native_bbox_for_grid(
+            self.filtered_vector, self.dataset.crs, affine, out_shape
+        )
         with polygon_features(
-            self.resolved, bbox, self.cancellation_requested
+            self.filtered_vector, bbox, self.cancellation_requested
         ) as features:
             for geometry in features:
+                if timings is not None:
+                    projection_started = time.perf_counter()
+                    timings.feature_reading_seconds += (
+                        projection_started - reading_started
+                    )
                 projected = self.project(geometry)
-                inside |= geometry_mask(
+                if timings is not None:
+                    rasterization_started = time.perf_counter()
+                    timings.projection_seconds += (
+                        rasterization_started - projection_started
+                    )
+                feature_mask = geometry_mask(
                     projected,
                     out_shape=out_shape,
                     transform=affine,
                     all_touched=all_touched,
                     invert=True,
                 )
-        return inside if invert else ~inside
+                if timings is not None:
+                    timings.rasterization_seconds += (
+                        time.perf_counter() - rasterization_started
+                    )
+                inside |= feature_mask
+                del feature_mask
+                if timings is not None:
+                    reading_started = time.perf_counter()
+        if timings is not None:
+            timings.feature_reading_seconds += time.perf_counter() - reading_started
+        return inside
 
 
-def selection_mask(
-    geometries: tuple[dict[str, object], ...] | RasterAreaMask,
+def pixels_inside_area(
+    selected_polygons: tuple[dict[str, object], ...] | RasterAreaMask,
     *,
     out_shape: tuple[int, int],
     transform: Affine,
     all_touched: bool,
-    invert: bool = False,
+    timings: RasterMaskTimings | None = None,
 ) -> NDArray[np.bool_]:
-    """Apply an existing numeric mask policy to stored or direct-source polygons.
+    """Return a boolean inclusion mask for polygons on the supplied raster grid.
 
     Args:
-        geometries: Projected source reader or bounded historical/box geometries.
-        out_shape: Admitted output grid shape.
-        transform: Numeric grid affine.
-        all_touched: Caller-owned inclusion policy.
-        invert: Return inside membership when true.
+        selected_polygons: Polygon coordinates in the raster CRS, or a reader that
+            projects selected catalog features into that CRS.
+        out_shape: Number of rows and columns in the output mask.
+        transform: Mapping from output pixel coordinates to the raster CRS.
+        all_touched: Include every pixel touched by a polygon when True;
+            otherwise use Rasterio's default pixel-center inclusion rule.
+        timings: Optional accumulator; existing polygon tuples only rasterize.
 
     Returns:
-        Boolean mask on exactly the supplied numeric grid.
+        Boolean array with out_shape dimensions: True for included pixels
+        and False for excluded pixels.
+
+    Raises:
+        ValueError: If source geometry or bounded reading is invalid.
     """
-    if not isinstance(geometries, tuple):
-        return geometries.mask(out_shape, transform, all_touched, invert)
-    return geometry_mask(
-        geometries,
+    if not isinstance(selected_polygons, tuple):
+        return selected_polygons.read_polygon_mask(
+            out_shape, transform, all_touched, timings
+        )
+    rasterization_started = time.perf_counter() if timings is not None else 0.0
+    inside = geometry_mask(
+        selected_polygons,
         out_shape=out_shape,
         transform=transform,
         all_touched=all_touched,
-        invert=invert,
+        invert=True,
     )
+    if timings is not None:
+        timings.rasterization_seconds += time.perf_counter() - rasterization_started
+    return inside
 
 
 @contextmanager

@@ -1,6 +1,9 @@
 """Direct-source reading preserves established exact numeric grid semantics."""
 
 from pathlib import Path
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import Any
 import json
 import math
 from multiprocessing import get_context
@@ -17,13 +20,14 @@ from shapely.geometry import Polygon, box, mapping
 
 from eolab_app.bounded_vector import (
     ProjectedCatalogSelection,
+    pixels_inside_area,
     polygon_features,
     selection_summary,
 )
 from eolab_app.bounded_vector import native_bbox_for_grid
 from eolab_app.catalog_selection import SelectionUnavailableError
 from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregateLimits
-from eolab_app.processing.ground_area import GroundArea
+from eolab_app.processing.ground_area import PixelAreaCalculator
 from eolab_app.raster.bounded_window import selected_raster_area_for_wgs84_polygons
 from eolab_app.vector.filters import VectorFilter
 from catalog_selection_support import write_selection
@@ -99,7 +103,9 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
     warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
     from eolab_app.processing.clip_models import ClipArea, ClipSpec, RasterClipLimits
     from eolab_app.processing.raster_clip import plan_clip, create_clip
-    from eolab_app.processing.raster_aggregate import create_aggregate
+    from eolab_app.processing.raster_aggregate import (
+        calculate_raster_statistics_for_area,
+    )
     from eolab_app.raster.models import CatalogRasterRequest
     from eolab_app.raster.source_identity import RasterSourceIdentity
     from eolab_app.raster.statistics import read_raster_statistics
@@ -187,7 +193,9 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
     )
     output = tmp_path / "summary"
     output.mkdir()
-    artifact = create_aggregate(path, spec, output, RasterAggregateLimits())
+    artifact = calculate_raster_statistics_for_area(
+        path, spec, output, RasterAggregateLimits()
+    )
     assert float(artifact.rows[0]["value"]) == np.count_nonzero(masks[False])
     assert float(artifact.rows[1]["value"]) == values[masks[False]].sum()
 
@@ -216,12 +224,12 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
         kind="aoi", bounds=summary["bbox"], geometries=tuple(geometries)
     )
     with rasterio.open(path) as dataset:
-        baseline = GroundArea(dataset, historical, RasterAggregateLimits())
-        direct = GroundArea(dataset, native_area, RasterAggregateLimits())
+        baseline = PixelAreaCalculator(dataset, historical, RasterAggregateLimits())
+        direct = PixelAreaCalculator(dataset, native_area, RasterAggregateLimits())
         assert direct.window == baseline.window
         np.testing.assert_allclose(
-            direct.weights(direct.window),
-            baseline.weights(baseline.window),
+            direct.calculate_hectares(direct.window),
+            baseline.calculate_hectares(baseline.window),
             rtol=1e-11,
             atol=1e-7,
         )
@@ -278,7 +286,14 @@ def test_streamed_masks_match_complete_exact_geometry(
     affine: Affine,
     all_touched: bool,
 ) -> None:
-    """Compare overlapping polygons, holes and outside components on actual grids."""
+    """Verify inclusion and exclusion masks for both polygon source types.
+
+    Args:
+        tmp_path: Directory for the vector and raster fixtures.
+        crs: Raster coordinate reference system.
+        affine: Raster pixel-to-map transform.
+        all_touched: Whether any polygon contact includes a pixel.
+    """
     geometries = [
         mapping(
             Polygon(
@@ -312,9 +327,21 @@ def test_streamed_masks_match_complete_exact_geometry(
                 all_touched=all_touched,
                 invert=True,
             )
-            assert np.array_equal(
-                direct.mask(shape, transform, all_touched, True), expected
-            )
+            for mask_source in (direct, original.projected_geometries):
+                inside = pixels_inside_area(
+                    mask_source,
+                    out_shape=shape,
+                    transform=transform,
+                    all_touched=all_touched,
+                )
+                np.testing.assert_array_equal(inside, expected)
+                outside = geometry_mask(
+                    original.projected_geometries,
+                    out_shape=shape,
+                    transform=transform,
+                    all_touched=all_touched,
+                )
+                np.testing.assert_array_equal(~inside, outside)
 
 
 @pytest.mark.parametrize(
@@ -357,8 +384,8 @@ def test_fractional_union_matches_historical_exact_area(
         resolved=resolved,
     )
     with rasterio.open(path) as dataset:
-        baseline = GroundArea(dataset, old, RasterAggregateLimits())
-        direct = GroundArea(dataset, new, RasterAggregateLimits())
+        baseline = PixelAreaCalculator(dataset, old, RasterAggregateLimits())
+        direct = PixelAreaCalculator(dataset, new, RasterAggregateLimits())
         assert direct.window == baseline.window
         for y in range(
             int(direct.window.row_off),
@@ -377,7 +404,10 @@ def test_fractional_union_matches_historical_exact_area(
                     min(4, direct.window.row_off + direct.window.height - y),
                 )
                 np.testing.assert_allclose(
-                    direct.weights(tile), baseline.weights(tile), rtol=1e-12, atol=1e-7
+                    direct.calculate_hectares(tile),
+                    baseline.calculate_hectares(tile),
+                    rtol=1e-12,
+                    atol=1e-7,
                 )
 
 
@@ -399,3 +429,148 @@ def test_predicate_source_signature_and_spatial_candidates(tmp_path: Path) -> No
         source.write(b"changed")
     with pytest.raises(SelectionUnavailableError, match="changed"):
         selection_summary(resolved)
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_mask_stage_timings_partition_real_geometry_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streamed: bool
+) -> None:
+    """Attribute controlled delays while preserving actual polygon masks.
+
+    Args:
+        tmp_path: Directory for real raster/vector fixtures.
+        monkeypatch: Replaces the clock and wraps real source operations.
+        streamed: Read original features instead of using projected polygons.
+    """
+    import eolab_app.bounded_vector as reader
+    from eolab_app.raster.models import RasterMaskTimings
+
+    polygons = [mapping(box(1, 1, 4, 4)), mapping(box(3, 3, 6, 6))]
+    resolved = write_selection(tmp_path / "selection.gpkg", polygons)
+    path = write_source(
+        tmp_path / "raster.tif",
+        np.ones((8, 8), dtype="int16"),
+        transform=from_origin(0, 8, 1, 1),
+    )
+    clock = [0.0]
+    calls = {"bbox": 0, "read": 0, "open": 0, "close": 0, "project": 0, "rasterize": 0}
+
+    def delayed(
+        function: Callable[..., Any], key: str, duration: float
+    ) -> Callable[..., Any]:
+        """Wrap an operation without changing its result.
+
+        Args:
+            function: Real operation to invoke.
+            key: Counter for this operation.
+            duration: Extra time charged to the operation.
+
+        Returns:
+            Callable that performs the operation and advances the clock.
+        """
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            """Invoke the wrapped operation.
+
+            Args:
+                *args: Original positional arguments.
+                **kwargs: Original keyword arguments.
+
+            Returns:
+                Unchanged operation result.
+            """
+            result = function(*args, **kwargs)
+            calls[key] += 1
+            clock[0] += duration
+            return result
+
+        return invoke
+
+    original_features = reader.polygon_features
+
+    @contextmanager
+    def timed_features(*args: Any, **kwargs: Any) -> Iterator[Iterator[dict[str, Any]]]:
+        """Charge source lifetime and iteration separately from feature processing.
+
+        Args:
+            *args: Original polygon reader arguments.
+            **kwargs: Original polygon reader keyword arguments.
+
+        Yields:
+            Real polygon features with deterministic reading delays.
+        """
+
+        def iterate(features: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+            """Yield source features, charging reads including exhaustion.
+
+            Args:
+                features: Source feature iterator.
+
+            Yields:
+                Unchanged source geometries.
+            """
+            while True:
+                clock[0] += 3
+                calls["read"] += 1
+                try:
+                    geometry = next(features)
+                except StopIteration:
+                    return
+                yield geometry
+
+        with original_features(*args, **kwargs) as features:
+            clock[0] += 2
+            calls["open"] += 1
+            yield iterate(iter(features))
+        clock[0] += 5
+        calls["close"] += 1
+
+    with rasterio.open(path) as dataset:
+        source = (
+            ProjectedCatalogSelection(dataset, resolved, 500000)
+            if streamed
+            else tuple(polygons)
+        )
+        expected = pixels_inside_area(
+            source, out_shape=(8, 8), transform=dataset.transform, all_touched=False
+        )
+        monkeypatch.setattr(reader.time, "perf_counter", lambda: clock[0])
+        monkeypatch.setattr(
+            reader,
+            "native_bbox_for_grid",
+            delayed(reader.native_bbox_for_grid, "bbox", 7),
+        )
+        monkeypatch.setattr(reader, "polygon_features", timed_features)
+        monkeypatch.setattr(
+            ProjectedCatalogSelection,
+            "project",
+            delayed(ProjectedCatalogSelection.project, "project", 11),
+        )
+        monkeypatch.setattr(
+            reader, "geometry_mask", delayed(reader.geometry_mask, "rasterize", 13)
+        )
+        timings = RasterMaskTimings()
+        for _ in range(2):
+            actual = pixels_inside_area(
+                source,
+                out_shape=(8, 8),
+                transform=dataset.transform,
+                all_touched=False,
+                timings=timings,
+            )
+            np.testing.assert_array_equal(actual, expected)
+        assert timings.feature_reading_seconds == (
+            calls["bbox"] * 7
+            + calls["open"] * 2
+            + calls["read"] * 3
+            + calls["close"] * 5
+        )
+        assert timings.projection_seconds == calls["project"] * 11
+        assert timings.rasterization_seconds == calls["rasterize"] * 13 > 0
+        assert clock[0] == (
+            timings.feature_reading_seconds
+            + timings.projection_seconds
+            + timings.rasterization_seconds
+        )
+        assert bool(timings.feature_reading_seconds) == streamed
+        assert bool(timings.projection_seconds) == streamed

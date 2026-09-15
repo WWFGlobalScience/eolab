@@ -22,7 +22,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import Polygon, mapping
 
 from eolab_app.processing.aggregate_models import AggregateArea
-from eolab_app.processing.raster_aggregate import create_aggregate
+from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 from test_ground_area import reference_area
 from test_raster_aggregates import LIMITS, make_spec
 from test_raster_clips import write_source
@@ -120,7 +120,7 @@ def main() -> None:
                 path, ["areaha(a >= 0)", "areaha(a >= 2)", "count(a >= 2)"], case.area
             )
             planned = perf_counter()
-            result = create_aggregate(path, spec, output, LIMITS)
+            result = calculate_raster_statistics_for_area(path, spec, output, LIMITS)
             end = perf_counter()
             if case.name == "country-scale-polygon-with-hole":
                 assert math.isclose(
