@@ -458,7 +458,7 @@ def calculate_raster_statistics_for_area(
                 if pixel_area_calculator and not pixel_area_calculator.rectilinear
                 else TILE_SIDE
             )
-            execution = calculation_plan.grid.execution or execution_plan(
+            raster_batch_plan = calculation_plan.grid.execution or execution_plan(
                 raster_area_tools.raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
@@ -471,11 +471,11 @@ def calculate_raster_statistics_for_area(
                 dataset.block_shapes[0],
                 dataset.width,
                 dataset.height,
-                execution,
+                raster_batch_plan,
             )
             reader = (
                 read_native_raster_block
-                if execution.targetChunkPixels is None
+                if raster_batch_plan.targetChunkPixels is None
                 else read_native_raster_window
             )
             for block, native_blocks in windows:
@@ -495,29 +495,29 @@ def calculate_raster_statistics_for_area(
                         tile_side,
                     )
                     if raster_area_tools.area_mask_source
-                    and execution.targetChunkPixels
+                    and raster_batch_plan.targetChunkPixels
                     else None
                 )
                 mask_seconds += time.perf_counter() - mask_started
                 for y in range(
                     int(intersection.row_off),
                     int(intersection.row_off + intersection.height),
-                    execution.evaluationHeight,
+                    raster_batch_plan.evaluationHeight,
                 ):
                     for x in range(
                         int(intersection.col_off),
                         int(intersection.col_off + intersection.width),
-                        execution.evaluationWidth,
+                        raster_batch_plan.evaluationWidth,
                     ):
                         tile = Window(
                             x,
                             y,
                             min(
-                                execution.evaluationWidth,
+                                raster_batch_plan.evaluationWidth,
                                 intersection.col_off + intersection.width - x,
                             ),
                             min(
-                                execution.evaluationHeight,
+                                raster_batch_plan.evaluationHeight,
                                 intersection.row_off + intersection.height - y,
                             ),
                         )
@@ -608,7 +608,7 @@ def calculate_raster_statistics_for_area(
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     source = next(iter(calculation_plan.sources.values()))
     performance = AggregatePerformance(
-        execution=execution,
+        execution=raster_batch_plan,
         readWindows=read_count,
         evaluationTiles=tile_count,
         reducerUpdates=tile_count * len(calculations),
