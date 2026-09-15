@@ -66,3 +66,21 @@ native read may finish its current block before stopping. Capacity conflicts
 retry briefly; a persistent error offers **Retry**. Cataloged rasters are immutable;
 analysis does not poll file metadata for changes. Failure to draw the optional vector outline does
 not invalidate its analysis area.
+
+
+## Raster bounds near the date line
+
+Catalog scanning and paired histograms preserve unwrapped longitude coverage for
+geographic, Mercator and equidistant cylindrical rasters using PROJ's wrapping
+control. A global raster whose last pixel extends beyond +180 degrees still
+covers the full longitude range. Other projections retain GDAL's existing
+boundary handling, including the catalog's suggested-warp fallback.
+
+EOLab currently represents these extents as one non-wrapping geographic box.
+Regional date-line crossings therefore use a conservative full-longitude
+envelope; that envelope can overstate coverage. Pixel locations and valid-data
+masks still determine which raster values contribute.
+
+After upgrading an existing deployment, run **Scan** to rebuild catalog metadata
+and reload the map to replace previously loaded bounds. This does not rewrite or
+resample the source rasters.
