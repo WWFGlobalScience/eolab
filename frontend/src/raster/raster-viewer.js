@@ -1013,17 +1013,12 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Build all visible in-bounds cursor participants in top-first map order.
-     *
-     * @param {{longitude:number,latitude:number}} position Canonical point.
+     * Build visible cursor participants in top-first map order.
+     * The pixel API determines coverage from the actual raster grid.
      * @return {Object[]} Catalog identities and concise filename stems.
      */
-    function rasterCursorSampleParticipants(position) {
+    function rasterCursorSampleParticipants() {
         return allVisibleRasterRecords()
-            .filter(({ state }) => publishedBoundsContainPosition(
-                state.publishedRaster.bbox,
-                position
-            ))
             .map(({ entry }) => ({
                 key: entry.key,
                 label: getCatalogRasterStem(entry.item),
@@ -1084,20 +1079,16 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Keep click participants whose authoritative published bounds contain a
-     * map position.
+     * Decide whether a click should open the histogram using published extents.
+     * This presentation decision does not restrict backend pixel requests.
      *
-     * Detached Catalog analysis has no published renderer, so the backend
-     * remains the authority for its point coverage. Retained layers use their
-     * validated publication response to avoid opening analysis for an empty
-     * click.
-     *
+     * @param {Object[]} participants Current bounded click participants.
      * @param {{longitude:number,latitude:number}} position Canonical point.
-     * @return {Object[]} In-bounds retained participants, or the detached
-     * participant whose coverage must be resolved by analysis.
+     * @return {boolean} Whether any published extent covers the point, or a
+     * participant has no retained renderer.
      */
-    function rasterPointSampleParticipantsAt(position) {
-        return rasterPointSampleParticipants().filter(({ key }) => {
+    function shouldOpenRasterHistogram(participants, position) {
+        return participants.some(({ key }) => {
             const record = mapLayers.getRecord(key);
             return record === null || publishedBoundsContainPosition(
                 record.state.publishedRaster.bbox,
@@ -1155,7 +1146,7 @@ export function initializeRasterViewer(
         const records = visibleRasterRecords();
         if (rasterCursorPosition !== null) {
             cursorSamplesController.synchronize(
-                rasterCursorSampleParticipants(rasterCursorPosition)
+                rasterCursorSampleParticipants()
             );
         }
         const analyzedKeys = new Set(records.map(({ entry }) => entry.key));
@@ -3386,10 +3377,10 @@ export function initializeRasterViewer(
     /**
      * Explore one composition-owned map position with the current window size.
      *
-     * Retained raster coverage is checked before any histogram state changes.
-     * Catalog-vector analysis returns to the ordinary raster scope before the
-     * selected window is committed. World validation and selection rendering
-     * remain owned by the sample-window controller.
+     * Request pixel values independently of the published-extent check that
+     * controls histogram selection. The pixel API determines actual coverage.
+     * Catalog-vector analysis returns to ordinary raster scope before selecting
+     * a box. Reject noncanonical coordinates before requesting either analysis.
      *
      * @param {{lng:number,lat:number}} position Leaflet map position.
      * @param {Object} [options] Composition-owned selection notification.
@@ -3410,26 +3401,27 @@ export function initializeRasterViewer(
             longitude: position.lng,
             latitude: position.lat,
         };
-        const participants = rasterPointSampleParticipantsAt(point);
-        if (participants.length === 0) {
+        if (!isCanonicalWgs84Position(point)) {
             pointSamplesController.clear();
             return false;
         }
-        if (selectedCatalogSelection !== null) {
-            restoreWholeRasterStatistics();
+        const participants = rasterPointSampleParticipants();
+        const openHistogram = shouldOpenRasterHistogram(participants, point);
+        if (openHistogram) {
+            if (selectedCatalogSelection !== null) {
+                restoreWholeRasterStatistics();
+            }
+            if (rasterSampleWindowController.selectAt(position) === null) {
+                // Keep controls available when the requested box is rejected.
+                showHistogramWorkspace();
+                return true;
+            }
         }
-        if (rasterSampleWindowController.selectAt(position) === null) {
-            // A rejected box is not absent raster coverage. Keep its controls
-            // available so the user can reduce the size or choose whole scope.
-            showHistogramWorkspace();
-            return true;
+        pointSamplesController.sample(participants, point);
+        if (openHistogram) {
+            onSelected(getSelectedArea());
         }
-        pointSamplesController.sample(
-            participants,
-            point
-        );
-        onSelected(getSelectedArea());
-        return true;
+        return openHistogram;
     }
 
     /** Cancel a pending box-size refresh without changing its current area. */
@@ -3936,7 +3928,7 @@ export function initializeRasterViewer(
         });
         rasterCursorPosition = Object.freeze(point);
         cursorSamplesController.move(
-            rasterCursorSampleParticipants(point),
+            rasterCursorSampleParticipants(),
             point
         );
     }

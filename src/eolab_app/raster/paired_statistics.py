@@ -8,9 +8,13 @@ import numpy
 import rasterio
 from affine import TransformNotInvertibleError
 from rasterio.transform import array_bounds, xy
-from rasterio.warp import transform, transform_bounds
+from rasterio.warp import transform
 from rasterio.windows import Window, transform as window_transform
 from eolab_app.sampling_area import CatalogSelectionSamplingArea
+from eolab_app.raster.geographic_bounds import (
+    normalize_wgs84_bounds,
+    transform_bounds_to_wgs84,
+)
 
 from eolab_app.raster.bounded_window import (
     BOUNDED_SOURCE_WINDOW_PADDING_PIXELS,
@@ -107,7 +111,8 @@ def _dataset_wgs84_bounds(
         dataset: Open georeferenced raster source.
 
     Returns:
-        Canonical WGS 84 source bounds.
+        Canonical WGS 84 source bounds preserving full-world coverage. Regional
+        date-line crossings use a conservative full-longitude envelope.
 
     Raises:
         ValueError: If transformation produces an empty or non-finite envelope.
@@ -118,23 +123,13 @@ def _dataset_wgs84_bounds(
         dataset.width,
         dataset.transform,
     )
-    west, south, east, north = transform_bounds(
-        dataset.crs,
-        "EPSG:4326",
-        *source_bounds,
-        densify_pts=BOUNDED_WGS84_DENSIFY_POINTS,
+    return normalize_wgs84_bounds(
+        transform_bounds_to_wgs84(
+            dataset.crs,
+            source_bounds,
+            densify_points=BOUNDED_WGS84_DENSIFY_POINTS,
+        )
     )
-    bounds = (
-        max(-180.0, float(west)),
-        max(-90.0, float(south)),
-        min(180.0, float(east)),
-        min(90.0, float(north)),
-    )
-    if not all(math.isfinite(value) for value in bounds) or not (
-        bounds[0] < bounds[2] and bounds[1] < bounds[3]
-    ):
-        raise ValueError("Raster WGS 84 bounds are invalid for pairing")
-    return bounds
 
 
 def _intersect_bounds(

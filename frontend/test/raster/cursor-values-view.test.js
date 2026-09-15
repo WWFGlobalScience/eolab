@@ -46,7 +46,7 @@ test("cursor-value view presents progressive values and omits outside rasters", 
     ],
   );
   assert.equal(limit.hidden, false);
-  assert.equal(limit.textContent, "2 additional in-bounds rasters omitted.");
+  assert.equal(limit.textContent, "2 additional rasters omitted.");
 
   view.clear();
   assert.equal(root.hidden, true);
