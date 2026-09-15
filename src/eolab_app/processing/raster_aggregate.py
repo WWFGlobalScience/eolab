@@ -71,20 +71,29 @@ AREA_MASK_BYTES_PER_PIXEL = 160
 PROGRESS_INTERVAL_SECONDS = 0.5
 
 
-def selection(
+def get_raster_window_and_mask_source(
     dataset: rasterio.io.DatasetReader,
     area: AggregateArea,
     limits: RasterAggregateLimits,
 ) -> tuple[Window, tuple[dict[str, object], ...] | RasterAreaMask]:
-    """Resolve one explicit operation area without reading pixel values.
+    """Get the raster pixel window and the source for per-tile area masks.
+
+    This does not read raster pixel values or create the per-tile masks.
 
     Args:
-        dataset: Validated native dataset.
-        area: Frozen box/polygon selection or explicit whole-source selection.
-        limits: Coordinate-transformation limits.
+        dataset: Open raster with validated georeferencing.
+        area: Sampling box, filtered catalog features, historical polygon
+            geometry, or the whole raster.
+        limits: Processing limits; max_coordinates bounds geometry work here.
 
     Returns:
-        Integral source window and optional projected masking geometries.
+        A window in raster rows and columns, and projected polygons or a
+        reader that creates polygon masks for each tile. An empty tuple
+        indicates that no additional polygon mask is needed.
+
+    Raises:
+        ProcessingError: If the area does not overlap the raster, cannot be
+            projected, or exceeds the geometry limits.
     """
     if area.kind == "wholeRaster":
         return Window(0, 0, dataset.width, dataset.height), ()
@@ -221,17 +230,17 @@ def plan_aggregate(
     ):
         with rasterio.open(path) as dataset:
             require_source(dataset, path)
-            window, _ = selection(dataset, area, limits)
+            raster_window, _ = get_raster_window_and_mask_source(dataset, area, limits)
             ground = (
                 GroundArea(dataset, area, limits, planning=True)
                 if any(node.op == "areaha" for root in roots for node in walk(root))
                 else None
             )
             if ground is not None:
-                window = ground.window
+                raster_window = ground.window
             result = grid(
                 dataset,
-                window,
+                raster_window,
                 nodes,
                 limits,
                 ground.metadata if ground else None,
@@ -364,7 +373,9 @@ def calculate_raster_statistics_for_area(
         with rasterio.open(raster_path) as dataset:
             require_source(dataset, raster_path)
             source_ready = time.perf_counter()
-            window, geometries = selection(dataset, calculation_plan.area, limits)
+            raster_window, area_mask_source = get_raster_window_and_mask_source(
+                dataset, calculation_plan.area, limits
+            )
             selection_ready = time.perf_counter()
             ground = (
                 GroundArea(dataset, calculation_plan.area, limits)
@@ -372,12 +383,12 @@ def calculate_raster_statistics_for_area(
                 else None
             )
             if ground is not None:
-                window = ground.window
+                raster_window = ground.window
             ground_ready = time.perf_counter()
             if (
                 grid(
                     dataset,
-                    window,
+                    raster_window,
                     nodes,
                     limits,
                     ground.metadata if ground else None,
@@ -401,7 +412,7 @@ def calculate_raster_statistics_for_area(
                 AREA_TILE_SIDE if ground and not ground.rectilinear else TILE_SIDE
             )
             execution = calculation_plan.grid.execution or execution_plan(
-                window,
+                raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
                 dataset.height,
@@ -409,7 +420,7 @@ def calculate_raster_statistics_for_area(
                 tile_side,
             )
             windows = read_windows(
-                window,
+                raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
                 dataset.height,
@@ -426,11 +437,13 @@ def calculate_raster_statistics_for_area(
                 read_seconds += time.perf_counter() - read_started
                 read_count += 1
                 calculate_started = time.perf_counter()
-                intersection = block.intersection(window)
+                intersection = block.intersection(raster_window)
                 mask_started = time.perf_counter()
                 selection_valid = (
-                    stable_selection_mask(dataset, window, block, geometries, tile_side)
-                    if geometries and execution.targetChunkPixels
+                    stable_selection_mask(
+                        dataset, raster_window, block, area_mask_source, tile_side
+                    )
+                    if area_mask_source and execution.targetChunkPixels
                     else None
                 )
                 mask_seconds += time.perf_counter() - mask_started
@@ -474,9 +487,9 @@ def calculate_raster_statistics_for_area(
                         mask_started = time.perf_counter()
                         if selection_valid is not None:
                             valid &= selection_valid[local.toslices()]
-                        elif geometries:
+                        elif area_mask_source:
                             valid &= selection_mask(
-                                geometries,
+                                area_mask_source,
                                 out_shape=data.shape,
                                 transform=window_transform(tile, dataset.transform),
                                 all_touched=False,
