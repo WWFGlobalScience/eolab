@@ -9,7 +9,7 @@ from typing import Any
 
 import rasterio
 from rasterio.transform import array_bounds
-from rasterio.warp import calculate_default_transform, transform_bounds
+from rasterio.warp import calculate_default_transform
 
 from eolab_app.raster.catalog_contract import (
     COG_MEDIA_TYPE,
@@ -21,6 +21,10 @@ from eolab_app.raster.catalog_metadata import (
     RASTER_SOURCE_SIGNATURE_FIELD,
 )
 from eolab_app.raster.source_identity import RasterSourceIdentity
+from eolab_app.raster.geographic_bounds import (
+    normalize_wgs84_bounds,
+    transform_bounds_to_wgs84,
+)
 
 
 STAC_RASTER_DATA_TYPES = {
@@ -206,7 +210,10 @@ def build_stac_item(source_root: Path, geotiff_path: Path) -> dict[str, Any]:
 def _derive_wgs84_bbox(
     dataset: rasterio.io.DatasetReader,
 ) -> tuple[list[float], bool]:
-    """Derive a WGS 84 bounding box without reading raster pixels.
+    """Derive a non-wrapping WGS 84 envelope without reading raster pixels.
+
+    Preserve longitude coverage before normalization. Date-line crossings use
+    a conservative full-longitude envelope under the existing catalog contract.
 
     Args:
         dataset: Open raster dataset with a coordinate reference system.
@@ -216,45 +223,36 @@ def _derive_wgs84_bbox(
         required.
 
     Raises:
-        ValueError: If GDAL cannot produce a valid WGS 84 destination extent.
+        ValueError: If no valid WGS 84 destination extent can be produced.
+        rasterio.errors.RasterioError: If GDAL cannot transform the extent.
     """
-    bbox = list(
-        transform_bounds(
+    bbox = transform_bounds_to_wgs84(dataset.crs, tuple(dataset.bounds))
+    if all(math.isfinite(coordinate) for coordinate in bbox):
+        return list(normalize_wgs84_bounds(bbox)), False
+    destination_transform, destination_width, destination_height = (
+        calculate_default_transform(
             dataset.crs,
             "EPSG:4326",
+            dataset.width,
+            dataset.height,
             *dataset.bounds,
         )
     )
-    used_suggested_warp_bounds = False
-    if not all(math.isfinite(coordinate) for coordinate in bbox):
-        destination_transform, destination_width, destination_height = (
-            calculate_default_transform(
-                dataset.crs,
-                "EPSG:4326",
-                dataset.width,
-                dataset.height,
-                *dataset.bounds,
-            )
-        )
 
-        if (
-            destination_width < 1
-            or destination_height < 1
-            or not all(
-                math.isfinite(coefficient)
-                for coefficient in destination_transform
-            )
-        ):
-            raise ValueError("GeoTIFF bounds could not be transformed to WGS 84")
+    if (
+        destination_width < 1
+        or destination_height < 1
+        or not all(math.isfinite(coefficient) for coefficient in destination_transform)
+    ):
+        raise ValueError("GeoTIFF bounds could not be transformed to WGS 84")
 
-        bbox = list(
-            array_bounds(
-                destination_height,
-                destination_width,
-                destination_transform,
-            )
+    bbox = list(
+        array_bounds(
+            destination_height,
+            destination_width,
+            destination_transform,
         )
-        used_suggested_warp_bounds = True
+    )
 
     west, south, east, north = bbox
     normalized_bbox = [
@@ -270,7 +268,7 @@ def _derive_wgs84_bbox(
     ):
         raise ValueError("GeoTIFF bounds could not be transformed to WGS 84")
 
-    return normalized_bbox, used_suggested_warp_bounds
+    return normalized_bbox, True
 
 
 def _parse_acquisition_datetime(value: str) -> datetime:

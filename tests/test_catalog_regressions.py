@@ -455,7 +455,7 @@ def test_geotiff_rejects_invalid_suggested_warp_output(
     geotiff_path = tmp_path / "invalid-suggested-grid.tif"
     write_geotiff(geotiff_path)
     monkeypatch.setattr(
-        "eolab_app.catalog.geotiff.transform_bounds",
+        "eolab_app.catalog.geotiff.transform_bounds_to_wgs84",
         lambda *args, **kwargs: (float("inf"),) * 4,
     )
     monkeypatch.setattr(
