@@ -1013,17 +1013,12 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Build all visible in-bounds cursor participants in top-first map order.
-     *
-     * @param {{longitude:number,latitude:number}} position Canonical point.
+     * Build visible cursor participants in top-first map order.
+     * The pixel API determines coverage from the actual raster grid.
      * @return {Object[]} Catalog identities and concise filename stems.
      */
-    function rasterCursorSampleParticipants(position) {
+    function rasterCursorSampleParticipants() {
         return allVisibleRasterRecords()
-            .filter(({ state }) => publishedBoundsContainPosition(
-                state.publishedRaster.bbox,
-                position
-            ))
             .map(({ entry }) => ({
                 key: entry.key,
                 label: getCatalogRasterStem(entry.item),
@@ -1155,7 +1150,7 @@ export function initializeRasterViewer(
         const records = visibleRasterRecords();
         if (rasterCursorPosition !== null) {
             cursorSamplesController.synchronize(
-                rasterCursorSampleParticipants(rasterCursorPosition)
+                rasterCursorSampleParticipants()
             );
         }
         const analyzedKeys = new Set(records.map(({ entry }) => entry.key));
@@ -3936,7 +3931,7 @@ export function initializeRasterViewer(
         });
         rasterCursorPosition = Object.freeze(point);
         cursorSamplesController.move(
-            rasterCursorSampleParticipants(point),
+            rasterCursorSampleParticipants(),
             point
         );
     }

@@ -3,7 +3,7 @@
  *
  * This controller receives an already ordered set of Catalog participants. It
  * owns dwell timing, a fixed worker pool, cancellation, stale-result rejection,
- * and immutable progressive snapshots. Map-layer policy, bounds filtering,
+ * and immutable progressive snapshots. Map-layer policy,
  * Leaflet, DOM presentation, rendering, and GeoServer remain outside it.
  */
 import { isCanonicalWgs84Position } from "./geometry.js";
@@ -129,7 +129,7 @@ export class RasterCursorSamplesController {
      * Keep the previous presentation available until replacement sampling starts
      * or an empty participant set settles. The view owns the visual handoff.
      *
-     * @param {RasterCursorSampleParticipant[]} participants In-bounds visible
+     * @param {RasterCursorSampleParticipant[]} participants Visible
      * rasters in top-first map order.
      * @param {{longitude:number,latitude:number}} position Canonical WGS 84 point.
      * @return {void}

@@ -1247,7 +1247,7 @@ test('three visible rasters render while only the top two are analyzed', async (
     h.destroy();
 });
 
-test('cursor sampling follows every visible in-bounds raster and pauses for map dragging', async () => {
+test('cursor sampling follows every visible raster regardless of published bounds and pauses for map dragging', async () => {
     const timers = new Map();
     let nextTimerId = 1;
     const clock = {
@@ -1300,8 +1300,8 @@ test('cursor sampling follows every visible in-bounds raster and pauses for map 
         publishRaster: async item => ({
             layerName: `eolab:${item.id}`,
             bbox: item.id.endsWith('outside')
-                ? [20, 20, 30, 30]
-                : [-10, -10, 10, 10],
+                ? [-180, -85.05127083678795, -179.99835325853354, 85.05112877980659]
+                : [-180, -90, 180, 90],
         }),
         sampleCursorPixel: async (item, point) => {
             cursorRequests.push({ item, point });
@@ -1317,7 +1317,7 @@ test('cursor sampling follows every visible in-bounds raster and pauses for map 
     await flushPromises();
 
     h.leafletMap.emit('mousemove', {
-        latlng: { lng: 0, lat: 0 },
+        latlng: { lng: -87.44567871093751, lat: 36.798288873837045 },
         originalEvent: { clientX: 600, clientY: 300 },
     });
     assert.deepEqual(cursorValuesView.moves, [{ clientX: 600, clientY: 300 }]);
@@ -1326,7 +1326,7 @@ test('cursor sampling follows every visible in-bounds raster and pauses for map 
     await flushPromises();
     assert.deepEqual(
         cursorRequests.map(({ item }) => item.id),
-        [top.id, bottom.id],
+        [top.id, outside.id, bottom.id],
     );
     assert.deepEqual(
         cursorValuesView.snapshots.at(-1).samples.map(({ label, state }) => ({
@@ -1335,9 +1335,17 @@ test('cursor sampling follows every visible in-bounds raster and pauses for map 
         })),
         [
             { label: 'cursor-top', state: 'value' },
+            { label: 'cursor-outside', state: 'value' },
             { label: 'cursor-bottom', state: 'value' },
         ],
     );
+
+    const hidden = h.mapLayers.snapshots().find(layer => layer.item.id === bottom.id);
+    h.mapLayers.setVisible(hidden.key, false);
+    cursorRequests.length = 0;
+    clock.runNext();
+    await flushPromises();
+    assert.deepEqual(cursorRequests.map(({ item }) => item.id), [top.id, outside.id]);
 
     cursorValuesView.handlers.onHide();
     assert.equal(cursorValuesView.enabled, false);
@@ -1387,6 +1395,10 @@ test('cursor sampling and DOM hand off positions atomically and reject stale rea
     const requests = [];
     const h = visibleLayerFixture(undefined, {
         clock, cursorValuesView,
+        publishRaster: async item => ({
+            layerName: `eolab:${item.id}`,
+            bbox: [-180, -85.05127083678795, -179.99835325853354, 85.05112877980659],
+        }),
         sampleCursorPixel: (_item, point, signal) => {
             const deferred = createDeferred();
             requests.push({ ...deferred, point, signal });
@@ -1450,6 +1462,12 @@ test('cursor sampling and DOM hand off positions atomically and reject stale rea
     await flushPromises();
     assert.equal(marker.hidden, false);
     h.leafletMap.emit('resize', {});
+    assert.equal(root.hidden, true);
+    assert.equal(marker.hidden, true);
+    move(7);
+    clock.runNext();
+    requests[5].resolve({ inBounds: false, value: null });
+    await flushPromises();
     assert.equal(root.hidden, true);
     assert.equal(marker.hidden, true);
     h.destroy();
