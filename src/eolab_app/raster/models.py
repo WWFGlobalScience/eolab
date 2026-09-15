@@ -93,14 +93,14 @@ class RasterMaskTimings:
 class RasterAreaMask(Protocol):
     """A bounded polygon-membership reader independent of its invoking feature."""
 
-    def pixels_inside_area(
+    def read_polygon_mask(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
         timings: RasterMaskTimings | None = None,
     ) -> NDArray[bool_]:
-        """Return True for included pixels on a caller-admitted raster grid.
+        """Read polygon membership as an inclusion mask on the supplied raster grid.
 
         Args:
             out_shape: Admitted grid rows and columns.

@@ -343,14 +343,14 @@ class ProjectedCatalogSelection:
             raise ValueError("A feature exceeds the transformed-coordinate buffer")
         return project_wgs84_polygons(self.dataset, (geometry,), count)
 
-    def pixels_inside_area(
+    def read_polygon_mask(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
         timings: RasterMaskTimings | None = None,
     ) -> NDArray[np.bool_]:
-        """Return True for pixels included in the selected polygons.
+        """Read selected vector polygons and return their inclusion mask.
 
         Args:
             out_shape: Already admitted raster output dimensions.
@@ -432,7 +432,7 @@ def pixels_inside_area(
         ValueError: If source geometry or bounded reading is invalid.
     """
     if not isinstance(geometries, tuple):
-        return geometries.pixels_inside_area(out_shape, transform, all_touched, timings)
+        return geometries.read_polygon_mask(out_shape, transform, all_touched, timings)
     rasterization_started = time.perf_counter() if timings is not None else 0.0
     inside = geometry_mask(
         geometries,
