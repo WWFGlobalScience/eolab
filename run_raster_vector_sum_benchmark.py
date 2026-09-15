@@ -271,6 +271,8 @@ def main() -> None:
                     "Outer timing stages sum to totalSeconds; importSeconds is separate.",
                     "performance is nested inside executionSeconds; its stages are not additive to parents.",
                     "selectionMaskSeconds includes vector reads, validation, projection and rasterization.",
+                    "selectionMaskBreakdown is nested inside selectionMaskSeconds; do not add it again.",
+                    "featureReadingSeconds includes tile bounds lookup, source opening, iteration, filtering, validation and closing.",
                     "No HTTP, catalog lookup, queue, process pool, SSE or browser timing is included.",
                     "Inputs are read-only; temporary kernel artifacts are removed after each run.",
                     "Compare only matching input identities, grid, limits, runtime and returned values.",

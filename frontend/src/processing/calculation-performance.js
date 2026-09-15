@@ -92,6 +92,15 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
             "Polygon mask time includes vector reads, geometry projection and rasterization, plus applying the mask. Read/decode includes the raster's own validity mask and I/O waiting; it is not a pure disk-time measurement.",
             "Setup + Read/decode + Calculation + Write CSV + Other kernel work partition Kernel elapsed. Calculation's inner stages are already included in Calculation; do not add them again.",
         );
+        const mask = k.selectionMaskBreakdown;
+        if (mask) {
+            const overhead = Math.max(0, k.selectionMaskSeconds - mask.featureReadingSeconds
+                - mask.projectionSeconds - mask.rasterizationSeconds);
+            lines.push(
+                `Inside polygon selection masks - feature reading: ${seconds(mask.featureReadingSeconds)}; projection: ${seconds(mask.projectionSeconds)}; rasterization: ${seconds(mask.rasterizationSeconds)}; mask allocation, union, application and overhead (remainder): ${seconds(overhead)}.`,
+                "Feature reading includes tile bounds lookup, opening, filtering, validation and closing vector sources, including I/O waits. These mask stages are already included in polygon selection masks; do not add them again.",
+            );
+        } else lines.push("The mask-stage breakdown was not recorded for this saved result.");
     } else lines.push("Detailed kernel stages were not recorded for this saved result.");
     return [...lines,
         `Kernel elapsed: ${seconds(p.kernelSeconds)}. Read/decode and source mask: ${seconds(p.readSeconds)}. Calculation: ${seconds(p.calculationSeconds)}. Write CSV and checksum: ${seconds(p.resultWriteSeconds)}.`,

@@ -104,3 +104,33 @@ test("detailed kernel stages remain optional and validate every measured field",
     assert.match(text, /do not add them again/);
     assert.match(performanceDescription({result:{performance:metrics}}).join(" "), /Detailed kernel stages were not recorded/);
 });
+
+
+test("polygon mask breakdown is optional, validated and displayed as nested timings", async () => {
+    const breakdown = {featureReadingSeconds:.8,projectionSeconds:.3,rasterizationSeconds:.2};
+    const stages = {sourceSetupSeconds:.1,selectionSetupSeconds:.2,groundAreaSetupSeconds:0,
+        gridCheckSeconds:0,selectionMaskSeconds:1.5,areaWeightsSeconds:0,reductionSeconds:.2};
+    const metrics = {execution,readWindows:1,evaluationTiles:1,reducerUpdates:1,
+        readSeconds:.5,calculationSeconds:2,resultWriteSeconds:.1,kernelSeconds:3};
+    const result = {url:`/api/processing/jobs/${"J".repeat(32)}/result`,
+        provenanceUrl:`/api/processing/jobs/${"J".repeat(32)}/provenance`,
+        rows:[{label:"Sum",expression:"sum(a)",state:"ok",value:"1",valueType:"float",aggregates:[]}]};
+    const bad = Object.keys(breakdown).flatMap(key =>
+        [-1, "1", null].map(value => ({...breakdown,[key]:value})));
+    for (const value of [undefined, null, breakdown, ...bad, {}]) {
+        const performance = {...metrics,stages:{...stages,selectionMaskBreakdown:value}};
+        const api = new ProcessingApiClient(async () => Response.json({
+            jobId:"J".repeat(32),operation:"raster.aggregate.v1",status:"ready",grid,
+            progress:{phase:"ready"},result:{...result,performance},
+        }));
+        if (value == null || value === breakdown) await api.getJob("J".repeat(32));
+        else await assert.rejects(() => api.getJob("J".repeat(32)), /stage timings/);
+    }
+    const text = performanceDescription({result:{performance:{...metrics,
+        stages:{...stages,selectionMaskBreakdown:breakdown}}}}).join(" ");
+    assert.match(text, /feature reading: 0.800 s; projection: 0.300 s; rasterization: 0.200 s/);
+    assert.match(text, /mask allocation, union, application and overhead \(remainder\): 0.200 s/);
+    assert.match(text, /already included in polygon selection masks/);
+    assert.match(performanceDescription({result:{performance:{...metrics,stages}}}).join(" "),
+        /mask-stage breakdown was not recorded/);
+});

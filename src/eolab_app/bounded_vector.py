@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 import math
+import time
 import json
 from time import monotonic
 from typing import Any
@@ -38,7 +39,7 @@ from eolab_app.raster.bounded_window import (
 )
 from eolab_app.raster.read_cancellation import require_active_raster_read
 from eolab_app.raster.read_cancellation import RasterReadCancellationCheck
-from eolab_app.raster.models import RasterAreaMask
+from eolab_app.raster.models import RasterAreaMask, RasterMaskTimings
 from eolab_app.attribute_filter import matches_filter, validate_filter
 
 # Existing native-read and projection budgets now bound actual streamed work
@@ -347,6 +348,7 @@ class ProjectedCatalogSelection:
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
+        timings: RasterMaskTimings | None = None,
     ) -> NDArray[np.bool_]:
         """Return True for pixels included in the selected polygons.
 
@@ -354,6 +356,7 @@ class ProjectedCatalogSelection:
             out_shape: Already admitted raster output dimensions.
             affine: Existing numeric grid's affine transform.
             all_touched: Caller-owned pixel inclusion policy.
+            timings: Optional accumulator; excludes mask allocation and union.
 
         Returns:
             Boolean inclusion mask, counting overlaps once and preserving holes.
@@ -363,6 +366,7 @@ class ProjectedCatalogSelection:
             ValueError: If source geometry or bounded reading is invalid.
         """
         inside = np.zeros(out_shape, dtype=bool)
+        reading_started = time.perf_counter() if timings is not None else 0.0
         bbox = native_bbox_for_grid(
             self.filtered_vector, self.dataset.crs, affine, out_shape
         )
@@ -370,14 +374,34 @@ class ProjectedCatalogSelection:
             self.filtered_vector, bbox, self.cancellation_requested
         ) as features:
             for geometry in features:
+                if timings is not None:
+                    projection_started = time.perf_counter()
+                    timings.feature_reading_seconds += (
+                        projection_started - reading_started
+                    )
                 projected = self.project(geometry)
-                inside |= geometry_mask(
+                if timings is not None:
+                    rasterization_started = time.perf_counter()
+                    timings.projection_seconds += (
+                        rasterization_started - projection_started
+                    )
+                feature_mask = geometry_mask(
                     projected,
                     out_shape=out_shape,
                     transform=affine,
                     all_touched=all_touched,
                     invert=True,
                 )
+                if timings is not None:
+                    timings.rasterization_seconds += (
+                        time.perf_counter() - rasterization_started
+                    )
+                inside |= feature_mask
+                del feature_mask
+                if timings is not None:
+                    reading_started = time.perf_counter()
+        if timings is not None:
+            timings.feature_reading_seconds += time.perf_counter() - reading_started
         return inside
 
 
@@ -387,6 +411,7 @@ def pixels_inside_area(
     out_shape: tuple[int, int],
     transform: Affine,
     all_touched: bool,
+    timings: RasterMaskTimings | None = None,
 ) -> NDArray[np.bool_]:
     """Return a boolean inclusion mask for polygons on the supplied raster grid.
 
@@ -397,6 +422,7 @@ def pixels_inside_area(
         transform: Mapping from output pixel coordinates to the raster CRS.
         all_touched: Include every pixel touched by a polygon when True;
             otherwise use Rasterio's default pixel-center inclusion rule.
+        timings: Optional accumulator; existing polygon tuples only rasterize.
 
     Returns:
         Boolean array with out_shape dimensions: True for included pixels
@@ -406,14 +432,18 @@ def pixels_inside_area(
         ValueError: If source geometry or bounded reading is invalid.
     """
     if not isinstance(geometries, tuple):
-        return geometries.pixels_inside_area(out_shape, transform, all_touched)
-    return geometry_mask(
+        return geometries.pixels_inside_area(out_shape, transform, all_touched, timings)
+    rasterization_started = time.perf_counter() if timings is not None else 0.0
+    inside = geometry_mask(
         geometries,
         out_shape=out_shape,
         transform=transform,
         all_touched=all_touched,
         invert=True,
     )
+    if timings is not None:
+        timings.rasterization_seconds += time.perf_counter() - rasterization_started
+    return inside
 
 
 @contextmanager

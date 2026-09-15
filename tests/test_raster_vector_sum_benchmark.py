@@ -108,4 +108,7 @@ def test_benchmark_native_sum_and_required_selection(
         performance = run["performance"]
         assert performance["readWindows"] == 4
         assert performance["stages"]["selectionMaskSeconds"] > 0
+        breakdown = performance["stages"]["selectionMaskBreakdown"]
+        assert all(value > 0 for value in breakdown.values())
+        assert sum(breakdown.values()) <= performance["stages"]["selectionMaskSeconds"]
         assert timing["executionSeconds"] >= performance["kernelSeconds"]

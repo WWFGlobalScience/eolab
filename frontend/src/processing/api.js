@@ -50,6 +50,8 @@ function validatePerformance(value) {
     validateExecution(value.execution);
     validateStages(value.stages, ["sourceSetupSeconds", "selectionSetupSeconds", "groundAreaSetupSeconds", "gridCheckSeconds",
         "selectionMaskSeconds", "areaWeightsSeconds", "reductionSeconds"]);
+    validateStages(value.stages?.selectionMaskBreakdown,
+        ["featureReadingSeconds", "projectionSeconds", "rasterizationSeconds"]);
     if (![value.readSeconds, value.calculationSeconds, value.resultWriteSeconds, value.kernelSeconds]
         .every(n => Number.isFinite(n) && n >= 0 && n <= 86400) ||
         ![value.readWindows, value.evaluationTiles, value.reducerUpdates].every(n => Number.isSafeInteger(n) && n > 0) ||

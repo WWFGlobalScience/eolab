@@ -23,6 +23,7 @@ from eolab_app.processing.aggregate_models import (
     AggregateSpec,
     AggregatePerformance,
     AggregateKernelStages,
+    AggregateMaskStages,
     GroundAreaPlan,
     NamedCalculation,
     RasterAggregateLimits,
@@ -45,7 +46,7 @@ from eolab_app.raster.source_contract import (
     read_native_raster_block,
     read_native_raster_window,
 )
-from eolab_app.raster.models import RasterAreaMask
+from eolab_app.raster.models import RasterAreaMask, RasterMaskTimings
 
 # Evaluate at most 65,536 pixels per expression tile, even when the source's
 # native blocks are larger. Keep admission and execution on this same tile size.
@@ -352,6 +353,7 @@ def stable_selection_mask(
     read: Window,
     geometries: tuple[dict[str, object], ...] | RasterAreaMask,
     tile_side: int,
+    timings: RasterMaskTimings | None = None,
 ) -> NDArray[np.bool_]:
     """Preserve legacy GDAL cell-center decisions independently of batch dimensions.
 
@@ -365,6 +367,7 @@ def stable_selection_mask(
         read: Combined block-aligned read inside that admitted block rectangle.
         geometries: Projected selection geometries using the established policy.
         tile_side: Legacy numeric or geometry-fallback evaluation ceiling.
+        timings: Optional accumulator for the component mask operations.
 
     Returns:
         Boolean cell-center membership with the same shape as the combined read.
@@ -401,6 +404,7 @@ def stable_selection_mask(
                     out_shape=(int(tile.height), int(tile.width)),
                     transform=window_transform(tile, dataset.transform),
                     all_touched=False,
+                    timings=timings,
                 )
     return mask
 
@@ -436,6 +440,7 @@ def calculate_raster_statistics_for_area(
     started = time.perf_counter()
     read_seconds = calculation_seconds = 0.0
     mask_seconds = weights_seconds = reduction_seconds = 0.0
+    mask_timings = RasterMaskTimings()
     read_count = tile_count = completed_blocks = 0
     alias = next(iter(calculation_plan.sources))
     roots = [
@@ -498,6 +503,7 @@ def calculate_raster_statistics_for_area(
                         block,
                         raster_area_tools.area_mask_source,
                         tile_side,
+                        timings=mask_timings,
                     )
                     if raster_area_tools.area_mask_source
                     and raster_batch_plan.targetChunkPixels
@@ -554,6 +560,7 @@ def calculate_raster_statistics_for_area(
                                 out_shape=data.shape,
                                 transform=window_transform(tile, dataset.transform),
                                 all_touched=False,
+                                timings=mask_timings,
                             )
                         mask_seconds += time.perf_counter() - mask_started
                         reduction_started = time.perf_counter()
@@ -626,6 +633,11 @@ def calculate_raster_statistics_for_area(
             groundAreaSetupSeconds=raster_area_tools.pixel_area_setup_seconds,
             gridCheckSeconds=0.0,
             selectionMaskSeconds=mask_seconds,
+            selectionMaskBreakdown=AggregateMaskStages(
+                featureReadingSeconds=mask_timings.feature_reading_seconds,
+                projectionSeconds=mask_timings.projection_seconds,
+                rasterizationSeconds=mask_timings.rasterization_seconds,
+            ),
             areaWeightsSeconds=weights_seconds,
             reductionSeconds=reduction_seconds,
         ),

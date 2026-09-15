@@ -170,6 +170,31 @@ def test_batched_native_results_and_durable_metrics(tmp_path, monkeypatch, targe
         < spec.grid.nativeBlocks
     )
     assert metrics["reducerUpdates"] < baseline.performance["reducerUpdates"]
+    breakdown = metrics["stages"]["selectionMaskBreakdown"]
+    assert breakdown["featureReadingSeconds"] == 0
+    assert breakdown["projectionSeconds"] == 0
+    assert breakdown["rasterizationSeconds"] == 0
+    assert metrics["stages"]["selectionMaskSeconds"] >= sum(breakdown.values())
+    old_stages = {
+        k: v for k, v in metrics["stages"].items() if k != "selectionMaskBreakdown"
+    }
+    assert (
+        AggregatePerformance.model_validate(
+            {**metrics, "stages": old_stages}
+        ).stages.selectionMaskBreakdown
+        is None
+    )
+    for key in breakdown:
+        with pytest.raises(ValidationError):
+            AggregatePerformance.model_validate(
+                {
+                    **metrics,
+                    "stages": {
+                        **metrics["stages"],
+                        "selectionMaskBreakdown": {**breakdown, key: -1},
+                    },
+                }
+            )
     legacy = {key: value for key, value in metrics.items() if key != "stages"}
     assert AggregatePerformance.model_validate(legacy).stages is None
     with pytest.raises(ValidationError):
@@ -370,6 +395,10 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
     area = AggregateArea(kind="aoi", bounds=tuple(bounds), geometries=(polygon,))
     spec = make_spec(path, ["sum(a)", "areaha(a>0)"], area, target_chunk_pixels=target)
     expected = kernel.calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    breakdown = expected.performance["stages"]["selectionMaskBreakdown"]
+    assert breakdown["featureReadingSeconds"] == 0
+    assert breakdown["projectionSeconds"] == 0
+    assert breakdown["rasterizationSeconds"] > 0
     clock = [0.0]
     calls = {"read": 0, "mask": 0, "weights": 0, "reduce": 0}
 

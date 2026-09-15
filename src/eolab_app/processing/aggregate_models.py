@@ -234,12 +234,31 @@ class AggregateExecutionPlan(BaseModel):
 StageSeconds = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
+class AggregateMaskStages(BaseModel):
+    """Nonoverlapping wall times included in selectionMaskSeconds.
+
+    Attributes:
+        featureReadingSeconds: Tile bounds lookup, opening, reading, filtering,
+            validating and closing vector sources, including I/O waits.
+        projectionSeconds: Projecting feature coordinates into the raster CRS.
+        rasterizationSeconds: Rasterio geometry-mask calls. Mask union,
+            allocation and application remain in the parent total's remainder.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    featureReadingSeconds: StageSeconds
+    projectionSeconds: StageSeconds
+    rasterizationSeconds: StageSeconds
+
+
 class AggregateKernelStages(BaseModel):
     """Nested wall times; mask, weights and reductions are inside calculation.
 
     Source setup includes compilation, signature checks and opening the raster.
     Selection setup reads/projects the area envelope. Mask time includes vector
-    source reads, projection and rasterization. All times include I/O waits.
+    source reads, projection and rasterization. Optional selectionMaskBreakdown
+    records those inner stages; it is absent in older results. All times include
+    I/O waits.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -248,6 +267,7 @@ class AggregateKernelStages(BaseModel):
     groundAreaSetupSeconds: StageSeconds
     gridCheckSeconds: StageSeconds
     selectionMaskSeconds: StageSeconds
+    selectionMaskBreakdown: AggregateMaskStages | None = None
     areaWeightsSeconds: StageSeconds
     reductionSeconds: StageSeconds
 
