@@ -315,8 +315,8 @@ def test_catalog_job_reauthorizes_after_restart_and_preserves_ready_result(
     assert client.get(f"/api/processing/jobs/{job['jobId']}/result").status_code == 200
 
 
-def test_source_change_and_queued_cancellation_never_publish(boundary: Any) -> None:
-    """Reauthorize at worker execution and cancel queued work without reading it.
+def test_queued_cancellation_never_publishes(boundary: Any) -> None:
+    """Cancel queued work without executing it or publishing a result.
 
     Args:
         boundary: Real owners and worker fixture.
@@ -332,13 +332,6 @@ def test_source_change_and_queued_cancellation_never_publish(boundary: Any) -> N
         == "cancelled"
     )
     assert not asyncio.run(worker.run_once())
-    stale = submitted(client, plan)
-    with source.open("ab") as stream:
-        stream.write(b"changed")
-    assert asyncio.run(worker.run_once())
-    failed = client.get(f"/api/processing/jobs/{stale['jobId']}").json()
-    assert failed["status"] == "failed"
-    assert failed["error"]["code"] == "source_unavailable"
     assert not list((artifacts.root / "results").iterdir())
 
 

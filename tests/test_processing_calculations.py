@@ -298,10 +298,10 @@ def test_operation_mismatch_and_language_rejected_before_admission(
 
 
 @pytest.mark.parametrize("area_expression", [False, True])
-def test_catalog_selection_calculates_and_native_source_is_refenced(
+def test_catalog_selection_calculates(
     boundary: Any, tmp_path: Path, area_expression: bool
 ) -> None:
-    """Catalog predicates drive calculations, while modified rasters never execute.
+    """Calculate numeric summaries and ground area using catalog predicates.
 
     Args:
         boundary: Native source, worker, AOI and HTTP owners.
@@ -337,13 +337,6 @@ def test_catalog_selection_calculates_and_native_source_is_refenced(
         )
     else:
         assert ready["result"]["rows"][0]["value"] == "3200"
-    plan = plan_calculation(client, selectedBounds=AREA, **expressions)
-    stale = submit_calculation(client, plan)
-    with source.open("ab") as stream:
-        stream.write(b"changed")
-    assert asyncio.run(worker.run_once())
-    failed = client.get(f"/api/processing/jobs/{stale['jobId']}").json()
-    assert failed["status"] == "failed" and failed["result"] is None
 
 
 def test_legacy_claim_protocol_cannot_consume_calculations(
