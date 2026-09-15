@@ -68,6 +68,67 @@ def make_spec(
     return AggregateSpec.model_validate_json(spec.model_dump_json(by_alias=True))
 
 
+@pytest.mark.parametrize("whole_raster", [False, True])
+@pytest.mark.parametrize("include_hectares", [False, True])
+def test_prepared_area_tools_window_and_masks(
+    tmp_path: Path, whole_raster: bool, include_hectares: bool
+) -> None:
+    """Return usable masks and the final window for numeric and hectare plans.
+
+    Args:
+        tmp_path: Directory for a real georeferenced raster fixture.
+        whole_raster: Select every pixel instead of a fractional-boundary box.
+        include_hectares: Include an area formula alongside the numeric sum.
+    """
+    path = write_source(
+        tmp_path / "area-tools.tif",
+        np.ones((10, 10), dtype="uint8"),
+        transform=from_origin(0, 10, 1, 1),
+    )
+    area = (
+        AggregateArea(kind="wholeRaster")
+        if whole_raster
+        else AggregateArea(kind="bounds", bounds=(2.25, 4.25, 5.75, 7.75))
+    )
+    expressions = ["sum(a)"]
+    if include_hectares:
+        expressions.append("areaha(a>0)")
+    calculation_plan = make_spec(path, expressions, area)
+    with rasterio.open(path) as dataset:
+        tools = kernel.prepare_raster_area_tools(dataset, calculation_plan, LIMITS)
+        expected_window = (
+            (0, 0, 10, 10)
+            if whole_raster
+            else ((2, 2, 4, 4) if include_hectares else (1, 1, 6, 6))
+        )
+        assert tuple(tools.raster_window.flatten()) == expected_window
+        shape = (int(tools.raster_window.height), int(tools.raster_window.width))
+        if whole_raster:
+            assert tools.area_mask_source == ()
+        else:
+            mask = kernel.selection_mask(
+                tools.area_mask_source,
+                out_shape=shape,
+                transform=rasterio.windows.transform(
+                    tools.raster_window, dataset.transform
+                ),
+                all_touched=False,
+                invert=True,
+            )
+            assert np.count_nonzero(mask) == 16
+        if include_hectares:
+            assert tools.pixel_area_calculator is not None
+            hectares = tools.pixel_area_calculator.calculate_hectares(
+                tools.raster_window
+            )
+            assert hectares.shape == shape
+            assert np.all(hectares > 0)
+        else:
+            assert tools.pixel_area_calculator is None
+        assert tools.selection_setup_seconds >= 0
+        assert tools.pixel_area_setup_seconds >= 0
+
+
 def test_native_values_not_overviews_scale_or_histogram_statistics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

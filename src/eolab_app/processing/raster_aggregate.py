@@ -1,7 +1,7 @@
 """Plan native single-raster calculations and stream scalar results to artifacts."""
 
 from eolab_app.bounded_vector import selection_mask
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import csv
 import hashlib
@@ -106,6 +106,79 @@ def get_raster_window_and_mask_source(
         area.resolved,
     )
     return selected.source_window, selected.projected_geometries
+
+
+@dataclass(frozen=True)
+class RasterAreaTools:
+    """Hold the final raster window and tools for processing the selected area.
+
+    Use these tools only while their source raster remains open. They are
+    local to one calculation and are not serialized into the saved plan.
+
+    Attributes:
+        raster_window: Final rectangle of source pixels to process.
+        area_mask_source: Projected polygons or a reader for per-tile masks.
+        pixel_area_calculator: Per-pixel hectare calculator, or None when
+            the plan contains no area-measurement formulas.
+        selection_setup_seconds: Time spent preparing the window and mask source.
+        pixel_area_setup_seconds: Time spent preparing the hectare calculator
+            and choosing the final window.
+    """
+
+    raster_window: Window
+    area_mask_source: tuple[dict[str, object], ...] | RasterAreaMask
+    pixel_area_calculator: PixelAreaCalculator | None
+    selection_setup_seconds: float
+    pixel_area_setup_seconds: float
+
+
+def prepare_raster_area_tools(
+    dataset: rasterio.io.DatasetReader,
+    calculation_plan: AggregateSpec,
+    limits: RasterAggregateLimits,
+) -> RasterAreaTools:
+    """Prepare the final window, polygon masks and optional hectare calculator.
+
+    The saved plan records whether its formulas require area measurement.
+    For those plans, use the hectare calculator's window, matching its cached
+    pixel coordinates. Other plans use the ordinary selection window. This
+    retains the existing projection and boundary rules of both tools.
+
+    Args:
+        dataset: Open, validated raster; it must remain open while tools are used.
+        calculation_plan: Accepted calculation plan, including its selected area
+            and the ground-area metadata produced by plan_aggregate.
+        limits: Limits used by the existing geometry readers and area calculator.
+
+    Returns:
+        Tools with one final pixel window and the separate setup timings.
+        No raster pixel values are read during setup.
+
+    Raises:
+        ProcessingError: If the area cannot be read or projected, does not
+            overlap the raster, or exceeds geometry-processing limits.
+    """
+    started = time.perf_counter()
+    selection_window, area_mask_source = get_raster_window_and_mask_source(
+        dataset, calculation_plan.area, limits
+    )
+    selection_ready = time.perf_counter()
+    pixel_area_calculator = None
+    if calculation_plan.grid.groundArea is not None:
+        pixel_area_calculator = PixelAreaCalculator(
+            dataset, calculation_plan.area, limits
+        )
+        raster_window = pixel_area_calculator.window
+    else:
+        raster_window = selection_window
+    area_ready = time.perf_counter()
+    return RasterAreaTools(
+        raster_window=raster_window,
+        area_mask_source=area_mask_source,
+        pixel_area_calculator=pixel_area_calculator,
+        selection_setup_seconds=selection_ready - started,
+        pixel_area_setup_seconds=area_ready - selection_ready,
+    )
 
 
 def grid(
@@ -355,7 +428,7 @@ def calculate_raster_statistics_for_area(
         timings, and the CSV filename, size, and checksum.
 
     Raises:
-        ProcessingError: If the source or grid differs from the plan, or
+        ProcessingError: If the source differs from the plan, or
             the calculation exceeds a processing limit.
     """
     started = time.perf_counter()
@@ -375,21 +448,10 @@ def calculate_raster_statistics_for_area(
         with rasterio.open(raster_path) as dataset:
             validate_supported_raster(dataset, raster_path)
             source_ready = time.perf_counter()
-            raster_window, area_mask_source = get_raster_window_and_mask_source(
-                dataset, calculation_plan.area, limits
+            raster_area_tools = prepare_raster_area_tools(
+                dataset, calculation_plan, limits
             )
-            selection_ready = time.perf_counter()
-            needs_ground_area = any(
-                node.op == "areaha" for root in roots for node in walk(root)
-            )
-            pixel_area_calculator = None
-            if needs_ground_area:
-                pixel_area_calculator = PixelAreaCalculator(
-                    dataset, calculation_plan.area, limits
-                )
-            if pixel_area_calculator is not None:
-                raster_window = pixel_area_calculator.window
-            ground_ready = time.perf_counter()
+            pixel_area_calculator = raster_area_tools.pixel_area_calculator
             last_progress = 0.0
             tile_side = (
                 AREA_TILE_SIDE
@@ -397,7 +459,7 @@ def calculate_raster_statistics_for_area(
                 else TILE_SIDE
             )
             execution = calculation_plan.grid.execution or execution_plan(
-                raster_window,
+                raster_area_tools.raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
                 dataset.height,
@@ -405,7 +467,7 @@ def calculate_raster_statistics_for_area(
                 tile_side,
             )
             windows = read_windows(
-                raster_window,
+                raster_area_tools.raster_window,
                 dataset.block_shapes[0],
                 dataset.width,
                 dataset.height,
@@ -422,13 +484,18 @@ def calculate_raster_statistics_for_area(
                 read_seconds += time.perf_counter() - read_started
                 read_count += 1
                 calculate_started = time.perf_counter()
-                intersection = block.intersection(raster_window)
+                intersection = block.intersection(raster_area_tools.raster_window)
                 mask_started = time.perf_counter()
                 selection_valid = (
                     stable_selection_mask(
-                        dataset, raster_window, block, area_mask_source, tile_side
+                        dataset,
+                        raster_area_tools.raster_window,
+                        block,
+                        raster_area_tools.area_mask_source,
+                        tile_side,
                     )
-                    if area_mask_source and execution.targetChunkPixels
+                    if raster_area_tools.area_mask_source
+                    and execution.targetChunkPixels
                     else None
                 )
                 mask_seconds += time.perf_counter() - mask_started
@@ -476,9 +543,9 @@ def calculate_raster_statistics_for_area(
                         mask_started = time.perf_counter()
                         if selection_valid is not None:
                             valid &= selection_valid[local.toslices()]
-                        elif area_mask_source:
+                        elif raster_area_tools.area_mask_source:
                             valid &= selection_mask(
-                                area_mask_source,
+                                raster_area_tools.area_mask_source,
                                 out_shape=data.shape,
                                 transform=window_transform(tile, dataset.transform),
                                 all_touched=False,
@@ -551,8 +618,8 @@ def calculate_raster_statistics_for_area(
         kernelSeconds=time.perf_counter() - started,
         stages=AggregateKernelStages(
             sourceSetupSeconds=source_ready - started,
-            selectionSetupSeconds=selection_ready - source_ready,
-            groundAreaSetupSeconds=ground_ready - selection_ready,
+            selectionSetupSeconds=raster_area_tools.selection_setup_seconds,
+            groundAreaSetupSeconds=raster_area_tools.pixel_area_setup_seconds,
             gridCheckSeconds=0.0,
             selectionMaskSeconds=mask_seconds,
             areaWeightsSeconds=weights_seconds,
