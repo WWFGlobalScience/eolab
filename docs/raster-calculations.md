@@ -1,5 +1,8 @@
 # Raster calculations
 
+This guide is for people using EOLab to write raster formulas, interpret their
+results, and understand the reported timings and limits.
+
 Use **Summarize** to calculate statistics over a sampling box, a filtered
 [vector layer](vector-sampling.md), or an explicitly selected whole raster.
 Each of the five available cards has a name, formula, raster binding (`a`),
@@ -146,7 +149,7 @@ and timings. These are wall times, including waiting within each operation:
   browser and server groups together.
 - **Kernel elapsed** covers source opening and calculation through the CSV
   checksum. New results also break out source setup, selection-envelope
-  reading/projection, ground-area setup and the grid recheck.
+  reading/projection and ground-area setup.
 - **Inside Calculation** splits polygon masking, ground-area weights, formula
   evaluation/reductions, and remaining tile/loop work. Masking includes any vector
   reads, projection and rasterization required for each tile. These are nested
