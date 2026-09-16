@@ -143,6 +143,8 @@ class FakeLayerStackDocument {
       ["#raster-layer-list", new FakeLayerStackElement("ol", this)],
       ["#raster-layer-stack-status", new FakeLayerStackElement("p", this)],
       ["#map-layer-counts", new FakeLayerStackElement("span", this)],
+      ["#map-layers-show-all", new FakeLayerStackElement("button", this)],
+      ["#map-layers-hide-all", new FakeLayerStackElement("button", this)],
       ["#map-filter-indicators", new FakeLayerStackElement("div", this)],
       ["#map-inspection-filter-indicators", new FakeLayerStackElement("div", this)],
     ]);
@@ -741,4 +743,45 @@ test("MapLayerStackView announces status and retains stable action focus", () =>
     documentContext.activeElement,
     documentContext.querySelector("#raster-layer-stack-status"),
   );
+});
+
+test("bulk visibility actions track empty, mixed, all shown and all hidden states", () => {
+  const doc = new FakeLayerStackDocument();
+  const view = new MapLayerStackView(doc);
+  const show = doc.querySelector("#map-layers-show-all");
+  const hide = doc.querySelector("#map-layers-hide-all");
+  const intents = [];
+  const shown = LAYERS.map(layer => ({ ...layer, visible: true }));
+  view.bind({ onAllVisibility: visible => intents.push(visible) });
+  view.render([], null);
+  assert.equal(show.disabled, true);
+  assert.equal(hide.disabled, true);
+
+  view.render(shown, null);
+  assert.equal(show.disabled, true);
+  assert.equal(hide.disabled, false);
+  hide.focus();
+  hide.dispatchEvent(new Event("click"));
+  const hidden = LAYERS.map(layer => ({ ...layer, visible: false }));
+  view.render(hidden, null);
+  assert.equal(show.disabled, false);
+  assert.equal(hide.disabled, true);
+  assert.equal(doc.activeElement, show);
+  assert.ok(doc.querySelector("#raster-layer-list").children.every(
+    row => !actionControl(row, "visibility").checked,
+  ));
+
+  show.dispatchEvent(new Event("click"));
+  view.render(shown, null);
+  assert.equal(doc.activeElement, hide);
+  assert.ok(doc.querySelector("#raster-layer-list").children.every(
+    row => actionControl(row, "visibility").checked,
+  ));
+  view.render([LAYERS[0], hidden[1]], null);
+  assert.equal(show.disabled, false);
+  assert.equal(hide.disabled, false);
+  assert.deepEqual(intents, [false, true]);
+  view.unbind();
+  show.dispatchEvent(new Event("click"));
+  assert.deepEqual(intents, [false, true], "Destroyed views stop forwarding intent");
 });

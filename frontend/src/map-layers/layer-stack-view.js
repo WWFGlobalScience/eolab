@@ -34,6 +34,8 @@ function requireLayerStackElement(documentContext, selector) {
  * @property {(key: string) => void} onPasteStyle Paste onto one retained layer.
  * @property {(key: string, visible: boolean) => void} onVisibility Change
  * map visibility.
+ * @property {(visible: boolean) => void} onAllVisibility Show or hide every
+ * retained layer.
  * @property {(key: string, targetIndex: number) => void} onReorder Move one
  * layer to a zero-based top-first position.
  * @property {(key: string) => void} onRemove Remove one retained layer.
@@ -68,6 +70,10 @@ export class MapLayerStackView {
             documentContext,
             "#map-layer-counts"
         );
+        this.showAll = requireLayerStackElement(documentContext, "#map-layers-show-all");
+        this.hideAll = requireLayerStackElement(documentContext, "#map-layers-hide-all");
+        this.showAll.addEventListener("click", () => this.handlers?.onAllVisibility(true));
+        this.hideAll.addEventListener("click", () => this.handlers?.onAllVisibility(false));
         this.scrollContainer = this.root.parentElement ?? this.list;
         /** @type {MapLayerStackViewHandlers|null} */
         this.handlers = null;
@@ -112,6 +118,7 @@ export class MapLayerStackView {
      * @return {void}
      */
     render(layers, activeKey, requestedFocus = null) {
+        this.#renderVisibilityActions(layers);
         this.#renderCounts(layers);
         this.#renderFilters(layers);
         if (
@@ -144,6 +151,23 @@ export class MapLayerStackView {
                 focusTarget = this.documentContext.querySelector("#toggle-map-layers") ?? this.status;
             }
             focusTarget?.focus();
+        }
+    }
+
+    /**
+     * Disable actions with no changes to make and retain keyboard focus nearby.
+     *
+     * @param {Array<{visible:boolean}>} layers Current retained-layer snapshots.
+     * @return {void}
+     */
+    #renderVisibilityActions(layers) {
+        const focused = this.documentContext.activeElement;
+        this.showAll.disabled = !layers.some((layer) => !layer.visible);
+        this.hideAll.disabled = !layers.some((layer) => layer.visible);
+        if (focused === this.showAll && this.showAll.disabled && !this.hideAll.disabled) {
+            this.hideAll.focus();
+        } else if (focused === this.hideAll && this.hideAll.disabled && !this.showAll.disabled) {
+            this.showAll.focus();
         }
     }
 

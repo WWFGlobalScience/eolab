@@ -631,3 +631,19 @@ test("semantic regions preserve one DOM instance of every owned control", () => 
     );
     assert.deepEqual(duplicateIdentifiers, []);
 });
+
+test("compact bulk visibility buttons sit above the map layer list", () => {
+    const body = requireElementRange("eomap-map-layers-body");
+    const list = requireMarkupPosition("raster-layer-list");
+    for (const [id, text] of [
+        ["map-layers-show-all", "Show all"], ["map-layers-hide-all", "Hide all"],
+    ]) {
+        const button = requireElementRange(id);
+        assert.ok(body.start < button.start && button.end < list);
+        assert.equal(countMarkupId(id), 1);
+        assert.match(button.source, /type="button"/);
+        assert.ok(button.source.includes(`aria-label="${text} map layers"`));
+        assert.ok(button.source.includes(`disabled>${text}</button>`));
+    }
+    assert.match(STYLESHEET, /\.map-layer-visibility-actions\s*\{[^}]*flex-wrap: wrap/s);
+});

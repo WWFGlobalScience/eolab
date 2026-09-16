@@ -3764,3 +3764,35 @@ test("catalog selection replacement aborts stale requests and clears a map box",
     assert.equal(h.viewer.getSelectedArea(),null);
     h.destroy();
 });
+
+test("hide all cancels pending histograms and drops late results; show all restores analysis", async () => {
+    const reads = [];
+    const h = visibleLayerFixture((item, area, signal) => {
+        if (area.kind === "wholeRaster") return Promise.resolve(createLayerStatistics(item));
+        const result = createDeferred();
+        reads.push({ item, area, signal, result });
+        return result.promise;
+    });
+    await h.viewer.show(createRasterItem("bulk-first"));
+    await h.viewer.show(createRasterItem("bulk-second"));
+    await flushPromises();
+    h.viewer.exploreAt({ lng: -74, lat: 41 });
+    assert.equal(reads.length, 1);
+    h.layerStackView.handlers.onAllVisibility(false);
+    assert.equal(reads[0].signal.aborted, true);
+    assert.deepEqual(h.controlsView.layerHistograms, []);
+    assert.equal(h.controlsView.controlsVisible, false);
+    reads[0].result.resolve(createLayerStatistics(reads[0].item, reads[0].area.selectedBounds));
+    await flushPromises();
+    assert.equal(reads.length, 1, "Queued hidden layers must not start reading");
+    assert.deepEqual(h.controlsView.layerHistograms, [], "Late results cannot reopen hidden histograms");
+    h.layerStackView.handlers.onAllVisibility(true);
+    await flushPromises();
+    for (let i = 1; i <= 2; i++) {
+        assert.equal(reads.length, i + 1);
+        reads[i].result.resolve(createLayerStatistics(reads[i].item, reads[i].area.selectedBounds));
+        await flushPromises();
+    }
+    assert.deepEqual(h.controlsView.layerHistograms.map(s => s.state), ["ready", "ready"]);
+    h.destroy();
+});

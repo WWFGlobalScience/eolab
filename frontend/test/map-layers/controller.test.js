@@ -427,3 +427,83 @@ test("controller rejects incompatible and failed pastes without changing opacity
     assert.equal(controller.getRecord(targetKey).entry.opacity, 0.75);
     assert.match(view.status, /The target fields changed/);
 });
+
+test("bulk visibility preserves layers and notifies owners and composition once", async () => {
+    const map = createMap();
+    const basemap = {};
+    map.attached.add(basemap);
+    map.fitBounds = () => assert.fail("Visibility must not change the viewport");
+    const view = createView();
+    const changes = [];
+    const controller = new MapLayerController({
+        leafletMap: map, view, onLayersChange: layers => changes.push(layers),
+    });
+    const raster = createAdapter("raster");
+    const vector = createAdapter("vector");
+    for (const adapter of [raster, vector]) {
+        const originalSnapshot = adapter.snapshot;
+        adapter.snapshot = record => ({
+            ...originalSnapshot(record), datasetKind: record.state.owner,
+        });
+    }
+    await controller.show(catalogItem("raster"), raster);
+    await controller.show(catalogItem("vector"), vector);
+    const [vectorRecord, rasterRecord] = controller.retainedRecords;
+    vectorRecord.state.filter = { field: "year", value: 2020 };
+    rasterRecord.state.style = { minimum: 0, maximum: 100 };
+    controller.setOpacity(rasterRecord.entry.key, 0.35);
+    controller.setVisible(vectorRecord.entry.key, false);
+    const before = controller.snapshots();
+    const state = controller.retainedRecords.map(record => structuredClone(record.state));
+    const activeKey = controller.activeKey;
+    const layers = controller.retainedRecords.map(record => controller.getLeafletLayer(record.entry.key));
+    changes.length = 0;
+    raster.events.length = 0;
+    vector.events.length = 0;
+
+    view.handlers.onAllVisibility(false);
+    assert.equal(changes.length, 1);
+    assert.deepEqual(raster.events, [["visibility", rasterRecord.entry.key, false]]);
+    assert.deepEqual(vector.events, [], "Already hidden layers are untouched");
+    assert.deepEqual([...map.attached], [basemap]);
+    assert.equal(view.announcement, "1 map layer hidden.");
+    view.handlers.onAllVisibility(false);
+    assert.equal(changes.length, 1, "A no-op does not refresh consumers");
+
+    view.handlers.onAllVisibility(true);
+    assert.equal(changes.length, 2);
+    assert.ok(changes[1].every(layer => layer.visible));
+    assert.deepEqual(controller.snapshots(), before.map(layer => ({ ...layer, visible: true })));
+    assert.deepEqual(controller.retainedRecords.map(record => record.state), state);
+    assert.equal(controller.activeKey, activeKey);
+    assert.deepEqual(
+        controller.retainedRecords.map(record => controller.getLeafletLayer(record.entry.key)), layers,
+    );
+    assert.equal(map.attached.size, 3);
+    assert.deepEqual(vector.events, [["visibility", vectorRecord.entry.key, true]]);
+    view.handlers.onAllVisibility(true);
+    assert.equal(changes.length, 2);
+    view.handlers.onVisibility(vectorRecord.entry.key, false);
+    assert.equal(controller.visibleCount, 1, "Individual toggles still work");
+    assert.equal(changes.length, 3);
+});
+
+test("bulk visibility does not change empty stacks or pending additions", async () => {
+    const view = createView();
+    const changes = [];
+    const controller = new MapLayerController({
+        leafletMap: createMap(), view, onLayersChange: layers => changes.push(layers),
+    });
+    changes.length = 0;
+    view.handlers.onAllVisibility(false);
+    view.handlers.onAllVisibility(true);
+    assert.equal(changes.length, 0);
+    assert.throws(() => controller.setAllVisible(null), /visibility must be boolean/);
+    let finish;
+    const pending = controller.show(catalogItem("pending"), createAdapter("raster",
+        () => new Promise(resolve => { finish = resolve; })));
+    view.handlers.onAllVisibility(false);
+    finish({ id: "pending" });
+    await pending;
+    assert.equal(controller.visibleCount, 1);
+});
