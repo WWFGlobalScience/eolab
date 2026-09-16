@@ -162,7 +162,7 @@ def test_storage_admission_and_old_job_guard(
     )
     worker = object.__new__(ProcessingWorker)
     worker.aggregate_limits = limits
-    with pytest.raises(ProcessingError, match="predates") as error:
+    with pytest.raises(ProcessingError, match="reserved less disk space") as error:
         asyncio.run(
             worker._execute(
                 {
@@ -171,7 +171,7 @@ def test_storage_admission_and_old_job_guard(
                 }
             )
         )
-    assert error.value.code == "plan_expired"
+    assert error.value.code == "insufficient_disk_reservation"
     monkeypatch.setattr(masks.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
     with rasterio.open(source) as dataset, pytest.raises(ProcessingError) as error:
         with masks.temporary_polygon_mask(

@@ -82,13 +82,16 @@ class ProcessingWorker:
             target, action, limits = clip_process_target, "clip", self.limits
         elif operation == "raster.aggregate.v1":
             spec = AggregateSpec.model_validate(row["spec"])
-            if row["reserved_bytes"] < estimate_calculation_disk_bytes(
+            required_disk_bytes = estimate_calculation_disk_bytes(
                 spec, self.aggregate_limits
-            ):
+            )
+            # Queued jobs survive deployments and retain their original disk
+            # reservation. Compare it with the files this worker will create.
+            if row["reserved_bytes"] < required_disk_bytes:
                 raise ProcessingError(
-                    "plan_expired",
-                    "This calculation predates polygon-mask storage reservations. "
-                    "Run it again to prepare a new plan.",
+                    "insufficient_disk_reservation",
+                    "This job reserved less disk space than its calculation now requires. "
+                    "Run the calculation again to reserve enough space.",
                     409,
                 )
             source = next(iter(spec.sources.values()))
