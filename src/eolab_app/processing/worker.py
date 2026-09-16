@@ -23,6 +23,7 @@ from eolab_app.processing.aggregate_models import (
     AggregateExecutionTiming,
 )
 from eolab_app.processing.raster_aggregate import aggregate_process_target
+from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import JobArtifactStore, JobStore, JobWakeup
 from eolab_app.processing.raster_clip import clip_process_target
 from eolab_app.raster.errors import RasterFeatureError
@@ -81,6 +82,18 @@ class ProcessingWorker:
             target, action, limits = clip_process_target, "clip", self.limits
         elif operation == "raster.aggregate.v1":
             spec = AggregateSpec.model_validate(row["spec"])
+            required_disk_bytes = estimate_calculation_disk_bytes(
+                spec, self.aggregate_limits
+            )
+            # Queued jobs survive deployments and retain their original disk
+            # reservation. Compare it with the files this worker will create.
+            if row["reserved_bytes"] < required_disk_bytes:
+                raise ProcessingError(
+                    "insufficient_disk_reservation",
+                    "This job reserved less disk space than its calculation now requires. "
+                    "Run the calculation again to reserve enough space.",
+                    409,
+                )
             source = next(iter(spec.sources.values()))
             target, action, limits = (
                 aggregate_process_target,

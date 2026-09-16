@@ -38,6 +38,7 @@ export function describeJobProgress(job) {
         expired: "Expired — run again to download", deleted: "Deleted" })[job.status] ?? job.status;
     const progress = job.progress;
     if (progress.phase === "calculating") return `Calculating · ${progress.completedBlocks ?? 0} of ${progress.totalBlocks ?? "?"} native source blocks`;
+    if (progress.phase === "preparing_polygon_mask") return "Preparing polygon mask…";
     if (progress.phase === "writing_results") return "Writing results…";
     if (progress.phase === "clipping") return `Clipping · ${progress.completedBlocks ?? 0} of ${progress.totalBlocks ?? "?"} source blocks`;
     return ({ creating_cog: "Preparing download · creating COG", validating: "Preparing download · validating file",

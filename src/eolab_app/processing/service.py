@@ -39,6 +39,7 @@ from eolab_app.processing.aggregate_models import (
     RasterAggregateLimits,
 )
 from eolab_app.processing.raster_aggregate import aggregate_process_target
+from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import (
     JobArtifactStore,
     JobStore,
@@ -75,14 +76,18 @@ def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
 def prepare_aggregate_job(
     spec: AggregateSpec, limits: RasterAggregateLimits
 ) -> PreparedJobPlan:
-    """Project checked calculation intent onto neutral job storage.
+    """Build the stored calculation job fields and its disk-space reservation.
 
     Args:
-        spec: Source-fenced native calculation specification.
-        limits: Calculation result reservation policy.
+        spec: Calculation plan containing the raster, formulas, area and grid.
+        limits: Calculation result and temporary mask reservation policy.
 
     Returns:
-        Path-free specification and summary requiring the operation-aware worker.
+        Stored job data, display summary, required disk bytes and the minimum
+        worker version that can execute this calculation.
+
+    Raises:
+        ProcessingError: If mask and result reservations exceed the storage limit.
     """
     data = spec.model_dump(mode="json", by_alias=True)
     return PreparedJobPlan(
@@ -91,11 +96,11 @@ def prepare_aggregate_job(
             **{key: data[key] for key in ("sources", "calculations", "grid")},
             "area": {"kind": spec.area.kind, "bounds": spec.area.bounds},
         },
-        reserved_bytes=limits.result_reservation_bytes,
+        reserved_bytes=estimate_calculation_disk_bytes(spec, limits),
         operation=spec.operation,
         minimum_claim_version=(
-            5
-            if spec.area.kind == "catalogSelection"
+            6
+            if spec.area.kind != "wholeRaster"
             else 4 if spec.grid.execution else 3 if spec.grid.groundArea else 2
         ),
     )

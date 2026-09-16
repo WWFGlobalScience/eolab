@@ -93,19 +93,20 @@ class RasterMaskTimings:
 class RasterAreaMask(Protocol):
     """A bounded polygon-membership reader independent of its invoking feature."""
 
-    def read_polygon_mask(
+    def rasterize(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
         timings: RasterMaskTimings | None = None,
     ) -> NDArray[bool_]:
-        """Read polygon membership as an inclusion mask on the supplied raster grid.
+        """Rasterize selected polygons into a Boolean mask on the supplied grid.
 
         Args:
-            out_shape: Admitted grid rows and columns.
-            affine: Grid-to-source-CRS transformation.
-            all_touched: Caller-owned pixel inclusion rule.
+            out_shape: Number of rows and columns in the output mask.
+            affine: Mapping from output pixel coordinates to the raster CRS.
+            all_touched: Include every pixel touched by a polygon when True;
+                otherwise use Rasterio's default pixel-center inclusion rule.
             timings: Optional accumulator for work performed by this call.
 
         Returns:

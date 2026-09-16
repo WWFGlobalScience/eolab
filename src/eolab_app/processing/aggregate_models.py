@@ -255,8 +255,11 @@ class AggregateKernelStages(BaseModel):
     """Nested wall times; mask, weights and reductions are inside calculation.
 
     Source setup includes expression compilation and opening the raster.
-    Selection setup reads/projects the area envelope. Mask time includes vector
-    source reads, projection and rasterization. Optional selectionMaskBreakdown
+    Selection setup reads/projects the area envelope and, for catalog summaries,
+    retains those polygons for the calculation. Mask time includes vector
+    source reads, projection and rasterization in historical results. New results
+    report maskPreparationSeconds outside calculation, and maskReadSeconds
+    inside selectionMaskSeconds. Optional selectionMaskBreakdown
     records those inner stages; it is absent in older results. All times include
     I/O waits.
     """
@@ -268,12 +271,19 @@ class AggregateKernelStages(BaseModel):
     gridCheckSeconds: StageSeconds
     selectionMaskSeconds: StageSeconds
     selectionMaskBreakdown: AggregateMaskStages | None = None
+    maskPreparationSeconds: StageSeconds | None = None
+    maskReadSeconds: StageSeconds | None = None
     areaWeightsSeconds: StageSeconds
     reductionSeconds: StageSeconds
 
 
 class AggregatePerformance(BaseModel):
-    """Final bounded wall-time measurements, independent of transient progress."""
+    """Final measurements, independent of transient progress.
+
+    retainedPolygonBytes estimates Python geometry memory additional to the
+    plan's raster-buffer allowance; it is not process RSS. temporaryMaskBytes
+    records the temporary GeoTIFF size before cleanup. Older results omit these.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     execution: AggregateExecutionPlan
@@ -285,6 +295,8 @@ class AggregatePerformance(BaseModel):
     resultWriteSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     kernelSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     stages: AggregateKernelStages | None = None
+    retainedPolygonBytes: Annotated[int, Field(ge=0)] = 0
+    temporaryMaskBytes: Annotated[int, Field(ge=0)] = 0
 
 
 class AggregateGrid(BaseModel):
@@ -328,7 +340,19 @@ class AggregateGrid(BaseModel):
 
 
 class AggregateSpec(BaseModel):
-    """Versioned, source-fenced executable intent derived from an accepted plan."""
+    """The raster, formulas, selected area and grid for a calculation job.
+
+    The Processing planning service builds this object from the user's request
+    and the grid returned by plan_aggregate(). The service saves it with the job;
+    the worker loads it and passes it to calculate_raster_statistics_for_area().
+
+    sources maps the formula alias (such as a) to a catalog raster.
+    calculations contains the named formulas. area describes the map box,
+    uploaded polygons, filtered vector layer or whole-raster selection.
+    grid contains the selected window's dimensions, pixel alignment and planned
+    read sizes. It contains metadata, not raster pixel values.
+    sourceSignature is source metadata retained in the stored job contract.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     operation: Literal["raster.aggregate.v1"] = OPERATION_VERSION
@@ -434,7 +458,19 @@ class AggregatePlanResponse(BaseModel):
 
 @dataclass(frozen=True)
 class RasterAggregateLimits(ProcessingLimits):
-    """Native work and expression memory budgets, independent of TIFF outputs."""
+    """Resource limits for raster calculations: RAM, disk, work and duration.
+
+    ProcessingService and ProcessingWorker call with_lifecycle() to copy the
+    shared Processing job limits while keeping these calculation-specific
+    defaults. A standalone script can construct RasterAggregateLimits() or
+    override named fields, for example max_memory_bytes=256 * 1024**2.
+
+    max_memory_bytes bounds estimated calculation RAM. result_reservation_bytes
+    allows 12 MiB of disk space for CSV and provenance JSON per job. Inherited
+    max_stored_bytes bounds disk reservations across all Processing jobs;
+    free_space_floor is the disk space that must remain unused. These are
+    Python constructor settings, not browser parameters.
+    """
 
     max_decoded_bytes: int = 4 * 1024**3
     max_native_blocks: int = 65_536
@@ -450,13 +486,13 @@ class RasterAggregateLimits(ProcessingLimits):
 
     @classmethod
     def with_lifecycle(cls, limits: ProcessingLimits) -> "RasterAggregateLimits":
-        """Keep operation admission aligned with the shared deployment lifecycle.
+        """Copy shared job limits and keep calculation-specific resource defaults.
 
         Args:
-            limits: Configured job scheduling, storage, and execution policy.
+            limits: The Processing limits instance used by this service or worker.
 
         Returns:
-            Calculation-specific limits using the same shared job policy.
+            A new limits object with the same queue, timeout and disk settings.
         """
         return cls(
             **{

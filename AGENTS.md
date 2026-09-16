@@ -129,8 +129,11 @@ behavior into the nearest controller, route, viewer, service, or utility module.
 
 - Catalog-vector analysis selections must use immutable, path-free source and
   predicate descriptors. Read original sources through neutral bounded contracts;
-  do not introduce selection storage, filtered copies, or complete geometry
-  snapshots. Optional display outlines must not authorize or gate analysis.
+  do not persist filtered vector copies or reusable geometry snapshots.
+  Processing may prepare exact polygons and temporary raster masks for a single
+  calculation, within its memory and disk limits. Processing owns their cleanup;
+  they must not become catalog sources or be shared across jobs.
+  Optional display outlines must not authorize or gate analysis.
 
 - Infrastructure components must not import or call application-level
   services.

@@ -19,7 +19,7 @@ from rasterio.windows import Window, transform as window_transform
 from shapely.geometry import Polygon, box, mapping
 
 from eolab_app.bounded_vector import (
-    ProjectedCatalogSelection,
+    PolygonRasterizer,
     pixels_inside_area,
     polygon_features,
     selection_summary,
@@ -315,7 +315,11 @@ def test_streamed_masks_match_complete_exact_geometry(
         original = selected_raster_area_for_wgs84_polygons(
             dataset, tuple(geometries), 500000
         )
-        direct = ProjectedCatalogSelection(dataset, resolved, 500000)
+        direct = PolygonRasterizer(dataset, resolved, 500000)
+        retained = PolygonRasterizer(
+            dataset, resolved, 500000, max_retained_polygon_bytes=128 * 1024**2
+        )
+        assert retained.source_window == direct.source_window
         assert direct.source_window == original.source_window
         for tile in [Window(0, 0, 32, 32), Window(8, 8, 8, 8), Window(24, 24, 8, 8)]:
             shape = (int(tile.height), int(tile.width))
@@ -327,7 +331,7 @@ def test_streamed_masks_match_complete_exact_geometry(
                 all_touched=all_touched,
                 invert=True,
             )
-            for mask_source in (direct, original.projected_geometries):
+            for mask_source in (direct, retained, original.projected_geometries):
                 inside = pixels_inside_area(
                     mask_source,
                     out_shape=shape,
@@ -527,7 +531,7 @@ def test_mask_stage_timings_partition_real_geometry_work(
 
     with rasterio.open(path) as dataset:
         source = (
-            ProjectedCatalogSelection(dataset, resolved, 500000)
+            PolygonRasterizer(dataset, resolved, 500000)
             if streamed
             else tuple(polygons)
         )
@@ -542,9 +546,9 @@ def test_mask_stage_timings_partition_real_geometry_work(
         )
         monkeypatch.setattr(reader, "polygon_features", timed_features)
         monkeypatch.setattr(
-            ProjectedCatalogSelection,
+            PolygonRasterizer,
             "project",
-            delayed(ProjectedCatalogSelection.project, "project", 11),
+            delayed(PolygonRasterizer.project, "project", 11),
         )
         monkeypatch.setattr(
             reader, "geometry_mask", delayed(reader.geometry_mask, "rasterize", 13)

@@ -134,3 +134,29 @@ test("polygon mask breakdown is optional, validated and displayed as nested timi
     assert.match(performanceDescription({result:{performance:{...metrics,stages}}}).join(" "),
         /mask-stage breakdown was not recorded/);
 });
+
+test("temporary mask timings distinguish preparation from reads", async () => {
+    const stages = {sourceSetupSeconds:.1,selectionSetupSeconds:.2,groundAreaSetupSeconds:0,
+        gridCheckSeconds:0,selectionMaskSeconds:.05,maskPreparationSeconds:1.2,
+        maskReadSeconds:.04,areaWeightsSeconds:0,reductionSeconds:.1};
+    const performance = {execution,readWindows:1,evaluationTiles:1,reducerUpdates:1,
+        readSeconds:.3,calculationSeconds:.2,resultWriteSeconds:0,kernelSeconds:2,stages};
+    const result = {url:`/api/processing/jobs/${"J".repeat(32)}/result`,
+        provenanceUrl:`/api/processing/jobs/${"J".repeat(32)}/provenance`,
+        rows:[{label:"Sum",expression:"sum(a)",state:"ok",value:"1",valueType:"float",aggregates:[]}]};
+    for (const field of ["maskPreparationSeconds", "maskReadSeconds"]) {
+        for (const value of [0, null, undefined, -1, "1"]) {
+            const api = new ProcessingApiClient(async () => Response.json({
+                jobId:"J".repeat(32),operation:"raster.aggregate.v1",status:"ready",grid,
+                progress:{phase:"ready"},result:{...result,performance:{...performance,
+                    stages:{...stages,[field]:value}}}
+            }));
+            if (value == null || value === 0) await api.getJob("J".repeat(32));
+            else await assert.rejects(() => api.getJob("J".repeat(32)), /stage timings/);
+        }
+    }
+    const text = performanceDescription({result:{performance}}).join(" ");
+    assert.match(text, /Temporary polygon mask preparation: 1.200 s/);
+    assert.match(text, /Mask window reads: 0.040 s/);
+    assert.doesNotMatch(text, /mask-stage breakdown was not recorded/);
+});

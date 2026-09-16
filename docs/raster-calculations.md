@@ -233,3 +233,22 @@ HTTP, queueing, worker startup, notifications or browser display. The app's
 performance details retain those end-to-end measurements. Import time is reported
 separately; inner kernel stages overlap the execution time and must not be added
 to it.
+
+
+### Large polygon selections
+
+If a calculation reports a polygon memory limit, filter the vector layer to fewer
+features or reduce the raster batch size to leave more RAM available for geometry.
+EOLab keeps the original polygon detail; it does not simplify analysis geometry.
+
+Polygon summaries also need temporary disk space for a mask, approximately one
+byte per pixel in the selected raster window plus file overhead. If storage is
+insufficient, select a smaller area or free space on the Processing data volume.
+Temporary mask files are deleted automatically.
+
+In performance details, **Selection setup** includes reading and projecting the
+polygons. **Mask preparation** measures creating the temporary mask.
+**Mask window reads** are included in calculation's polygon-selection time.
+
+After upgrading, an older queued job may need more disk space than it originally
+reserved. If the job reports insufficient reserved space, run the calculation again.
