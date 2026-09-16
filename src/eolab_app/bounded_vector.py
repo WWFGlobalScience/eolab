@@ -327,12 +327,13 @@ class PolygonRasterizer:
         *,
         max_retained_polygon_bytes: int = 0,
     ) -> None:
-        """Measure the projected envelope, optionally retaining polygons for reuse.
+        """Find the raster window covering filtered polygons and optionally keep them.
 
         Args:
-            dataset: Open, georeferenced raster metadata.
+            dataset: Open raster whose CRS and pixel grid the polygons will use.
             filtered_vector: Vector source and filter identifying the features to read.
-            maximum_coordinates: Existing projection-buffer policy.
+            maximum_coordinates: Maximum coordinate positions in one projected
+                feature; also limits how many points are added along its edges.
             cancellation_requested: Optional cancellation predicate.
             max_retained_polygon_bytes: Maximum estimated RAM, in bytes, for all
                 polygons retained by this rasterizer.
@@ -451,16 +452,18 @@ class PolygonRasterizer:
         self._closed = True
 
     def project(self, geometry: dict[str, Any]) -> tuple[dict[str, object], ...]:
-        """Project one feature with the selection-wide legacy densification rate.
+        """Transform one WGS84 polygon feature into the raster coordinate system.
 
         Args:
-            geometry: Exact validated WGS84 polygon.
+            geometry: GeoJSON polygon geometry in WGS84 longitude/latitude.
 
         Returns:
-            Projected exact polygonal mappings, without envelope clipping.
+            GeoJSON polygon dictionaries in the raster CRS. Edges are subdivided
+            before projection using the spacing chosen during initialization;
+            polygons are not clipped to the current raster tile.
 
         Raises:
-            ValueError: If the feature exceeds the retained projection buffer.
+            ValueError: If projection would exceed the coordinate-count limit.
         """
         rings = _polygon_rings(geometry)
         count = sum(len(r) - 1 for r in rings) * (self.densify + 1) + len(rings)

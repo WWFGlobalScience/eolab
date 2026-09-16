@@ -76,14 +76,15 @@ def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
 def prepare_aggregate_job(
     spec: AggregateSpec, limits: RasterAggregateLimits
 ) -> PreparedJobPlan:
-    """Project checked calculation intent onto neutral job storage.
+    """Build the stored calculation job fields and its disk-space reservation.
 
     Args:
-        spec: Source-fenced native calculation specification.
+        spec: Calculation plan containing the raster, formulas, area and grid.
         limits: Calculation result and temporary mask reservation policy.
 
     Returns:
-        Path-free specification and summary requiring the operation-aware worker.
+        Stored job data, display summary, required disk bytes and the minimum
+        worker version that can execute this calculation.
 
     Raises:
         ProcessingError: If mask and result reservations exceed the storage limit.
