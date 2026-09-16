@@ -129,16 +129,10 @@ behavior into the nearest controller, route, viewer, service, or utility module.
 
 - Catalog-vector analysis selections must use immutable, path-free source and
   predicate descriptors. Read original sources through neutral bounded contracts;
-  do not introduce selection storage, filtered copies, or complete geometry
-  snapshots. The approved #423 exception allows Processing raster statistics to
-  retain exact projected polygons in memory for one calculation, within an
-  explicit cumulative memory budget alongside raster buffers. Release them when
-  that calculation ends; do not persist, share across jobs, or send them to the
-  browser. The approved #423 extension also permits one calculation-owned
-  temporary raster mask on the admitted source grid. Reserve its scratch bytes,
-  rasterize once, read mask windows during calculation, and delete it before
-  publication or through attempt cleanup after cancellation/failure. This mask
-  is not a catalog source, persistent selection, reusable cache, or result.
+  do not persist filtered vector copies or reusable geometry snapshots.
+  Processing may prepare exact polygons and temporary raster masks for a single
+  calculation, within its memory and disk limits. Processing owns their cleanup;
+  they must not become catalog sources or be shared across jobs.
   Optional display outlines must not authorize or gate analysis.
 
 - Infrastructure components must not import or call application-level
