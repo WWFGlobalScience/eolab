@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 
 APPLICATION_VERSION_PATH = Path("/app/version")
@@ -88,6 +89,8 @@ class Settings:
         scan_catalog_error_detail_limit: Upstream catalog error text limit.
         basemap_url: Browser basemap tile URL template.
         basemap_attribution: Browser basemap attribution.
+        carto_basemap_api_key: Optional browser-visible CARTO basemap key.
+            Blank disables the CARTO option; use a domain-restricted basemap key.
         initial_latitude: Initial map-center latitude.
         initial_longitude: Initial map-center longitude.
         initial_zoom: Initial map zoom level.
@@ -132,6 +135,7 @@ class Settings:
     initial_zoom: float
     processing_data_path: Path = Path("/processing-data").absolute()
     jobs_token: str = field(default="", repr=False)
+    carto_basemap_api_key: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         """Validate the application settings contract.
@@ -258,9 +262,27 @@ class Settings:
             Browser configuration containing application identity strings,
             the browser-facing catalog and WMS URLs, user-facing scan paths,
             basemap URL and attribution strings, and numeric initial-view
-            latitude, longitude, and zoom values. Internal service URLs are
-            not exposed.
+            latitude, longitude, and zoom values. When configured, basemap.carto
+            contains a tile URL with the browser-visible CARTO key, attribution,
+            and native zoom limit. Internal service URLs are not exposed.
         """
+        basemap: dict[str, object] = {
+            "url": self.basemap_url,
+            "attribution": self.basemap_attribution,
+        }
+        if self.carto_basemap_api_key:
+            basemap["carto"] = {
+                "url": (
+                    "https://basemaps.cartocdn.com/rastertiles/light_all/"
+                    "{z}/{x}/{y}.png?key=" + quote(self.carto_basemap_api_key, safe="")
+                ),
+                "attribution": (
+                    '&copy; <a href="https://www.openstreetmap.org/copyright">'
+                    "OpenStreetMap contributors</a> &copy; "
+                    '<a href="https://carto.com/attributions">CARTO</a>'
+                ),
+                "maxNativeZoom": 20,
+            }
         return {
             "appTitle": self.app_title,
             "appSubtitle": self.app_subtitle,
@@ -269,10 +291,7 @@ class Settings:
             "wmsUrl": self.wms_url,
             "scanDisplayPathPrefix": self.scan_display_path_prefix,
             "scanDisplayPaths": list(self.scan_display_paths()),
-            "basemap": {
-                "url": self.basemap_url,
-                "attribution": self.basemap_attribution,
-            },
+            "basemap": basemap,
             "initialView": {
                 "latitude": self.initial_latitude,
                 "longitude": self.initial_longitude,
@@ -383,6 +402,7 @@ def load_settings(
         ),
         basemap_url=os.environ["BASEMAP_URL"].strip(),
         basemap_attribution=os.environ["BASEMAP_ATTRIBUTION"].strip(),
+        carto_basemap_api_key=os.environ.get("CARTO_BASEMAP_API_KEY", "").strip(),
         initial_latitude=float(os.environ["INITIAL_LATITUDE"]),
         initial_longitude=float(os.environ["INITIAL_LONGITUDE"]),
         initial_zoom=float(os.environ["INITIAL_ZOOM"]),
