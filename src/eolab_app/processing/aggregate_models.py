@@ -458,7 +458,19 @@ class AggregatePlanResponse(BaseModel):
 
 @dataclass(frozen=True)
 class RasterAggregateLimits(ProcessingLimits):
-    """Native work and expression memory budgets, independent of TIFF outputs."""
+    """Resource limits for raster calculations: RAM, disk, work and duration.
+
+    ProcessingService and ProcessingWorker call with_lifecycle() to copy the
+    shared Processing job limits while keeping these calculation-specific
+    defaults. A standalone script can construct RasterAggregateLimits() or
+    override named fields, for example max_memory_bytes=256 * 1024**2.
+
+    max_memory_bytes bounds estimated calculation RAM. result_reservation_bytes
+    allows 12 MiB of disk space for CSV and provenance JSON per job. Inherited
+    max_stored_bytes bounds disk reservations across all Processing jobs;
+    free_space_floor is the disk space that must remain unused. These are
+    Python constructor settings, not browser parameters.
+    """
 
     max_decoded_bytes: int = 4 * 1024**3
     max_native_blocks: int = 65_536
@@ -474,13 +486,13 @@ class RasterAggregateLimits(ProcessingLimits):
 
     @classmethod
     def with_lifecycle(cls, limits: ProcessingLimits) -> "RasterAggregateLimits":
-        """Keep operation admission aligned with the shared deployment lifecycle.
+        """Copy shared job limits and keep calculation-specific resource defaults.
 
         Args:
-            limits: Configured job scheduling, storage, and execution policy.
+            limits: The Processing limits instance used by this service or worker.
 
         Returns:
-            Calculation-specific limits using the same shared job policy.
+            A new limits object with the same queue, timeout and disk settings.
         """
         return cls(
             **{

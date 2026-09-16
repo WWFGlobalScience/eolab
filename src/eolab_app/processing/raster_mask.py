@@ -104,7 +104,12 @@ def temporary_polygon_mask(
             An empty tuple means the selected window needs no polygon mask.
             This function rasterizes these coordinates; it does not project them.
         directory: Existing private calculation attempt directory.
-        limits: Scratch-space floor and shared storage ceiling.
+        limits: RasterAggregateLimits used for this calculation. The service
+            and worker create it with with_lifecycle(their_processing_limits);
+            standalone callers can use RasterAggregateLimits() defaults.
+            This function reads result_reservation_bytes (CSV/JSON disk
+            allowance), max_stored_bytes (shared job disk budget) and
+            free_space_floor (disk bytes that must remain free).
 
     Yields:
         A read-only byte mask (one inside, zero outside), or None if unnecessary.
