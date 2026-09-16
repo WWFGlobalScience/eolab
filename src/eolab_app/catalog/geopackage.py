@@ -200,7 +200,14 @@ def _build_layer_item(
             )
         if native_bbox[0] > native_bbox[2] or native_bbox[1] > native_bbox[3]:
             raise ValueError("GeoPackage layer has invalid native bounds")
-        if bbox[0] > bbox[2] or bbox[1] > bbox[3]:
+        # Geographic west > east denotes an antimeridian crossing (RFC 7946).
+        if (
+            abs(bbox[0]) > 180
+            or abs(bbox[2]) > 180
+            or bbox[1] < -90
+            or bbox[3] > 90
+            or bbox[1] > bbox[3]
+        ):
             raise ValueError("GeoPackage layer has invalid WGS 84 bounds")
 
         properties: dict[str, Any] = {
@@ -278,13 +285,34 @@ def _build_bbox_geometry(bbox: list[float]) -> dict[str, Any]:
     """Represent a WGS 84 bounding box as a non-null GeoJSON geometry.
 
     Args:
-        bbox: West, south, east, and north coordinates in WGS 84.
+        bbox: Validated west, south, east, and north coordinates in WGS 84.
+            West greater than east denotes an antimeridian crossing.
 
     Returns:
         A Point for a zero-dimensional extent, a LineString for a
-        one-dimensional extent, or a Polygon for an areal extent.
+        one-dimensional extent, or a Polygon for an areal extent. Crossing
+        extents are split at +/-180 into multipart geometry; zero-width
+        polygon parts are omitted. An extent confined to the date line is
+        represented at both longitude endpoints for planar spatial queries.
     """
     west, south, east, north = bbox
+    if west > east:
+        parts = [
+            _build_bbox_geometry([left, south, right, north])
+            for left, right in ((west, 180), (-180, east))
+            if left < right
+        ]
+        if not parts:
+            parts = [
+                _build_bbox_geometry([longitude, south, longitude, north])
+                for longitude in (180, -180)
+            ]
+        if len(parts) == 1:
+            return parts[0]
+        return {
+            "type": "Multi" + parts[0]["type"],
+            "coordinates": [part["coordinates"] for part in parts],
+        }
     if west == east and south == north:
         return {"type": "Point", "coordinates": [west, south]}
     if west == east or south == north:
@@ -294,13 +322,15 @@ def _build_bbox_geometry(bbox: list[float]) -> dict[str, Any]:
         }
     return {
         "type": "Polygon",
-        "coordinates": [[
-            [west, south],
-            [east, south],
-            [east, north],
-            [west, north],
-            [west, south],
-        ]],
+        "coordinates": [
+            [
+                [west, south],
+                [east, south],
+                [east, north],
+                [west, north],
+                [west, south],
+            ]
+        ],
     }
 
 

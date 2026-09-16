@@ -198,7 +198,8 @@ export function vectorInspectionObservation({ feature, target, inspectionPositio
  * Return whether one WGS 84 position is inside an authoritative Item extent.
  *
  * Inclusive edges preserve inspection of features whose coordinates coincide
- * with a Catalog bounding-box boundary.
+ * with a Catalog bounding-box boundary. Crossing extents contain either
+ * longitude interval adjacent to the date line.
  *
  * @param {number[]} bbox West, south, east, north Catalog Item bounds.
  * @param {{lng:number,lat:number}} position Leaflet WGS 84 click position.
@@ -206,8 +207,10 @@ export function vectorInspectionObservation({ feature, target, inspectionPositio
  */
 function vectorBoundsContainPosition(bbox, position) {
     const [west, south, east, north] = bbox;
-    return position.lng >= west && position.lng <= east &&
-        position.lat >= south && position.lat <= north;
+    const longitudeInside = west <= east
+        ? position.lng >= west && position.lng <= east
+        : position.lng >= west || position.lng <= east;
+    return longitudeInside && position.lat >= south && position.lat <= north;
 }
 
 /**
@@ -467,7 +470,10 @@ export class VectorFeatureInspectorController {
                 !Array.isArray(target?.bbox) ||
                 target.bbox.length !== 4 ||
                 !target.bbox.every(Number.isFinite) ||
-                target.bbox[0] > target.bbox[2] ||
+                Math.abs(target.bbox[0]) > 180 ||
+                Math.abs(target.bbox[2]) > 180 ||
+                target.bbox[1] < -90 ||
+                target.bbox[3] > 90 ||
                 target.bbox[1] > target.bbox[3] ||
                 typeof target?.publication?.layerName !== "string" ||
                 typeof target?.publication?.styleName !== "string" ||

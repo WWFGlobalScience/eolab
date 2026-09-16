@@ -157,6 +157,15 @@ when other layers can be cataloged. GeoJSON must be a FeatureCollection with
 WGS84 longitude/latitude coordinates; projected legacy CRS declarations are not
 silently reprojected.
 
+GeoPackage layers whose transformed geographic bounds cross the date line can
+be cataloged. Their catalog footprint is split at +/-180 degrees while the
+source geometry and native CRS remain unchanged. On the single-world map,
+zooming to such a layer shows both map edges; feature inspection checks both
+longitude intervals. The footprint remains a conservative envelope, not the
+exact union of the source polygons. Rescan a previously rejected source after
+upgrading. This does not add support for every analysis operation on unsplit
+date-line-crossing source polygons.
+
 ## Capacity controls
 
 Begin with the defaults in `.env.example` and change them only after observing
