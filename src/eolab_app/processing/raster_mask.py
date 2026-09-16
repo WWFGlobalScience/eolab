@@ -96,7 +96,13 @@ def temporary_polygon_mask(
     Args:
         dataset: Open source raster supplying the CRS and pixel alignment.
         raster_window: Source-pixel rectangle covered by the mask.
-        polygons: Prepared projected polygons, or an empty tuple for no mask.
+        polygons: Polygons already transformed into dataset.crs by
+            prepare_raster_area_tools(). Uploaded AOIs/boxes supply a tuple of
+            GeoJSON geometry dictionaries, for example
+            ({"type": "Polygon", "coordinates": ...},). A filtered vector
+            supplies a PolygonRasterizer retaining those projected geometries.
+            An empty tuple means the selected window needs no polygon mask.
+            This function rasterizes these coordinates; it does not project them.
         directory: Existing private calculation attempt directory.
         limits: Scratch-space floor and shared storage ceiling.
 
