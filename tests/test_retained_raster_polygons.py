@@ -194,7 +194,7 @@ def test_preparation_limits_and_cancellation_release_prior_features(
             selected,
             20,
             lambda: cancelled,
-            retain_projected_bytes=8000 if failure == "budget" else 100000,
+            max_retained_polygon_bytes=8000 if failure == "budget" else 100000,
         )
     assert calls == (1 if failure == "budget" else 2)
     assert all(reader.retained_bytes == 0 for reader in readers)
@@ -219,7 +219,7 @@ def test_retained_masks_do_not_reopen_sources_and_remain_cancellable(
     cancelled = False
     with rasterio.open(path) as dataset:
         reader = vector.PolygonRasterizer(
-            dataset, selected, 100, lambda: cancelled, retain_projected_bytes=100000
+            dataset, selected, 100, lambda: cancelled, max_retained_polygon_bytes=100000
         )
 
         def forbidden(*args: Any, **kwargs: Any) -> Any:

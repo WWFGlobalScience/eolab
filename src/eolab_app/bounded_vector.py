@@ -316,7 +316,7 @@ class PolygonRasterizer:
         maximum_coordinates: int,
         cancellation_requested: RasterReadCancellationCheck | None = None,
         *,
-        retain_projected_bytes: int = 0,
+        max_retained_polygon_bytes: int = 0,
     ) -> None:
         """Measure the projected envelope, optionally retaining polygons for reuse.
 
@@ -325,8 +325,9 @@ class PolygonRasterizer:
             filtered_vector: Vector source and filter identifying the features to read.
             maximum_coordinates: Existing projection-buffer policy.
             cancellation_requested: Optional cancellation predicate.
-            retain_projected_bytes: Caller-owned cumulative memory allowance.
-                Zero keeps streaming behavior. A positive allowance retains exact
+            max_retained_polygon_bytes: Maximum estimated RAM, in bytes, for all
+                polygons retained by this rasterizer.
+                Zero reads/projects polygons again for each mask. A positive limit retains exact
                 polygons until close(); no files or cross-request cache are used.
 
         Raises:
@@ -343,7 +344,7 @@ class PolygonRasterizer:
                 tuple[tuple[float, float, float, float], tuple[dict[str, object], ...]]
             ]
             | None
-        ) = ([] if retain_projected_bytes else None)
+        ) = ([] if max_retained_polygon_bytes else None)
         self.retained_bytes = (
             sys.getsizeof(self._retained) if self._retained is not None else 0
         )
@@ -371,7 +372,7 @@ class PolygonRasterizer:
                         # Coordinate tuples/floats, projection temporaries, ring and
                         # feature containers; reserve before expanding this feature.
                         required = count * 256 + len(rings) * 1024 + 4096
-                        if self.retained_bytes + required > retain_projected_bytes:
+                        if self.retained_bytes + required > max_retained_polygon_bytes:
                             raise ProjectedGeometryMemoryError(
                                 "Selected polygons exceed the retained geometry allowance"
                             )
@@ -397,7 +398,7 @@ class PolygonRasterizer:
                             projected_group,
                         )
                         required = _estimate_geometry_memory_bytes(entry) + 64
-                        if self.retained_bytes + required > retain_projected_bytes:
+                        if self.retained_bytes + required > max_retained_polygon_bytes:
                             raise ProjectedGeometryMemoryError(
                                 "Selected polygons exceed the retained geometry allowance"
                             )

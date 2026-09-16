@@ -317,7 +317,7 @@ def test_streamed_masks_match_complete_exact_geometry(
         )
         direct = PolygonRasterizer(dataset, resolved, 500000)
         retained = PolygonRasterizer(
-            dataset, resolved, 500000, retain_projected_bytes=128 * 1024**2
+            dataset, resolved, 500000, max_retained_polygon_bytes=128 * 1024**2
         )
         assert retained.source_window == direct.source_window
         assert direct.source_window == original.source_window

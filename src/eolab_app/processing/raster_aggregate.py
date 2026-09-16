@@ -83,7 +83,7 @@ def get_raster_window_and_mask_source(
     area: AggregateArea,
     limits: RasterAggregateLimits,
     *,
-    retain_projected_bytes: int = 0,
+    max_retained_polygon_bytes: int = 0,
 ) -> tuple[Window, tuple[dict[str, object], ...] | RasterAreaMask]:
     """Get the raster pixel window and the source for per-tile area masks.
 
@@ -94,7 +94,7 @@ def get_raster_window_and_mask_source(
         area: Sampling box, filtered catalog features, historical polygon
             geometry, or the whole raster.
         limits: Processing limits; max_coordinates bounds geometry work here.
-        retain_projected_bytes: Optional allowance to retain catalog polygons
+        max_retained_polygon_bytes: Optional allowance to retain catalog polygons
             for this calculation; zero uses the streaming reader.
 
     Returns:
@@ -115,7 +115,7 @@ def get_raster_window_and_mask_source(
         area.geometries,
         limits.max_coordinates,
         area.resolved,
-        retain_projected_bytes=retain_projected_bytes,
+        max_retained_polygon_bytes=max_retained_polygon_bytes,
     )
     return selected.source_window, selected.projected_geometries
 
@@ -193,7 +193,7 @@ def prepare_raster_area_tools(
         dataset,
         calculation_plan.area,
         limits,
-        retain_projected_bytes=polygon_budget,
+        max_retained_polygon_bytes=polygon_budget,
     )
     selection_ready = time.perf_counter()
     try:
