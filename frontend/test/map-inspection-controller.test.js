@@ -480,3 +480,39 @@ test("Escape is focus-scoped and destroy detaches presentation listeners", () =>
     assert.equal(h.histogram.hidden, true);
     assert.deepEqual(h.calls, ["show", "hide"]);
 });
+
+
+test("closing the last tool hides its empty surface while result cards remain usable", () => {
+    const h = fixture();
+    h.controller.beginMapClick({ lat: -10, lng: -60 });
+    h.controller.setClickResult("histogram", { state: "ready", message: "1 raster ready" });
+    h.controller.showHistogram(1);
+    const results = h.doc.querySelector("#map-click-summary");
+    const reopen = h.doc.querySelector("#map-click-histogram");
+    assert.equal(h.panels.hidden, false);
+
+    h.close.dispatchEvent(new Event("click"));
+
+    assert.equal(h.histogram.hidden, true);
+    assert.equal(h.panels.hidden, true, "the empty top-layer container must not intercept map clicks");
+    assert.equal(results.hidden, false);
+    assert.equal(reopen.disabled, false);
+    assert.deepEqual(h.calls, ["show"], "retained results keep their popover");
+    assert.equal(h.doc.activeElement, h.map);
+
+    h.minimizeButton.dispatchEvent(new Event("click"));
+    h.minimizeButton.dispatchEvent(new Event("click"));
+    assert.equal(h.panels.hidden, true, "expanding only the result cards must not restore an empty surface");
+
+    reopen.dispatchEvent(new Event("click"));
+    assert.equal(h.panels.hidden, false);
+    assert.equal(h.histogram.hidden, false);
+    h.controller.showStyle("Raster");
+    h.controller.showHistogram(1);
+    h.close.dispatchEvent(new Event("click"));
+    assert.equal(h.panels.hidden, false, "an open fallback tool still needs its surface");
+    assert.equal(h.style.getAttribute("data-map-inspection-active"), "true");
+    h.controller.hideStyle();
+    assert.equal(h.panels.hidden, true);
+    h.controller.destroy();
+});

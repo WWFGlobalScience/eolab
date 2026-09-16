@@ -636,11 +636,13 @@ export class MapInspectionController {
     /**
      * Render the combined header, unique navigation, and active-panel visibility.
      * Result cards replace their tabs; other open tools retain keyboard navigation.
+     * Hide the panel surface when no tool is active so the retained result header
+     * cannot leave an invisible container intercepting map input below it.
      *
      * @return {void}
      */
     #renderDock() {
-        this.panels.hidden = this.minimized;
+        this.panels.hidden = this.minimized || this.activeTool === null;
         this.root.setAttribute("data-minimized", String(this.minimized));
         this.root.setAttribute("data-active-tool", this.activeTool ?? "");
         const activeLabel = this.activeTool === null
