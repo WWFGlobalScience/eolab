@@ -172,17 +172,19 @@ export class HistogramAxisControls {
             status.textContent = warning + this.#describe(axis);
             return [definition.key, axis];
         }));
-        this.#labelSummary(axes, fallback);
+        this.#updateDisclosureLabel(axes, fallback);
         return axes;
     }
 
     /**
-     * Keep display changes and temporary fallback visible when controls are closed.
-     * @param {Object} axes Resolved transforms.
+     * Set the "Axes & scale" disclosure label, adding "log", "clipped", or
+     * "using Auto/Linear" when those conditions apply to the displayed axes.
+     * The label remains visible when the controls are collapsed.
+     * @param {Object} axes Displayed axis limits, scales, and notices.
      * @param {boolean} [fallback=false] Whether a requested range failed for this sample.
      * @return {void}
      */
-    #labelSummary(axes, fallback = false) {
+    #updateDisclosureLabel(axes, fallback = false) {
         const notes = [];
         if (fallback) notes.push("using Auto/Linear");
         if (Object.values(axes).some(axis => axis.scale === "log")) notes.push("log");
@@ -229,7 +231,7 @@ export class HistogramAxisControls {
         }
         this.state.options = options;
         this.axes = axes;
-        this.#labelSummary(axes);
+        this.#updateDisclosureLabel(axes);
         this.onChange(axes);
     }
 
