@@ -10,6 +10,7 @@ import {
     clearRasterHistogramChart,
     renderRasterHistogramChart,
 } from "./histogram-view.js";
+import { HistogramAxisControls } from "./histogram-axis-controls.js";
 import { requireRasterControl } from "./required-control.js";
 import { formatRasterPixelValue } from "./value-format.js";
 
@@ -88,6 +89,11 @@ export class RasterHistogramControlsView {
         );
         this.summaryButtons = [];
         this.summaryCharts = [];
+        this.axisStates = new Map();
+        this.summaryAxisControls = [];
+        this.detailAxisControls = null;
+        this.detailAxesHost = documentContext.createElement("div");
+        this.histogram.append(this.detailAxesHost);
         this.activeHistogramKey = null;
         this.handlers = null;
         this.boundRetryStatistics = this.#handleRetryStatistics.bind(this);
@@ -117,7 +123,8 @@ export class RasterHistogramControlsView {
         );
         this.#clearSummaryButtonListeners();
         this.#clearSummaryCharts();
-        clearRasterHistogramChart(this.histogramChart);
+        this.clearHistogram();
+        this.axisStates.clear();
         this.handlers = null;
     }
 
@@ -353,7 +360,7 @@ export class RasterHistogramControlsView {
     clearStatistics() {
         this.histogram.setAttribute("aria-busy", "false");
         this.histogramStatus.textContent = "";
-        clearRasterHistogramChart(this.histogramChart);
+        this.clearHistogram();
         this.retryStatisticsButton.hidden = true;
     }
 
@@ -364,6 +371,7 @@ export class RasterHistogramControlsView {
      * @return {void}
      */
     setStatisticsBusy(isBusy) {
+        this.detailAxisControls?.setEnabled(!isBusy);
         this.histogram.setAttribute("aria-busy", String(isBusy));
     }
 
@@ -386,17 +394,17 @@ export class RasterHistogramControlsView {
      * @return {void}
      */
     renderHistogram(statistics, style, valueLabel = "Raster value") {
-        renderRasterHistogramChart(
-            this.histogramChart,
-            statistics,
-            style,
-            this.documentContext,
-            valueLabel
-        );
+        this.detailAxisControls?.dispose();
+        const key = JSON.stringify([statistics.collectionId, statistics.itemId]);
+        this.detailAxisControls = this.#axisControls(key, this.histogramChart, statistics, style, valueLabel);
+        this.detailAxesHost.replaceChildren(this.detailAxisControls.root);
     }
 
     /** Hide and empty the fixed-bin histogram chart. @return {void} */
     clearHistogram() {
+        this.detailAxisControls?.dispose();
+        this.detailAxisControls = null;
+        this.detailAxesHost.replaceChildren();
         clearRasterHistogramChart(this.histogramChart);
     }
 
@@ -484,11 +492,10 @@ export class RasterHistogramControlsView {
                 "http://www.w3.org/2000/svg", "svg"
             );
             chart.classList.add("raster-histogram-chart");
-            renderRasterHistogramChart(
-                chart, summary.statistics, summary.style, this.documentContext, summary.valueLabel
-            );
+            const controls = this.#axisControls(summary.key, chart, summary.statistics, summary.style, summary.valueLabel);
+            this.summaryAxisControls.push(controls);
             this.summaryCharts.push(chart);
-            content.append(chart);
+            content.append(chart, controls.root);
         } else if (summary.state === "ready" && summary.counts !== null && summary.counts.length > 0) {
             content.append(this.#createSummaryPreview(summary));
         }
@@ -592,8 +599,33 @@ export class RasterHistogramControlsView {
         return preview;
     }
 
+    /**
+     * Create a display-only editor retaining settings for this histogram identity.
+     * @param {string} key Chart identity.
+     * @param {SVGSVGElement} chart Target SVG.
+     * @param {Object} statistics Validated sample.
+     * @param {Object} style Committed raster style.
+     * @param {string} valueLabel Value-axis units.
+     * @return {HistogramAxisControls} Editor owning only local redraws.
+     */
+    #axisControls(key, chart, statistics, style, valueLabel = "Raster value") {
+        if (!this.axisStates.has(key)) this.axisStates.set(key, {});
+        const distribution = { ...statistics.histogram, total: statistics.validSampleCount };
+        const draw = axes => renderRasterHistogramChart(
+            chart, statistics, style, this.documentContext, valueLabel, [], axes,
+        );
+        const controls = new HistogramAxisControls(this.documentContext, [
+            { ...distribution, key: "x", label: valueLabel },
+            { ...distribution, key: "y", label: "Bar height (% of pixels)", frequency: true, nice: true },
+        ], this.axisStates.get(key), draw);
+        draw(controls.axes);
+        return controls;
+    }
+
     /** Release resize observers before replacing dynamic charts. @return {void} */
     #clearSummaryCharts() {
+        for (const controls of this.summaryAxisControls) controls.dispose();
+        this.summaryAxisControls = [];
         for (const chart of this.summaryCharts) clearRasterHistogramChart(chart);
         this.summaryCharts = [];
     }

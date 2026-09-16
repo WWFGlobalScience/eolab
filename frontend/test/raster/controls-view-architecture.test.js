@@ -6,6 +6,7 @@ const FOCUSED_VIEW_IMPORTS = {
     "appearance-controls-view.js": ["./required-control.js", "./style.js"],
     "sampling-area-controls-view.js": ["./required-control.js"],
     "histogram-controls-view.js": [
+        "./histogram-axis-controls.js",
         "./histogram-view.js",
         "./required-control.js",
         "./value-format.js",
@@ -18,6 +19,7 @@ const FOCUSED_VIEW_IMPORTS = {
     "bivariate-controls-view.js": [
         "./bivariate.js",
         "./histogram-axes.js",
+        "./histogram-axis-controls.js",
         "./paired-statistics.js",
         "./required-control.js",
         "./value-format.js",
@@ -125,4 +127,18 @@ test("focused raster views validate only their semantic subgroup roots", async (
     assert.match(bivariateSource, /"#raster-bivariate-controls"/);
     assert.match(bivariateSource, /"#raster-bivariate-statistics"/);
     assert.doesNotMatch(bivariateSource, /"#raster-(appearance|style-controls)"/);
+});
+
+test("histogram axis controls and transforms have only local presentation dependencies", async () => {
+    for (const [moduleName, expected] of [
+        ["histogram-axis-controls.js", ["./histogram-axis-scale.js", "./value-format.js"]],
+        ["histogram-axis-scale.js", []],
+    ]) {
+        const source = await readFile(
+            new URL(`../../src/raster/${moduleName}`, import.meta.url), "utf8"
+        );
+        const imports = [...source.matchAll(/from\s+["']([^"']+)["']/g)]
+            .map(match => match[1]).sort();
+        assert.deepEqual(imports, expected);
+    }
 });

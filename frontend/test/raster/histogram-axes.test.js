@@ -47,3 +47,13 @@ test("units come only from explicit metadata on the analyzed first data band", (
     assert.equal(getHistogramValueLabel({ assets: { thumbnail: { "raster:bands": [{ unit: "K" }] } } }), "Raster value");
     assert.equal(getHistogramValueLabel({ assets: { data: { "raster:bands": [{ unit: " " }, { unit: "K" }] } } }), "Raster value");
 });
+
+test("log tick labels remain positive and distinct across many orders of magnitude", async () => {
+    const { resolveHistogramAxis } = await import("../../src/raster/histogram-axis-scale.js");
+    const data = distribution(1e-20, 1e20);
+    const axis = resolveHistogramAxis({ ...data.histogram, total: data.validSampleCount },
+        { scale: "log", bounds: "auto", minimum: "", maximum: "" });
+    const scales = histogramScales(data, 400, { x: axis });
+    assert.equal(new Set(scales.ticks.map(tick => tick.label)).size, scales.ticks.length);
+    assert.ok(scales.ticks.every(tick => Number(tick.label) > 0));
+});

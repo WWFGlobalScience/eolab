@@ -6,6 +6,7 @@ import {
   clearRasterHistogramChart,
   renderRasterHistogramChart,
 } from "../../src/raster/histogram-view.js";
+import { resolveHistogramAxis } from "../../src/raster/histogram-axis-scale.js";
 import { DEFAULT_RASTER_STYLE } from "../../src/raster/style.js";
 import {
   FAKE_SVG_DOCUMENT,
@@ -203,4 +204,29 @@ test("raster histogram hover styles emphasize only the active bar", () => {
     stylesheet,
     /\.raster-histogram-tooltip\s*\{[^}]*pointer-events:\s*none/s,
   );
+});
+
+test("log and clipped 1D axes preserve bin identity, hover counts and style marker coordinates", () => {
+  const chart = new FakeSvgElement("svg");
+  const statistics = { ...RASTER_STATISTICS, validSampleCount: 10,
+    histogram: { edges: [-1, 1, 10, 100], counts: [3, 5, 2] } };
+  const original = structuredClone(statistics);
+  const distribution = { ...statistics.histogram, total: 10 };
+  const x = resolveHistogramAxis(distribution, { scale: "log", bounds: "auto", minimum: "", maximum: "" });
+  const y = resolveHistogramAxis({ ...distribution, frequency: true },
+    { scale: "linear", bounds: "values", minimum: "0", maximum: "40" });
+  renderRasterHistogramChart(chart, statistics, DEFAULT_RASTER_STYLE, FAKE_SVG_DOCUMENT,
+    "Raster value", [{ label: "Middle", value: 10, color: "#123456" }], { x, y });
+  const bars = chart.children.filter(child => child.classNames.includes("raster-histogram-bar"));
+  assert.equal(bars.length, 2, "The crossing-zero bin is omitted whole");
+  assert.equal(Number(bars[0].attributes.get("height")), 116);
+  assert.ok(bars[0].classNames.includes("histogram-axis-clipped"));
+  assert.equal(Number(bars[1].attributes.get("x")), 338);
+  bars[0].dispatchEvent(new Event("pointerenter"));
+  const tooltip = chart.children.find(child => child.classNames.includes("raster-histogram-tooltip"));
+  assert.equal(tooltip.children[1].textContent, "1–10");
+  assert.match(tooltip.children[2].textContent, /5 pixels · 50.00%/);
+  const markers = chart.children.find(child => child.classNames.includes("raster-histogram-thresholds"));
+  assert.equal(Number(markers.children[0].attributes.get("x1")), 338);
+  assert.deepEqual(statistics, original);
 });

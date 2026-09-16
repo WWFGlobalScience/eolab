@@ -58,7 +58,7 @@ test("bivariate range presentation depends only on existing raster contracts and
     const imports = [...source.matchAll(/from\s+["']([^"']+)["']/g)]
         .map((match) => match[1]).sort();
     assert.deepEqual(imports, [
-        "./bivariate.js", "./histogram-axes.js", "./paired-statistics.js",
+        "./bivariate.js", "./histogram-axes.js", "./histogram-axis-controls.js", "./paired-statistics.js",
         "./required-control.js", "./value-format.js",
     ]);
 });
