@@ -90,7 +90,9 @@ def polygon_features(
     Args:
         resolved: Authorized source and compiled attribute predicate.
         bbox: Conservative native-CRS candidate envelope, or no spatial filter.
-        cancellation_requested: Optional cancellation predicate.
+        cancellation_requested: Optional callable returning True when the
+                caller wants this work to stop. Checked between expensive steps;
+                cancellation raises RasterReadCancelled.
 
     Yields:
         An iterator whose geometries never outlive the owning source context.
@@ -366,6 +368,8 @@ class PolygonRasterizer:
                 filtered_vector, cancellation_requested=cancellation_requested
             ) as features:
                 for geometry in features:
+                    # The callback returns True when this work is cancelled.
+                    # Stop before allocating/projecting another feature.
                     require_active_raster_read(cancellation_requested)
                     if self._retained is not None:
                         rings = _polygon_rings(geometry)
@@ -380,6 +384,8 @@ class PolygonRasterizer:
                                 "Selected polygons exceed the retained geometry allowance"
                             )
                     projected_group = self.project(geometry)
+                    # Projection can take time. Check again before walking all
+                    # projected coordinates and retaining the feature.
                     require_active_raster_read(cancellation_requested)
                     feature_left = feature_top = math.inf
                     feature_right = feature_bottom = -math.inf
