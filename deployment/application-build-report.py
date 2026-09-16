@@ -13,6 +13,7 @@ import subprocess
 
 import fiona
 import numpy
+from osgeo import gdal
 import psycopg.pq
 import pyproj
 import rasterio
@@ -56,6 +57,7 @@ def build_report() -> dict[str, object]:
         ),
         "native": {
             "fiona_gdal": fiona.__gdal_version__,
+            "ogr_gdal": gdal.VersionInfo("RELEASE_NAME"),
             "rasterio_gdal": rasterio.__gdal_version__,
             "rasterio_proj": rasterio.__proj_version__,
             "pyproj_proj": pyproj.proj_version_str,

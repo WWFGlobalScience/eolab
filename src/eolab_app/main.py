@@ -63,7 +63,7 @@ from eolab_app.vector.assessment import (
     VectorAssessmentService,
 )
 from eolab_app.vector.catalog import StacVectorCatalog
-from eolab_app.vector.fields import FionaVectorFieldReader
+from eolab_app.vector.fields import OgrVectorFieldReader
 from eolab_app.vector.geoserver import (
     GeoServerVectorPublisher,
     GeoServerVectorReaderAssessor,
@@ -213,7 +213,7 @@ def create_app(
         geoserver_rest_client,
         app_global_configuration.geoserver_internal_url,
     )
-    vector_field_reader = FionaVectorFieldReader()
+    vector_field_reader = OgrVectorFieldReader()
     vector_feature = create_vector_feature(
         VectorAssessmentService(
             app_global_configuration.scan_mount_path,

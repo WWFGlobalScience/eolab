@@ -31,6 +31,27 @@ RUN npm run build \
     && (node --version; npm --version) > /frontend-build-versions.txt
 
 
+# OGR's Python bindings have no upstream Linux wheels. Build the one reviewed
+# source archive against the same pinned GDAL library installed at runtime.
+FROM python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS gdal-builder
+
+WORKDIR /build
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends g++ libgdal-dev=3.10.3+dfsg-1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY deployment/application-*-requirements.txt ./
+RUN python -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        -r application-build-requirements.txt \
+    && sed -n '/^numpy==/p' application-runtime-requirements.txt > numpy-requirements.txt \
+    && test -s numpy-requirements.txt \
+    && python -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        -r numpy-requirements.txt \
+    && test "$(gdal-config --version)" = "3.10.3" \
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
+        --require-hashes --wheel-dir /wheels -r application-gdal-requirements.txt \
+    && (g++ --version; dpkg-query -W) > /gdal-build-packages.txt
+
+
 FROM python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -42,7 +63,7 @@ WORKDIR /app
 RUN python -c "import platform, sys; sys.exit(0 if platform.machine() == 'x86_64' else 'Reviewed application wheels require Linux amd64')"
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends libexpat1 \
+    && apt-get install --yes --no-install-recommends libexpat1 libgdal36=3.10.3+dfsg-1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN addgroup --system eolab \
@@ -55,6 +76,11 @@ RUN python -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
     && python -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
         -r /app/build-inputs/application-runtime-requirements.txt
 
+COPY --from=gdal-builder /wheels/ /tmp/gdal-wheels/
+COPY --from=gdal-builder /gdal-build-packages.txt /app/build-inputs/
+RUN python -m pip install --no-cache-dir --no-index --no-deps /tmp/gdal-wheels/*.whl \
+    && rm -rf /tmp/gdal-wheels
+
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ ./src/
 COPY --chmod=0555 deployment/require-read-only-scan-source.sh \
@@ -66,7 +92,7 @@ COPY --from=versioner /version /app/version
 RUN python -m pip install --no-cache-dir --no-index --no-build-isolation \
         --check-build-dependencies --no-deps . \
     && python -m pip check \
-    && python -c "import fiona; import rasterio; assert 'ESRI Shapefile' in fiona.supported_drivers" \
+    && python -c "import fiona; import rasterio; assert 'ESRI Shapefile' in fiona.supported_drivers; from osgeo import ogr, gdal_array; assert hasattr(ogr.Layer, 'GetArrowStreamAsNumPy')" \
     && python /usr/local/bin/application-build-report.py > /app/build-environment.json \
     && mkdir -p /processing-data \
     && chown -R eolab:eolab /app /processing-data

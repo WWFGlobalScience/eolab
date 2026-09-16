@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from eolab_app.rendering.geoserver import GEOSERVER_WORKSPACE_NAME
 from eolab_app.vector.errors import VectorConflictError, VectorPublicationError
-from eolab_app.vector.fields import FionaVectorFieldReader
+from eolab_app.vector.fields import OgrVectorFieldReader
 from eolab_app.vector.geoserver import GeoServerVectorPublisher
 from eolab_app.vector.models import (
     CatalogVectorStyleRequest,
@@ -744,7 +744,7 @@ def test_style_service_revalidates_numeric_field_and_accepts_exact_ranges(
         resolver,
         styler,
         registry,
-        FionaVectorFieldReader(),
+        OgrVectorFieldReader(),
     )
     summary = asyncio.run(service.classify_numeric(
         CatalogVectorNumericClassificationRequest(

@@ -12,6 +12,7 @@ license = { file = "LICENSE" }
 dependencies = [
     "fastapi>=0.115,<1",
     "fiona>=1.10,<2",
+    "gdal[numpy]>=3.10,<3.11",
     "httpx2>=2.9,<3",
     "ijson>=3.5,<4",
     "numpy>=1.26,<3",
