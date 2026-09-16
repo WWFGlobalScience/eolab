@@ -50,6 +50,9 @@ function validatePerformance(value) {
     validateExecution(value.execution);
     validateStages(value.stages, ["sourceSetupSeconds", "selectionSetupSeconds", "groundAreaSetupSeconds", "gridCheckSeconds",
         "selectionMaskSeconds", "areaWeightsSeconds", "reductionSeconds"]);
+    for (const name of ["maskPreparationSeconds", "maskReadSeconds"]) {
+        if (value.stages?.[name] != null) validateStages(value.stages, [name]);
+    }
     validateStages(value.stages?.selectionMaskBreakdown,
         ["featureReadingSeconds", "projectionSeconds", "rasterizationSeconds"]);
     if (![value.readSeconds, value.calculationSeconds, value.resultWriteSeconds, value.kernelSeconds]

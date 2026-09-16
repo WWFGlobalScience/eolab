@@ -237,19 +237,30 @@ to it.
 
 ### Polygon preparation memory
 
-For summaries over a filtered vector layer, EOLab prepares the exact projected
-polygons before reading raster blocks, then reuses them for pixel-center masks.
-They are released when that calculation finishes or fails; nothing is saved as
-a filtered vector copy or shared between jobs. Planning and validation still
-read the source separately. Hectare weighting uses its existing separate path.
+For summaries over a filtered vector layer, EOLab reads and projects the exact
+polygons before reading raster blocks. It rasterizes them once into a temporary
+tiled GeoTIFF aligned to the selected source window. Each raster read then reads
+the matching part of that mask. Uploaded polygon areas use the same file path.
+Holes are preserved, overlaps count once, and pixel centers determine inclusion.
+Hectare weighting uses its existing separate path.
 
-Retained polygons have a 128 MiB ceiling per calculation, further reduced by the
-memory needed for the planned raster buffers. Preparation checks each feature
-before projection and counts its projected containers and coordinates afterward.
-If it cannot fit, filter the layer more narrowly or use a smaller raster batch.
-EOLab does not simplify the analysis polygons to fit.
+Prepared polygons have a 128 MiB ceiling per calculation, further reduced by the
+memory needed for the planned raster buffers. They are released after mask
+creation. EOLab does not simplify analysis polygons to fit. Planning and validation
+still read the vector source separately.
 
-Selection setup timing includes this preparation. Mask timing measures the
-remaining per-tile rasterization. The result's retainedPolygonBytes estimates
-retained Python geometry memory in addition to the plan's raster-buffer estimate;
-it is not measured process RAM usage.
+The mask uses one byte per pixel, with padded 512 by 512 tiles. Its worst-case
+size is reserved alongside result files before a job is admitted. GDAL writes
+directly to the file using its bounded cache; no full-window NumPy mask is
+allocated. The file is removed before result publication, or during attempt
+cleanup after cancellation or failure. It is never published as a catalog item.
+
+Selection setup timing includes polygon reading and projection. Mask preparation
+reports the one-time rasterization and file opening. Mask window reads are
+included in calculation's polygon-selection time. Result metadata records
+temporaryMaskBytes and retainedPolygonBytes; the latter estimates prepared Python
+geometry memory, not measured process RAM usage.
+
+Workers supporting mask files claim version 6 jobs. Older workers cannot claim
+them. Previously queued calculations without sufficient scratch reservations fail
+with a message to run the calculation again.

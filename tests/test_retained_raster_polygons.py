@@ -119,10 +119,11 @@ def test_calculation_reuses_polygons_and_releases_them(
         assert result.sha256 == reference.sha256
         assert result.performance["retainedPolygonBytes"] > 0
         assert result.performance["stages"]["selectionSetupSeconds"] > 0
-        breakdown = result.performance["stages"]["selectionMaskBreakdown"]
-        assert breakdown["featureReadingSeconds"] == 0
-        assert breakdown["projectionSeconds"] == 0
-        assert breakdown["rasterizationSeconds"] > 0
+        assert result.performance["temporaryMaskBytes"] > 0
+        assert result.performance["stages"]["maskPreparationSeconds"] > 0
+        assert result.performance["stages"]["maskReadSeconds"] > 0
+        assert result.performance["stages"]["selectionMaskBreakdown"] is None
+    assert not (tmp_path / "polygon-mask.tif").exists()
     assert calls == len(geometries)
     assert len(prepared) == 1
     assert prepared[0].retained_bytes == 0

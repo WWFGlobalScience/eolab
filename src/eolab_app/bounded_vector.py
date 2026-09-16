@@ -438,6 +438,24 @@ class PolygonRasterizer:
             raise ValueError("A feature exceeds the transformed-coordinate buffer")
         return project_wgs84_polygons(self.dataset, (geometry,), count)
 
+    def iter_projected_polygons(self) -> Iterator[dict[str, object]]:
+        """Yield the prepared polygons without copying their coordinates.
+
+        Yields:
+            Prepared polygons in the source raster's coordinate system.
+
+        Raises:
+            ValueError: If polygons were not retained or have been released.
+            RasterReadCancelled: If the caller cancels during iteration.
+        """
+        if self._closed:
+            raise ValueError("Selected polygons have been released")
+        if self._retained is None:
+            raise ValueError("Projected polygons were not retained")
+        for _, polygons in self._retained:
+            require_active_raster_read(self.cancellation_requested)
+            yield from polygons
+
     def rasterize(
         self,
         out_shape: tuple[int, int],

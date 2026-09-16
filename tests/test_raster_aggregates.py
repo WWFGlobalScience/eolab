@@ -24,6 +24,7 @@ from eolab_app.processing.raster_aggregate import (
     plan_aggregate,
 )
 import eolab_app.processing.raster_aggregate as kernel
+from eolab_app.bounded_vector import pixels_inside_area
 from eolab_app.raster.models import CatalogRasterRequest
 from eolab_app.raster.source_identity import RasterSourceIdentity
 from test_raster_clips import SOURCE, write_source
@@ -104,7 +105,7 @@ def test_prepared_area_tools_window_and_masks(
         if whole_raster:
             assert tools.selected_polygons == ()
         else:
-            mask = kernel.pixels_inside_area(
+            mask = pixels_inside_area(
                 tools.selected_polygons,
                 out_shape=shape,
                 transform=rasterio.windows.transform(

@@ -257,7 +257,9 @@ class AggregateKernelStages(BaseModel):
     Source setup includes expression compilation and opening the raster.
     Selection setup reads/projects the area envelope and, for catalog summaries,
     retains those polygons for the calculation. Mask time includes vector
-    source reads, projection and rasterization. Optional selectionMaskBreakdown
+    source reads, projection and rasterization in historical results. New results
+    report maskPreparationSeconds outside calculation, and maskReadSeconds
+    inside selectionMaskSeconds. Optional selectionMaskBreakdown
     records those inner stages; it is absent in older results. All times include
     I/O waits.
     """
@@ -269,6 +271,8 @@ class AggregateKernelStages(BaseModel):
     gridCheckSeconds: StageSeconds
     selectionMaskSeconds: StageSeconds
     selectionMaskBreakdown: AggregateMaskStages | None = None
+    maskPreparationSeconds: StageSeconds | None = None
+    maskReadSeconds: StageSeconds | None = None
     areaWeightsSeconds: StageSeconds
     reductionSeconds: StageSeconds
 
@@ -277,7 +281,8 @@ class AggregatePerformance(BaseModel):
     """Final measurements, independent of transient progress.
 
     retainedPolygonBytes estimates Python geometry memory additional to the
-    plan's raster-buffer allowance; it is not process RSS. Older results omit it.
+    plan's raster-buffer allowance; it is not process RSS. temporaryMaskBytes
+    records the temporary GeoTIFF size before cleanup. Older results omit these.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -291,6 +296,7 @@ class AggregatePerformance(BaseModel):
     kernelSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     stages: AggregateKernelStages | None = None
     retainedPolygonBytes: Annotated[int, Field(ge=0)] = 0
+    temporaryMaskBytes: Annotated[int, Field(ge=0)] = 0
 
 
 class AggregateGrid(BaseModel):

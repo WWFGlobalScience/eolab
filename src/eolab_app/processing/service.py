@@ -39,6 +39,7 @@ from eolab_app.processing.aggregate_models import (
     RasterAggregateLimits,
 )
 from eolab_app.processing.raster_aggregate import aggregate_process_target
+from eolab_app.processing.raster_mask import aggregate_storage_bytes
 from eolab_app.processing.ports import (
     JobArtifactStore,
     JobStore,
@@ -79,10 +80,13 @@ def prepare_aggregate_job(
 
     Args:
         spec: Source-fenced native calculation specification.
-        limits: Calculation result reservation policy.
+        limits: Calculation result and temporary mask reservation policy.
 
     Returns:
         Path-free specification and summary requiring the operation-aware worker.
+
+    Raises:
+        ProcessingError: If mask and result reservations exceed the storage limit.
     """
     data = spec.model_dump(mode="json", by_alias=True)
     return PreparedJobPlan(
@@ -91,11 +95,11 @@ def prepare_aggregate_job(
             **{key: data[key] for key in ("sources", "calculations", "grid")},
             "area": {"kind": spec.area.kind, "bounds": spec.area.bounds},
         },
-        reserved_bytes=limits.result_reservation_bytes,
+        reserved_bytes=aggregate_storage_bytes(spec, limits),
         operation=spec.operation,
         minimum_claim_version=(
-            5
-            if spec.area.kind == "catalogSelection"
+            6
+            if spec.area.kind != "wholeRaster"
             else 4 if spec.grid.execution else 3 if spec.grid.groundArea else 2
         ),
     )

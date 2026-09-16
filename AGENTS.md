@@ -134,7 +134,12 @@ behavior into the nearest controller, route, viewer, service, or utility module.
   retain exact projected polygons in memory for one calculation, within an
   explicit cumulative memory budget alongside raster buffers. Release them when
   that calculation ends; do not persist, share across jobs, or send them to the
-  browser. Optional display outlines must not authorize or gate analysis.
+  browser. The approved #423 extension also permits one calculation-owned
+  temporary raster mask on the admitted source grid. Reserve its scratch bytes,
+  rasterize once, read mask windows during calculation, and delete it before
+  publication or through attempt cleanup after cancellation/failure. This mask
+  is not a catalog source, persistent selection, reusable cache, or result.
+  Optional display outlines must not authorize or gate analysis.
 
 - Infrastructure components must not import or call application-level
   services.

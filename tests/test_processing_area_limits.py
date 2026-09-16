@@ -54,12 +54,9 @@ def test_plan_persists_only_catalog_definition(
     )
     assert accepted.status_code == 202, accepted.text
     with psycopg.connect(store.conninfo) as connection:
-        assert (
-            connection.execute(
-                "SELECT minimum_claim_version FROM processing.jobs"
-            ).fetchone()[0]
-            == 5
-        )
+        assert connection.execute(
+            "SELECT minimum_claim_version FROM processing.jobs"
+        ).fetchone()[0] == (5 if operation == "raster-clips" else 6)
     with pytest.raises(psycopg.errors.CheckViolation):
         with psycopg.connect(store.conninfo) as connection:
             connection.execute("SET LOCAL eolab.processing_claim_version = '4'")

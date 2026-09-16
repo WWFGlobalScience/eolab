@@ -170,11 +170,11 @@ def test_batched_native_results_and_durable_metrics(tmp_path, monkeypatch, targe
         < spec.grid.nativeBlocks
     )
     assert metrics["reducerUpdates"] < baseline.performance["reducerUpdates"]
-    breakdown = metrics["stages"]["selectionMaskBreakdown"]
-    assert breakdown["featureReadingSeconds"] == 0
-    assert breakdown["projectionSeconds"] == 0
-    assert breakdown["rasterizationSeconds"] == 0
-    assert metrics["stages"]["selectionMaskSeconds"] >= sum(breakdown.values())
+    assert metrics["stages"]["selectionMaskBreakdown"] is None
+    assert metrics["stages"]["maskReadSeconds"] == 0
+    breakdown = dict(
+        featureReadingSeconds=0, projectionSeconds=0, rasterizationSeconds=0
+    )
     old_stages = {
         k: v for k, v in metrics["stages"].items() if k != "selectionMaskBreakdown"
     }
@@ -395,10 +395,8 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
     area = AggregateArea(kind="aoi", bounds=tuple(bounds), geometries=(polygon,))
     spec = make_spec(path, ["sum(a)", "areaha(a>0)"], area, target_chunk_pixels=target)
     expected = kernel.calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
-    breakdown = expected.performance["stages"]["selectionMaskBreakdown"]
-    assert breakdown["featureReadingSeconds"] == 0
-    assert breakdown["projectionSeconds"] == 0
-    assert breakdown["rasterizationSeconds"] > 0
+    assert expected.performance["stages"]["maskPreparationSeconds"] > 0
+    assert expected.performance["stages"]["maskReadSeconds"] > 0
     clock = [0.0]
     calls = {"read": 0, "mask": 0, "weights": 0, "reduce": 0}
 
@@ -433,6 +431,8 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
 
         return invoke
 
+    from eolab_app.processing import raster_mask as mask_module
+
     monkeypatch.setattr(kernel.time, "perf_counter", lambda: clock[0])
     monkeypatch.setattr(
         kernel,
@@ -445,7 +445,7 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
         measured(kernel.read_native_raster_window, "read", 2),
     )
     monkeypatch.setattr(
-        kernel, "pixels_inside_area", measured(kernel.pixels_inside_area, "mask", 3)
+        mask_module, "rasterize", measured(mask_module.rasterize, "mask", 3)
     )
     monkeypatch.setattr(
         kernel.PixelAreaCalculator,
@@ -462,7 +462,8 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
     metrics = result.performance
     stages = metrics["stages"]
     assert metrics["readSeconds"] == calls["read"] * 2
-    assert stages["selectionMaskSeconds"] == calls["mask"] * 3 > 0
+    assert stages["maskPreparationSeconds"] == calls["mask"] * 3 == 3
+    assert stages["selectionMaskSeconds"] == 0
     assert stages["areaWeightsSeconds"] == calls["weights"] * 5 > 0
     assert stages["reductionSeconds"] == calls["reduce"] * 7 > 0
     assert metrics["calculationSeconds"] == sum(
@@ -471,5 +472,7 @@ def test_kernel_stage_timers_attribute_work_without_changing_results(
     )
     assert (
         metrics["kernelSeconds"]
-        == metrics["readSeconds"] + metrics["calculationSeconds"]
+        == metrics["readSeconds"]
+        + metrics["calculationSeconds"]
+        + stages["maskPreparationSeconds"]
     )
