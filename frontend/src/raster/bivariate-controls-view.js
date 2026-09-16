@@ -1,4 +1,5 @@
 /** Focused presentation for bivariate map controls and paired histograms. */
+import { HistogramAxisControls } from "./histogram-axis-controls.js";
 import { requireRasterControl } from "./required-control.js";
 import {
     BIVARIATE_RASTER_PALETTES,
@@ -309,6 +310,10 @@ export class BivariateRasterControlsView {
             documentContext,
             "#raster-bivariate-histogram"
         );
+        this.axesHost = requireRasterControl(documentContext, "#raster-bivariate-axis-controls");
+        this.axisState = {};
+        this.axisControls = null;
+        this.axes = null;
         this.histogramSummary = requireRasterControl(
             documentContext,
             "#raster-bivariate-histogram-summary"
@@ -389,6 +394,7 @@ export class BivariateRasterControlsView {
 
     /** Remove every direct listener installed by {@link bind}. @return {void} */
     unbind() {
+        this.axisControls?.dispose();
         for (const { button, onClick } of this.downloadButtons) button.removeEventListener("click", onClick);
         this.mode.removeEventListener("change", this.boundModeChange);
         this.palette.removeEventListener("change", this.boundPaletteChange);
@@ -504,6 +510,7 @@ export class BivariateRasterControlsView {
      * @return {void}
      */
     setStatisticsLoading(message) {
+        this.axisControls?.setEnabled(false);
         this.statisticsIsCurrent = false;
         this.rangePreviews = { x: null, y: null };
         this.#renderThresholdMarkers();
@@ -520,6 +527,7 @@ export class BivariateRasterControlsView {
      * @return {void}
      */
     renderStatisticsError(error, canRetry) {
+        this.axisControls?.setEnabled(false);
         this.statisticsIsCurrent = false;
         this.rangePreviews = { x: null, y: null };
         this.#renderThresholdMarkers();
@@ -539,14 +547,51 @@ export class BivariateRasterControlsView {
         this.statistics = statistics;
         this.statisticsIsCurrent = true;
         this.labels = presentation;
+        this.axisControls?.dispose();
+        const definitions = ["x", "y"].flatMap(axis => {
+            const distribution = {
+                edges: statistics.histogram[`${axis}Edges`],
+                counts: statistics.histogram[`${axis}MarginalCounts`],
+                total: statistics.pairedSampleCount,
+            };
+            return [
+                { ...distribution, key: axis, label: `${axis.toUpperCase()} · ${presentation[`${axis}Label`]}` },
+                { ...distribution, key: `${axis}Frequency`, frequency: true,
+                    label: `${axis.toUpperCase()} outer histogram · bar height (% of pixels)` },
+            ];
+        });
+        this.axisControls = new HistogramAxisControls(this.documentContext, definitions, this.axisState, axes => {
+            const selected = this.activeCell && {
+                xBin: Number(this.activeCell.dataset.xBin), yBin: Number(this.activeCell.dataset.yBin),
+                sampled: this.activeCell.classList.contains("is-sampled"),
+            };
+            this.axes = axes;
+            this.#drawStatistics();
+            if (selected) {
+                const cell = this.cells.get(`${selected.xBin}:${selected.yBin}`);
+                if (cell) {
+                    this.#selectCell(selected.xBin, selected.yBin,
+                        this.#compactCellDescription(selected.xBin, selected.yBin,
+                            this.statistics.histogram.counts[selected.yBin][selected.xBin]), cell);
+                    if (selected.sampled) cell.classList.add("is-sampled");
+                }
+            }
+        });
+        this.axesHost.replaceChildren(this.axisControls.root);
+        this.axes = this.axisControls.axes;
+        this.#drawStatistics();
+    }
+
+    /** Redraw the current paired sample using the current display transforms. @return {void} */
+    #drawStatistics() {
+        const statistics = this.statistics, presentation = this.labels;
+        const { x: xAxis, y: yAxis, xFrequency, yFrequency } = this.axes;
         this.cells.clear();
         this.activeCell = null;
         const { histogram } = statistics;
-        const binCount = histogram.counts.length;
-        const cellSize = HISTOGRAM_PLOT_SIZE / binCount;
         const maximumCount = Math.max(...histogram.counts.flat());
-        const maximumXMarginal = Math.max(...histogram.xMarginalCounts);
-        const maximumYMarginal = Math.max(...histogram.yMarginalCounts);
+        const xIntervals = histogram.xMarginalCounts.map((_, i) => xAxis.interval(histogram.xEdges[i], histogram.xEdges[i + 1]));
+        const yIntervals = histogram.yMarginalCounts.map((_, i) => yAxis.interval(histogram.yEdges[i], histogram.yEdges[i + 1]));
         const highest = getHighestDensityPairedCell(statistics);
         const highestDescription = this.#cellDescription(
             highest.xBin,
@@ -566,9 +611,11 @@ export class BivariateRasterControlsView {
             )}. ${statistics.pairedSampleCount.toLocaleString()} paired ` +
             `pixels. ${provenance}; the vertical raster uses nearest-neighbor ` +
             "alignment. " +
-            `Densest bin: ${highestDescription}`;
-        const xAxisTitleLines = wrapAxisTitle(presentation.xLabel);
-        const yAxisTitleLines = wrapAxisTitle(presentation.yLabel);
+            `Densest bin: ${highestDescription}. ` +
+            `Displayed X: ${formatRange(xAxis.minimum, xAxis.maximum)} (${xAxis.scale}); ` +
+            `Y: ${formatRange(yAxis.minimum, yAxis.maximum)} (${yAxis.scale}).`;
+        const xAxisTitleLines = wrapAxisTitle(presentation.xLabel + (xAxis.scale === "log" ? " · log" : ""));
+        const yAxisTitleLines = wrapAxisTitle(presentation.yLabel + (yAxis.scale === "log" ? " · log" : ""));
         const xAxisTitleY = HISTOGRAM_PLOT_Y + HISTOGRAM_PLOT_SIZE + 58;
         const viewBoxHeight = Math.max(
             HISTOGRAM_BASE_VIEWBOX_HEIGHT,
@@ -604,8 +651,8 @@ export class BivariateRasterControlsView {
         const clearProjection = () => {
             projectionGuides.x.setAttribute("hidden", "");
             projectionGuides.y.setAttribute("hidden", "");
-            for (const bar of [...marginalBars.x, ...marginalBars.y]) {
-                bar?.classList.remove("is-projected");
+            for (const bar of [...marginalBars.x, ...marginalBars.y].filter(Boolean)) {
+                bar.classList.remove("is-projected");
             }
         };
         /**
@@ -619,10 +666,10 @@ export class BivariateRasterControlsView {
             if (xBin !== undefined) {
                 projectionGuides.x.setAttribute(
                     "x",
-                    String(HISTOGRAM_PLOT_X + xBin * cellSize)
+                    String(HISTOGRAM_PLOT_X + xIntervals[xBin][0] * HISTOGRAM_PLOT_SIZE)
                 );
                 projectionGuides.x.setAttribute("y", String(HISTOGRAM_PLOT_Y));
-                projectionGuides.x.setAttribute("width", String(cellSize));
+                projectionGuides.x.setAttribute("width", String((xIntervals[xBin][1] - xIntervals[xBin][0]) * HISTOGRAM_PLOT_SIZE));
                 projectionGuides.x.setAttribute(
                     "height",
                     String(HISTOGRAM_PLOT_SIZE)
@@ -636,14 +683,14 @@ export class BivariateRasterControlsView {
                     "y",
                     String(
                         HISTOGRAM_PLOT_Y +
-                        (binCount - 1 - yBin) * cellSize
+                        (1 - yIntervals[yBin][1]) * HISTOGRAM_PLOT_SIZE
                     )
                 );
                 projectionGuides.y.setAttribute(
                     "width",
                     String(HISTOGRAM_PLOT_SIZE)
                 );
-                projectionGuides.y.setAttribute("height", String(cellSize));
+                projectionGuides.y.setAttribute("height", String((yIntervals[yBin][1] - yIntervals[yBin][0]) * HISTOGRAM_PLOT_SIZE));
                 projectionGuides.y.removeAttribute("hidden");
                 marginalBars.y[yBin]?.classList.add("is-projected");
             }
@@ -703,17 +750,17 @@ export class BivariateRasterControlsView {
 
         histogram.counts.forEach((row, yBin) => {
             row.forEach((count, xBin) => {
-                if (count === 0) return;
+                const xInterval = xIntervals[xBin], yInterval = yIntervals[yBin];
+                if (count === 0 || xInterval === null || yInterval === null) return;
                 const density = getBivariateDensityWeight(
                     count,
                     maximumCount
                 );
                 const shrink = -0.05 + 0.5 * (1 - density);
-                const inset = cellSize * shrink * 0.5;
-                const size = cellSize * (1 - shrink);
-                const left = HISTOGRAM_PLOT_X + xBin * cellSize + inset;
-                const top = HISTOGRAM_PLOT_Y +
-                    (binCount - 1 - yBin) * cellSize + inset;
+                const width = (xInterval[1] - xInterval[0]) * HISTOGRAM_PLOT_SIZE;
+                const height = (yInterval[1] - yInterval[0]) * HISTOGRAM_PLOT_SIZE;
+                const left = HISTOGRAM_PLOT_X + xInterval[0] * HISTOGRAM_PLOT_SIZE + width * shrink / 2;
+                const top = HISTOGRAM_PLOT_Y + (1 - yInterval[1]) * HISTOGRAM_PLOT_SIZE + height * shrink / 2;
                 const xValue = (
                     histogram.xEdges[xBin] + histogram.xEdges[xBin + 1]
                 ) / 2;
@@ -721,10 +768,10 @@ export class BivariateRasterControlsView {
                     histogram.yEdges[yBin] + histogram.yEdges[yBin + 1]
                 ) / 2;
                 const cell = svgElement(this.documentContext, "rect", {
-                    x: left,
-                    y: top,
-                    width: size,
-                    height: size,
+                    x: Math.max(HISTOGRAM_PLOT_X, left),
+                    y: Math.max(HISTOGRAM_PLOT_Y, top),
+                    width: Math.min(plotRight, left + width * (1 - shrink)) - Math.max(HISTOGRAM_PLOT_X, left),
+                    height: Math.min(plotBottom, top + height * (1 - shrink)) - Math.max(HISTOGRAM_PLOT_Y, top),
                     tabindex: 0,
                     role: "button",
                 });
@@ -793,15 +840,23 @@ export class BivariateRasterControlsView {
         });
 
         histogram.xMarginalCounts.forEach((count, xBin) => {
-            const height = count / maximumXMarginal * HISTOGRAM_MARGINAL_SIZE;
+            const interval = xIntervals[xBin];
+            if (interval === null) return;
+            const percent = count / statistics.pairedSampleCount * 100;
+            const height = Math.max(0, Math.min(1, xFrequency.position(percent))) * HISTOGRAM_MARGINAL_SIZE;
+            const binWidth = (interval[1] - interval[0]) * HISTOGRAM_PLOT_SIZE;
             const bar = svgElement(this.documentContext, "rect", {
-                x: HISTOGRAM_PLOT_X + xBin * cellSize,
+                x: HISTOGRAM_PLOT_X + interval[0] * HISTOGRAM_PLOT_SIZE,
                 y: HISTOGRAM_PLOT_Y - height,
-                width: Math.max(1, cellSize - 1),
+                width: binWidth - Math.min(1, binWidth * 0.1),
                 height,
                 "data-marginal-axis": "x",
             });
             bar.classList.add("raster-bivariate-marginal");
+            if (percent > xFrequency.maximum || percent < xFrequency.minimum ||
+                histogram.xEdges[xBin] < xAxis.minimum || histogram.xEdges[xBin + 1] > xAxis.maximum) {
+                bar.classList.add("histogram-axis-clipped");
+            }
             const midpoint = (
                 histogram.xEdges[xBin] + histogram.xEdges[xBin + 1]
             ) / 2;
@@ -838,15 +893,23 @@ export class BivariateRasterControlsView {
             children.push(bar);
         });
         histogram.yMarginalCounts.forEach((count, yBin) => {
-            const width = count / maximumYMarginal * HISTOGRAM_MARGINAL_SIZE;
+            const interval = yIntervals[yBin];
+            if (interval === null) return;
+            const percent = count / statistics.pairedSampleCount * 100;
+            const width = Math.max(0, Math.min(1, yFrequency.position(percent))) * HISTOGRAM_MARGINAL_SIZE;
+            const binHeight = (interval[1] - interval[0]) * HISTOGRAM_PLOT_SIZE;
             const bar = svgElement(this.documentContext, "rect", {
                 x: HISTOGRAM_PLOT_X + HISTOGRAM_PLOT_SIZE,
-                y: HISTOGRAM_PLOT_Y + (binCount - 1 - yBin) * cellSize,
+                y: HISTOGRAM_PLOT_Y + (1 - interval[1]) * HISTOGRAM_PLOT_SIZE,
                 width,
-                height: Math.max(1, cellSize - 1),
+                height: binHeight - Math.min(1, binHeight * 0.1),
                 "data-marginal-axis": "y",
             });
             bar.classList.add("raster-bivariate-marginal");
+            if (percent > yFrequency.maximum || percent < yFrequency.minimum ||
+                histogram.yEdges[yBin] < yAxis.minimum || histogram.yEdges[yBin + 1] > yAxis.maximum) {
+                bar.classList.add("histogram-axis-clipped");
+            }
             const midpoint = (
                 histogram.yEdges[yBin] + histogram.yEdges[yBin + 1]
             ) / 2;
@@ -901,9 +964,9 @@ export class BivariateRasterControlsView {
         );
         const axisLabels = [];
         for (const [fraction, value, anchor] of [
-            [0, statistics.xMinimum, "start"],
-            [0.5, (statistics.xMinimum + statistics.xMaximum) / 2, "middle"],
-            [1, statistics.xMaximum, "end"],
+            [0, xAxis.valueAt(0), "start"],
+            [0.5, xAxis.valueAt(0.5), "middle"],
+            [1, xAxis.valueAt(1), "end"],
         ]) {
             const x = HISTOGRAM_PLOT_X + HISTOGRAM_PLOT_SIZE * fraction;
             children.push(svgElement(this.documentContext, "line", {
@@ -921,9 +984,9 @@ export class BivariateRasterControlsView {
             ]);
         }
         for (const [fraction, value] of [
-            [0, statistics.yMinimum],
-            [0.5, (statistics.yMinimum + statistics.yMaximum) / 2],
-            [1, statistics.yMaximum],
+            [0, yAxis.valueAt(0)],
+            [0.5, yAxis.valueAt(0.5)],
+            [1, yAxis.valueAt(1)],
         ]) {
             const y = plotBottom - HISTOGRAM_PLOT_SIZE * fraction;
             children.push(svgElement(this.documentContext, "line", {
@@ -1018,15 +1081,15 @@ export class BivariateRasterControlsView {
             const style = this.labels[`${axis}Style`];
             const preview = this.styleRanges.open ? this.rangePreviews[axis] : null;
             const range = preview ?? style;
-            const edges = this.statistics.histogram[`${axis}Edges`];
-            const minimum = edges[0];
-            const span = edges.at(-1) - minimum;
+            const displayAxis = this.axes[axis];
             const group = svgElement(this.documentContext, "g", {
                 "data-threshold-axis": axis,
                 "data-threshold-mode": preview === null ? "committed" : "preview",
             });
             for (const [index, name] of ["minimum", "midpoint", "maximum"].entries()) {
-                const fraction = Math.max(0, Math.min(1, (range[name] - minimum) / span));
+                const rawFraction = displayAxis.position(range[name]);
+                if (!Number.isFinite(rawFraction)) continue;
+                const fraction = Math.max(0, Math.min(1, rawFraction));
                 const position = axis === "x"
                     ? HISTOGRAM_PLOT_X + fraction * HISTOGRAM_PLOT_SIZE
                     : HISTOGRAM_PLOT_Y + (1 - fraction) * HISTOGRAM_PLOT_SIZE;
@@ -1092,6 +1155,9 @@ export class BivariateRasterControlsView {
 
     /** Clear paired result content while preserving explicit mode controls. @return {void} */
     clearStatistics() {
+        this.axisControls?.dispose();
+        this.axisControls = null;
+        this.axesHost.replaceChildren();
         this.statistics = null;
         this.statisticsIsCurrent = false;
         this.rangePreviews = { x: null, y: null };

@@ -322,3 +322,22 @@ test("histogram adapter owns labeled per-raster summaries without double binding
     list.children[0].children[0].dispatchEvent(new Event("click"));
     assert.deepEqual(selected, ["first", "first"]);
 });
+
+test("axis edits redraw only the local chart and persist through a new sample", () => {
+    const doc = new FakeRasterControlDocument(), view = new RasterHistogramControlsView(doc);
+    view.bind({ onRetryStatistics: () => assert.fail("Axes must not request statistics") });
+    view.renderHistogram(RASTER_STATISTICS, DEFAULT_RASTER_STYLE);
+    const original = structuredClone(RASTER_STATISTICS);
+    const fields = view.detailAxisControls.rows.get("y").fields;
+    fields.bounds.input.value = "values";
+    fields.bounds.input.dispatchEvent(new Event("change"));
+    fields.maximum.input.value = "1";
+    fields.maximum.input.dispatchEvent(new Event("change"));
+    assert.equal(view.detailAxisControls.axes.y.maximum, 1);
+    view.renderHistogram({ ...RASTER_STATISTICS }, DEFAULT_RASTER_STYLE);
+    assert.equal(view.detailAxisControls.axes.y.maximum, 1);
+    assert.deepEqual(RASTER_STATISTICS, original);
+    view.clearStatistics();
+    assert.equal(view.detailAxesHost.children.length, 0);
+    view.unbind();
+});

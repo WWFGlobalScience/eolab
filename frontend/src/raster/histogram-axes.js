@@ -1,5 +1,7 @@
 /** Numeric scales and SVG axes for the bounded, single-band histogram. */
 
+import { createHistogramAxis } from "./histogram-axis-scale.js";
+
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 /**
@@ -39,26 +41,26 @@ export function getHistogramValueLabel(item) {
  * large values without overlapping long tick labels.
  * @param {Object} statistics Validated histogram counts and edges.
  * @param {number} plotWidth Horizontal drawing space in CSS pixels.
+ * @param {Object|null} [axes=null] Resolved display-only x/y transforms.
  * @return {Object} X domain, positioned labels, optional offset, and y maximum.
  */
-export function histogramScales(statistics, plotWidth) {
+export function histogramScales(statistics, plotWidth, axes = null) {
     const { counts, edges } = statistics.histogram;
-    const minimum = edges[0], maximum = edges.at(-1);
+    const distribution = { edges, counts, total: statistics.validSampleCount };
+    const xAxis = axes?.x ?? createHistogramAxis(distribution);
+    const yAxis = axes?.y ?? createHistogramAxis({ ...distribution, frequency: true, nice: true });
+    const { minimum, maximum, offset } = xAxis;
     const span = maximum - minimum;
-    const offset = Math.max(Math.abs(minimum), Math.abs(maximum)) / span > 1e5 ? minimum : 0;
     /** Format a fractional position; intervals determine numeric precision. */
     const label = (fraction, intervals) => formatHistogramTick(
-        (minimum - offset) + fraction * span, span / intervals
+        xAxis.valueAt(fraction) - offset, xAxis.scale === "log" ? xAxis.valueAt(fraction) / 10 : span / intervals
     );
     const longest = Math.max(...[0, 0.25, 0.5, 0.75, 1].map(fraction => label(fraction, 4).length));
     const intervals = plotWidth >= 4 * (longest * 7 + 16) ? 4 : 2;
     const ticks = Array.from({ length: intervals + 1 }, (_, index) => ({
         fraction: index / intervals, label: label(index / intervals, intervals),
     }));
-    const peakPercent = Math.max(...counts) / statistics.validSampleCount * 100;
-    const power = 10 ** Math.floor(Math.log10(peakPercent));
-    const ceiling = [1, 2, 5, 10].find(factor => factor * power >= peakPercent) * power;
-    return { minimum, maximum, span, offset, ticks, maximumPercent: Math.min(100, ceiling) };
+    return { minimum, maximum, span, offset, ticks, maximumPercent: yAxis.maximum, xAxis, yAxis };
 }
 
 /**
@@ -94,7 +96,8 @@ export function drawHistogramAxes(chart, plot, scales, valueLabel, documentConte
         const y = plot.bottom - fraction * plot.height;
         appendSvg(axes, documentContext, "line", { x1: plot.left, x2: right, y1: y, y2: y, class: "raster-histogram-grid" });
         appendSvg(axes, documentContext, "text", { x: plot.left - 8, y: y + 4, "text-anchor": "end", class: "raster-histogram-y-tick" },
-            formatHistogramTick(fraction * scales.maximumPercent, scales.maximumPercent / 2));
+            formatHistogramTick(scales.yAxis.valueAt(fraction), scales.yAxis.scale === "log" ?
+                scales.yAxis.valueAt(fraction) / 10 : (scales.yAxis.maximum - scales.yAxis.minimum) / 2));
     }
     appendSvg(axes, documentContext, "path", { d: `M${plot.left} ${plot.top}V${plot.bottom}H${right}`, class: "raster-histogram-baseline" });
     for (const tick of scales.ticks) {
@@ -102,7 +105,8 @@ export function drawHistogramAxes(chart, plot, scales, valueLabel, documentConte
         appendSvg(axes, documentContext, "line", { x1: x, x2: x, y1: plot.bottom, y2: plot.bottom + 4, class: "raster-histogram-baseline" });
         appendSvg(axes, documentContext, "text", { x, y: plot.bottom + 18, "text-anchor": tick.fraction === 0 ? "start" : tick.fraction === 1 ? "end" : "middle", class: "raster-histogram-x-tick" }, tick.label);
     }
-    appendSvg(axes, documentContext, "text", { x: plot.left, y: 15, class: "raster-histogram-axis-title" }, "Sampled pixels (%)");
+    appendSvg(axes, documentContext, "text", { x: plot.left, y: 15, class: "raster-histogram-axis-title" }, `Sampled pixels (%)${scales.yAxis.scale === "log" ? " · log" : ""}`);
     appendSvg(axes, documentContext, "text", { x: plot.left + plot.width / 2, y: plot.bottom + 38, "text-anchor": "middle", class: "raster-histogram-axis-title" },
-        scales.offset === 0 ? valueLabel : `${valueLabel} (offset ${scales.offset >= 0 ? "+" : ""}${scales.offset})`);
+        (scales.offset === 0 ? valueLabel : `${valueLabel} (offset ${scales.offset >= 0 ? "+" : ""}${scales.offset})`) +
+        (scales.xAxis.scale === "log" ? " · log" : ""));
 }

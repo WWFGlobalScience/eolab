@@ -90,12 +90,13 @@ function drawHistogramThresholdMarkers(
     group.classList.add("raster-histogram-thresholds");
     group.setAttribute("aria-hidden", "true");
     for (const marker of markers) {
+        const fraction = scales.xAxis.position(marker.value);
+        if (!Number.isFinite(fraction)) continue;
         const x = Math.max(
             plot.left,
             Math.min(
                 plot.left + plot.width,
-                plot.left + (marker.value - scales.minimum) /
-                    scales.span * plot.width
+                plot.left + fraction * plot.width
             )
         );
         const outline = documentContext.createElementNS(SVG_NAMESPACE, "line");
@@ -135,6 +136,7 @@ function drawHistogramThresholdMarkers(
  * @param {string} valueLabel X-axis name including known units.
  * @param {Array<{label:string,value:number,color:string}>} markers Candidate
  * style thresholds.
+ * @param {Object|null} axes Optional resolved x/y display transforms.
  * @return {void}
  */
 function drawRasterHistogramChart(
@@ -144,11 +146,12 @@ function drawRasterHistogramChart(
     documentContext,
     width,
     valueLabel,
-    markers
+    markers,
+    axes
 ) {
     const { counts, edges } = statistics.histogram;
     const plot = { left: 48, top: 28, width: width - 60, height: HISTOGRAM_PLOT_HEIGHT, bottom: 28 + HISTOGRAM_PLOT_HEIGHT };
-    const scales = histogramScales(statistics, plot.width);
+    const scales = histogramScales(statistics, plot.width, axes);
     const tooltipWidth = Math.min(360, width - 2 * HISTOGRAM_TOOLTIP_MARGIN);
     chart.setAttribute("viewBox", `0 0 ${width} ${HISTOGRAM_CHART_HEIGHT}`);
     chart.setAttribute("preserveAspectRatio", "none");
@@ -174,17 +177,24 @@ function drawRasterHistogramChart(
         )}, ${formatRasterPixelValue(statistics.percentiles.p50)}, and ` +
         `${formatRasterPixelValue(statistics.percentiles.p95)}. ` +
         `Horizontal axis: ${valueLabel}${scales.offset === 0 ? "" : `, tick offset ${scales.offset}`}. ` +
-        `Vertical axis: percentage of valid sampled pixels, from 0 to ${scales.maximumPercent}%.` +
+        `Vertical axis: percentage of valid sampled pixels, from ${scales.yAxis.minimum} to ${scales.maximumPercent}%. ` +
+        `X scale: ${scales.xAxis.scale}; Y scale: ${scales.yAxis.scale}. ` +
         markerDescription;
     chart.replaceChildren(title);
     drawHistogramAxes(chart, plot, scales, valueLabel, documentContext);
     for (const [binIndex, count] of counts.entries()) {
         const samplePercent = count / statistics.validSampleCount * 100;
-        const barHeight = samplePercent / scales.maximumPercent * plot.height;
-        const x = plot.left + (edges[binIndex] - scales.minimum) / scales.span * plot.width;
-        const barWidth = (edges[binIndex + 1] - edges[binIndex]) / scales.span * plot.width;
+        const interval = scales.xAxis.interval(edges[binIndex], edges[binIndex + 1]);
+        if (interval === null) continue;
+        const barHeight = Math.max(0, Math.min(1, scales.yAxis.position(samplePercent))) * plot.height;
+        const x = plot.left + interval[0] * plot.width;
+        const barWidth = (interval[1] - interval[0]) * plot.width;
         const bar = documentContext.createElementNS(SVG_NAMESPACE, "rect");
         bar.classList.add("raster-histogram-bar");
+        if (samplePercent > scales.yAxis.maximum || samplePercent < scales.yAxis.minimum ||
+            edges[binIndex] < scales.minimum || edges[binIndex + 1] > scales.maximum) {
+            bar.classList.add("histogram-axis-clipped");
+        }
         bar.setAttribute("x", String(x));
         bar.setAttribute(
             "y",
@@ -202,7 +212,7 @@ function drawRasterHistogramChart(
             `${formatRasterPixelValue(edges[binIndex + 1])}.`;
         bar.setAttribute("aria-label", binDescription);
         chart.append(bar);
-        bars.push(bar);
+        bars.push({ binIndex, bar, center: x + barWidth * 0.45 });
     }
     drawHistogramThresholdMarkers(
         chart,
@@ -213,12 +223,11 @@ function drawRasterHistogramChart(
     );
     const tooltip = createHistogramTooltip(documentContext, tooltipWidth);
     let activeBar = null;
-    for (const [binIndex, bar] of bars.entries()) {
+    for (const { binIndex, bar, center } of bars) {
         const count = counts[binIndex];
         const samplePercent = count / statistics.validSampleCount * 100;
         const preferredTooltipX =
-            plot.left + ((edges[binIndex] + edges[binIndex + 1]) / 2 - scales.minimum) / scales.span * plot.width -
-            tooltipWidth / 2;
+            center - tooltipWidth / 2;
         const tooltipX = Math.max(
             HISTOGRAM_TOOLTIP_MARGIN,
             Math.min(
@@ -268,6 +277,7 @@ function drawRasterHistogramChart(
  * @param {string} [valueLabel="Raster value"] X-axis label with known units.
  * @param {Array<{label:string,value:number,color:string}>} [markers=[]]
  * Candidate style thresholds drawn over the distribution.
+ * @param {Object|null} [axes=null] Optional resolved x/y display transforms.
  * @return {void}
  * @throws {TypeError} If marker identity, value, or color is invalid.
  */
@@ -277,7 +287,8 @@ export function renderRasterHistogramChart(
     style,
     documentContext = globalThis.document,
     valueLabel = "Raster value",
-    markers = []
+    markers = [],
+    axes = null
 ) {
     if (
         !Array.isArray(markers) ||
@@ -301,7 +312,8 @@ export function renderRasterHistogramChart(
         documentContext,
         width,
         valueLabel,
-        markers
+        markers,
+        axes
     );
     const Observer = documentContext.defaultView?.ResizeObserver;
     if (!Observer) return;
@@ -319,7 +331,8 @@ export function renderRasterHistogramChart(
             documentContext,
             width,
             valueLabel,
-            markers
+            markers,
+            axes
         );
     });
     chartObservers.set(chart, observer);

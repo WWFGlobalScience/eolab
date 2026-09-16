@@ -90,6 +90,7 @@ class FakeBivariateDocument {
       "#raster-bivariate-statistics-y-label",
       "#retry-raster-paired-statistics",
       "#raster-bivariate-histogram",
+      "#raster-bivariate-axis-controls",
       "#raster-bivariate-histogram-summary",
       "#raster-bivariate-style-ranges",
       ...["x", "y"].flatMap((axis) => [
@@ -552,4 +553,50 @@ test('paired style navigation expands the histogram controls and focuses the pal
   assert.equal(view.styleRanges.open, true);
   assert.equal(documentContext.activeElement, view.palette);
   assert.equal(view.statisticsPanel.hidden, false);
+});
+
+test("2D log axes align cells, marginal hover bands and markers without new analysis", () => {
+  const doc = new FakeBivariateDocument(), view = new BivariateRasterControlsView(doc);
+  const statistics = pairedStatistics(), original = structuredClone(statistics);
+  view.bind({
+    onBivariateModeChange: () => assert.fail("Display edits must not change analysis mode"),
+    onBivariatePercentileInput: () => assert.fail("Display edits must not change styling"),
+    onRetryPairedStatistics: () => assert.fail("Display edits must not resample"),
+  });
+  view.renderStatistics(statistics, PRESENTATION);
+  view.highlightPair(6.5, 4.5);
+  for (const key of ["x", "y"]) {
+    const input = view.axisControls.rows.get(key).fields.scale.input;
+    input.value = "log";
+    input.dispatchEvent(new Event("change"));
+  }
+  const cell = view.cells.get("6:4");
+  assert.equal(cell.classList.contains("is-sampled"), true);
+  cell.dispatchEvent(new Event("pointerenter"));
+  const xGuide = view.histogram.children.find(child => child.getAttribute("data-projection-axis") === "x");
+  const yGuide = view.histogram.children.find(child => child.getAttribute("data-projection-axis") === "y");
+  assert.ok(Math.abs(Number(xGuide.getAttribute("x")) - (160 + Math.log(6) / Math.log(32) * 420)) < 1e-10);
+  assert.ok(Math.abs(Number(yGuide.getAttribute("y")) - (74 + (1 - Math.log(5) / Math.log(32)) * 420)) < 1e-10);
+  const xBars = view.histogram.children.filter(child => child.getAttribute("data-marginal-axis") === "x");
+  const hovered = xBars.find(child => child.classList.contains("is-projected"));
+  assert.ok(hovered);
+  assert.equal(Number(hovered.getAttribute("x")), Number(xGuide.getAttribute("x")));
+  hovered.dispatchEvent(new Event("pointerenter"));
+  assert.equal(yGuide.getAttribute("hidden"), "");
+  const group = view.thresholdMarkers.children.find(child => child.getAttribute("data-threshold-axis") === "x");
+  const middle = group.children.find(child => child.getAttribute("data-threshold") === "midpoint");
+  assert.ok(Math.abs(Number(middle.getAttribute("x1")) - (160 + Math.log(16) / Math.log(32) * 420)) < 1e-10);
+  assert.deepEqual(statistics, original);
+
+  const frequency = view.axisControls.rows.get("yFrequency").fields;
+  frequency.bounds.input.value = "values";
+  frequency.bounds.input.dispatchEvent(new Event("change"));
+  frequency.maximum.input.value = "50";
+  frequency.maximum.input.dispatchEvent(new Event("change"));
+  assert.ok(view.histogram.children.some(child => child.getAttribute("data-marginal-axis") === "y" &&
+    child.classList.contains("histogram-axis-clipped")));
+  view.setStatisticsLoading("New sample");
+  assert.equal(frequency.maximum.input.disabled, true);
+  view.clearStatistics();
+  assert.equal(view.axesHost.children.length, 0);
 });

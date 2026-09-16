@@ -4497,3 +4497,45 @@ summary:hover > .raster-disclosure-chevron {
     .leaflet-pane path.is-calculating { animation: none; }
     .leaflet-pane path.is-calculating { fill-opacity: 0.15; }
 }
+
+.histogram-axis-controls {
+  margin: 6px 0 10px;
+  font-size: 0.76rem;
+}
+.histogram-axis-controls summary { cursor: pointer; color: var(--text-2); }
+.histogram-axis-controls fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+}
+.histogram-axis-controls legend { max-width: 100%; overflow-wrap: anywhere; }
+.histogram-axis-controls label {
+  display: grid;
+  gap: 3px;
+  flex: 1 1 70px;
+  min-width: 0;
+}
+.histogram-axis-controls label[hidden] { display: none; }
+.histogram-axis-controls input, .histogram-axis-controls select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 4px;
+}
+.histogram-axis-status, .histogram-axis-help {
+  flex-basis: 100%;
+  margin: 3px 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.histogram-axis-clipped {
+  stroke: var(--text-1);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  vector-effect: non-scaling-stroke;
+}
