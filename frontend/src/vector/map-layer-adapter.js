@@ -9,7 +9,7 @@ import {
     summarizeCatalogVectorCategories,
 } from "./api.js";
 import { EMPTY_VECTOR_FILTER, normalizeVectorFilter, vectorFilterStatus } from "./filter.js";
-import { createVectorWmsLayer } from "./leaflet.js";
+import { createVectorWmsLayer, vectorMapBounds } from "./leaflet.js";
 import {
     defaultVectorNumericField,
     deriveDefaultVectorStyle,
@@ -516,7 +516,7 @@ export function createVectorMapLayerAdapter({
             };
         },
         /**
-         * Fit the map to one WGS 84 publication extent.
+         * Fit a publication extent, showing both edges for a date-line crossing.
          *
          * @param {Object} record Neutral retained-layer record.
          * @param {Object} [context] Neutral addition context.
@@ -528,9 +528,8 @@ export function createVectorMapLayerAdapter({
             if (!fitToBounds || !mayFitToBounds) {
                 return;
             }
-            const [west, south, east, north] = record.publication.bbox;
             leafletMap.fitBounds(
-                [[south, west], [north, east]],
+                vectorMapBounds(record.publication.bbox),
                 { maxZoom: 14, padding: [24, 24] }
             );
         },

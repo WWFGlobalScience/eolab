@@ -62,3 +62,16 @@ test("default vector geometry families use blue symbols with black outlines", ()
         polygon: { label: "Polygon", fill: "#2b83ba", stroke: "#000000" },
     });
 });
+
+test("crossing vector WMS retains both map edges without wrapping world copies", () => {
+    let options;
+    const layer = { once() {} };
+    createVectorWmsLayer(
+        { tileLayer: { wms(_url, candidate) { options = candidate; return layer; } } },
+        "/geoserver/eolab/wms",
+        { layerName: "eolab:pacific", styleName: "vector-polygon", bbox: [170, -10, -170, 10] },
+        () => {},
+    );
+    assert.deepEqual(options.bounds, [[-10, -180], [10, 180]]);
+    assert.equal(options.noWrap, true);
+});
