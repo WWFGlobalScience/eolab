@@ -273,6 +273,12 @@ def native_bbox_for_grid(
     )
 
 
+# Per retained feature: allow for its outer list pointer and the unused
+# capacity Python allocates when that list grows. This is an allowance, not
+# an assertion that every list entry occupies exactly 64 bytes.
+RETAINED_LIST_ENTRY_ALLOWANCE_BYTES = 64
+
+
 class ProjectedGeometryMemoryError(ValueError):
     """The caller's calculation-local polygon memory allowance was exhausted."""
 
@@ -295,7 +301,8 @@ def _estimate_geometry_memory_bytes(value: object) -> int:
     total = sys.getsizeof(value)
     if isinstance(value, dict):
         total += sum(
-            _estimate_geometry_memory_bytes(key) + _estimate_geometry_memory_bytes(child)
+            _estimate_geometry_memory_bytes(key)
+            + _estimate_geometry_memory_bytes(child)
             for key, child in value.items()
         )
     elif isinstance(value, (tuple, list)):
@@ -378,8 +385,13 @@ class PolygonRasterizer:
                         ) + len(rings)
                         # Coordinate tuples/floats, projection temporaries, ring and
                         # feature containers; reserve before expanding this feature.
-                        required = count * 256 + len(rings) * 1024 + 4096
-                        if self.retained_bytes + required > max_retained_polygon_bytes:
+                        projection_working_bytes = (
+                            count * 256 + len(rings) * 1024 + 4096
+                        )
+                        if (
+                            self.retained_bytes + projection_working_bytes
+                            > max_retained_polygon_bytes
+                        ):
                             raise ProjectedGeometryMemoryError(
                                 "Selected polygons exceed the retained geometry allowance"
                             )
@@ -406,13 +418,19 @@ class PolygonRasterizer:
                             (feature_left, feature_top, feature_right, feature_bottom),
                             projected_group,
                         )
-                        required = _estimate_geometry_memory_bytes(entry) + 64
-                        if self.retained_bytes + required > max_retained_polygon_bytes:
+                        retained_feature_bytes = (
+                            _estimate_geometry_memory_bytes(entry)
+                            + RETAINED_LIST_ENTRY_ALLOWANCE_BYTES
+                        )
+                        if (
+                            self.retained_bytes + retained_feature_bytes
+                            > max_retained_polygon_bytes
+                        ):
                             raise ProjectedGeometryMemoryError(
                                 "Selected polygons exceed the retained geometry allowance"
                             )
                         self._retained.append(entry)
-                        self.retained_bytes += required
+                        self.retained_bytes += retained_feature_bytes
             pad = BOUNDED_SOURCE_WINDOW_PADDING_PIXELS
             left, top = max(0, math.floor(left) - pad), max(0, math.floor(top) - pad)
             right, bottom = min(dataset.width, math.ceil(right) + pad), min(
