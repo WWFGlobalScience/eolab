@@ -275,27 +275,29 @@ class ProjectedGeometryMemoryError(ValueError):
     """The caller's calculation-local polygon memory allowance was exhausted."""
 
 
-def _geometry_memory_bytes(value: object) -> int:
-    """Count retained Python containers and coordinates conservatively.
+def _estimate_geometry_memory_bytes(value: object) -> int:
+    """Estimate RAM used by a geometry dictionary and its nested values.
 
-    Shared references are counted again, so this is an upper estimate rather
-    than a process RSS measurement. Projection output contains only shallow
-    GeoJSON containers and scalar values.
+    Add the sizes of the Python dictionaries, lists, tuples, strings and numbers
+    holding the geometry. This lets the rasterizer check its polygon RAM limit.
+    Shared objects are counted each time they appear, so the estimate may be
+    larger than their actual allocation. It excludes GDAL allocations and is
+    not a measurement of the process's total RAM.
 
     Args:
-        value: Projected polygon mappings or their coordinate containers.
+        value: A projected GeoJSON geometry or a nested value within it.
 
     Returns:
-        Bytes occupied by the value and its children.
+        Estimated RAM usage in bytes, including nested objects.
     """
     total = sys.getsizeof(value)
     if isinstance(value, dict):
         total += sum(
-            _geometry_memory_bytes(key) + _geometry_memory_bytes(child)
+            _estimate_geometry_memory_bytes(key) + _estimate_geometry_memory_bytes(child)
             for key, child in value.items()
         )
     elif isinstance(value, (tuple, list)):
-        total += sum(_geometry_memory_bytes(child) for child in value)
+        total += sum(_estimate_geometry_memory_bytes(child) for child in value)
     return total
 
 
@@ -394,7 +396,7 @@ class PolygonRasterizer:
                             (feature_left, feature_top, feature_right, feature_bottom),
                             projected_group,
                         )
-                        required = _geometry_memory_bytes(entry) + 64
+                        required = _estimate_geometry_memory_bytes(entry) + 64
                         if self.retained_bytes + required > retain_projected_bytes:
                             raise ProjectedGeometryMemoryError(
                                 "Selected polygons exceed the retained geometry allowance"
