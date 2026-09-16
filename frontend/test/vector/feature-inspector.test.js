@@ -698,3 +698,30 @@ test("changing the visible vector set invalidates results but retains inspection
     false,
   );
 });
+
+test("crossing catalog bounds allow inspection on both sides and exclude Greenwich", async () => {
+  let requests = 0;
+  const h = createFixture(async () => {
+    requests += 1;
+    return { ok: true, json: async () => ({ type: "FeatureCollection", features: [] }) };
+  });
+  h.targets[0].bbox = [170, -10, -170, 10];
+  h.controller.syncVisibleLayers();
+  for (const longitude of [170, 175, 180, -180, -175, -170]) {
+    await h.controller.inspect(inspectionEvent(12, 24, longitude, 0));
+  }
+  assert.equal(requests, 6);
+  for (const [longitude, latitude] of [[0, 0], [169, 0], [-169, 0], [175, 11], [-175, -11]]) {
+    await h.controller.inspect(inspectionEvent(12, 24, longitude, latitude));
+  }
+  assert.equal(requests, 6);
+});
+
+test("inspection still rejects invalid catalog bounds", () => {
+  for (const bbox of [[181, 0, 0, 1], [0, 0, -181, 1], [0, -91, 1, 0],
+                     [0, 0, 1, 91], [0, 2, 1, 1], [NaN, 0, 1, 1]]) {
+    const h = createFixture(async () => { throw new Error("No request expected."); });
+    h.targets[0].bbox = bbox;
+    assert.throws(() => h.controller.syncVisibleLayers(), /Invalid vector feature inspection target/);
+  }
+});

@@ -384,3 +384,13 @@ test("copied graduated styles use the target vector classification", async () =>
   });
   assert.equal(record.state.style.fillColor, "#a855f7");
 });
+
+test("adding a crossing vector shows both map edges and preserves its catalog bounds", () => {
+    const fixture = createAdapterFixture(true);
+    const publication = { ...PUBLICATION, bbox: [170, -10, -170, 10] };
+    fixture.adapter.added({ publication });
+    assert.deepEqual(fixture.fitCalls[0].bounds, [[-10, -180], [10, 180]]);
+    assert.deepEqual(publication.bbox, [170, -10, -170, 10]);
+    fixture.adapter.added({ publication }, { fitToBounds: false });
+    assert.equal(fixture.fitCalls.length, 1);
+});

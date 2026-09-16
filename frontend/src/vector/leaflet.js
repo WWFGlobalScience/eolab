@@ -20,7 +20,21 @@ export const VECTOR_DEFAULT_SYMBOLOGY = Object.freeze({
 });
 
 /**
- * Create one bounded WMS tile layer for a published catalog vector.
+ * Fit validated vector bounds into the application's single Leaflet world.
+ *
+ * Crossing extents use the full longitude span so both date-line edges can
+ * render. This conservative display envelope does not replace catalog bounds.
+ *
+ * @param {number[]} bbox Validated WGS 84 west, south, east, north bounds.
+ * @return {number[][]} Southwest and northeast Leaflet corners.
+ */
+export function vectorMapBounds(bbox) {
+    const [west, south, east, north] = bbox;
+    return [[south, west > east ? -180 : west], [north, west > east ? 180 : east]];
+}
+
+/**
+ * Create one bounded WMS tile layer, retaining both sides of crossing extents.
  *
  * @param {Object} leaflet Leaflet namespace with a WMS factory.
  * @param {string} wmsUrl Browser-facing restricted WMS endpoint.
@@ -35,7 +49,6 @@ export function createVectorWmsLayer(
     publishedVector,
     onTileError
 ) {
-    const [west, south, east, north] = publishedVector.bbox;
     const layer = leaflet.tileLayer.wms(wmsUrl, {
         layers: publishedVector.layerName,
         styles: publishedVector.styleName,
@@ -45,10 +58,7 @@ export function createVectorWmsLayer(
         tilesorigin: "-20037508.342789244,-20037508.342789244",
         version: "1.3.0",
         noWrap: true,
-        bounds: [
-            [south, west],
-            [north, east],
-        ],
+        bounds: vectorMapBounds(publishedVector.bbox),
     });
     layer.once("tileerror", onTileError);
     return layer;
