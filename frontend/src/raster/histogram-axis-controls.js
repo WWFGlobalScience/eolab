@@ -102,11 +102,11 @@ export class HistogramAxisControls {
                     fields.minimum.input.value = input.value === "percentiles" ? "0" : String(axis.minimum);
                     fields.maximum.input.value = input.value === "percentiles" ? "100" : String(axis.maximum);
                 }
-                this.#edit();
+                this.#applyAxisInputs();
             });
             if (!choices) input.addEventListener("input", () => {
                 clearTimeout(this.timer);
-                this.timer = setTimeout(() => this.#edit(), 200);
+                this.timer = setTimeout(() => this.#applyAxisInputs(), 200);
             });
             wrapper.append(text, input);
             fieldset.append(wrapper);
@@ -202,8 +202,14 @@ export class HistogramAxisControls {
             `${formatRasterPixelValue(axis.maximum)}. ${axis.notice}`;
     }
 
-    /** Validate an edit before redrawing; preserve the usable chart on error. @return {void} */
-    #edit() {
+    /**
+     * Read and validate the axis scale, range mode, and Min/Max form inputs.
+     * If every axis is valid, save the settings and ask the chart to redraw.
+     * Otherwise show validation messages and keep the saved settings and chart.
+     * Called after a dropdown change or a pause in typing a numeric limit.
+     * @return {void}
+     */
+    #applyAxisInputs() {
         clearTimeout(this.timer);
         if (!this.enabled) return;
         const options = {}, axes = {};
