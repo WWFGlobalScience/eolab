@@ -6,7 +6,7 @@ import {
   clearRasterHistogramChart,
   renderRasterHistogramChart,
 } from "../../src/raster/histogram-view.js";
-import { resolveHistogramAxis } from "../../src/raster/histogram-axis-scale.js";
+import { createHistogramAxis } from "../../src/raster/histogram-axis-scale.js";
 import { DEFAULT_RASTER_STYLE } from "../../src/raster/style.js";
 import {
   FAKE_SVG_DOCUMENT,
@@ -212,8 +212,8 @@ test("log and clipped 1D axes preserve bin identity, hover counts and style mark
     histogram: { edges: [-1, 1, 10, 100], counts: [3, 5, 2] } };
   const original = structuredClone(statistics);
   const distribution = { ...statistics.histogram, total: 10 };
-  const x = resolveHistogramAxis(distribution, { scale: "log", bounds: "auto", minimum: "", maximum: "" });
-  const y = resolveHistogramAxis({ ...distribution, frequency: true },
+  const x = createHistogramAxis(distribution, { scale: "log", bounds: "auto", minimum: "", maximum: "" });
+  const y = createHistogramAxis({ ...distribution, frequency: true },
     { scale: "linear", bounds: "values", minimum: "0", maximum: "40" });
   renderRasterHistogramChart(chart, statistics, DEFAULT_RASTER_STYLE, FAKE_SVG_DOCUMENT,
     "Raster value", [{ label: "Middle", value: 10, color: "#123456" }], { x, y });

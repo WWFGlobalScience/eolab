@@ -1,5 +1,5 @@
 /** Local display controls shared by ordinary histograms and paired marginals. */
-import { defaultHistogramAxisOptions, resolveHistogramAxis } from "./histogram-axis-scale.js";
+import { defaultHistogramAxisOptions, createHistogramAxis } from "./histogram-axis-scale.js";
 import { formatRasterPixelValue } from "./value-format.js";
 
 /**
@@ -162,12 +162,12 @@ export class HistogramAxisControls {
             const { status } = this.rows.get(definition.key);
             let axis, warning = "";
             try {
-                axis = resolveHistogramAxis(definition, this.state.options[definition.key]);
+                axis = createHistogramAxis(definition, this.state.options[definition.key]);
             } catch (error) {
                 if (!(error instanceof RangeError)) throw error;
                 fallback = true;
                 warning = `${error.message} Showing Auto/Linear for this sample. `;
-                axis = resolveHistogramAxis(definition);
+                axis = createHistogramAxis(definition);
             }
             status.textContent = warning + this.#describe(axis);
             return [definition.key, axis];
@@ -219,7 +219,7 @@ export class HistogramAxisControls {
             this.#rangeFields(definition.key);
             const option = Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.input.value]));
             try {
-                const axis = resolveHistogramAxis(definition, option);
+                const axis = createHistogramAxis(definition, option);
                 axes[definition.key] = axis;
                 options[definition.key] = option;
                 status.textContent = this.#describe(axis);

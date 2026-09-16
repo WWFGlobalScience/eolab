@@ -1,6 +1,6 @@
 /** Numeric scales and SVG axes for the bounded, single-band histogram. */
 
-import { resolveHistogramAxis } from "./histogram-axis-scale.js";
+import { createHistogramAxis } from "./histogram-axis-scale.js";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
@@ -47,8 +47,8 @@ export function getHistogramValueLabel(item) {
 export function histogramScales(statistics, plotWidth, axes = null) {
     const { counts, edges } = statistics.histogram;
     const distribution = { edges, counts, total: statistics.validSampleCount };
-    const xAxis = axes?.x ?? resolveHistogramAxis(distribution);
-    const yAxis = axes?.y ?? resolveHistogramAxis({ ...distribution, frequency: true, nice: true });
+    const xAxis = axes?.x ?? createHistogramAxis(distribution);
+    const yAxis = axes?.y ?? createHistogramAxis({ ...distribution, frequency: true, nice: true });
     const { minimum, maximum, offset } = xAxis;
     const span = maximum - minimum;
     /** Format a fractional position; intervals determine numeric precision. */

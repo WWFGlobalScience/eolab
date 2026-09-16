@@ -50,21 +50,26 @@ function calculateBarHeightPercentile(sortedHeights, percentile) {
 }
 
 /**
- * Resolve one histogram axis without changing bins, counts or normalization.
+ * Calculate display limits and create coordinate conversions for a histogram axis.
+ * Limits come from the sample's range, explicit values, or requested percentiles.
+ * The returned position/valueAt functions convert between axis values and
+ * fractional plot positions (0 at the minimum, 1 at the maximum). The interval
+ * function clips a bin to those limits or returns null when it cannot be drawn.
+ * This function does not draw the axis or change bins, counts, or normalization.
  * Log value axes omit entire bins whose lower edge is nonpositive, including
  * bins crossing zero: their within-bin positive counts are unknown.
  *
  * @param {{edges:number[],counts:number[],total:number,frequency?:boolean,
  * nice?:boolean}} distribution Validated histogram or marginal; frequency axes
- * use percentages of total and ignore empty bars when resolving percentiles.
- * @param {HistogramAxisOptions} options User display settings.
+ * use percentages of total and ignore empty bars when calculating percentiles.
+ * @param {HistogramAxisOptions} [options=defaultHistogramAxisOptions()] Display settings.
  * @return {{minimum:number,maximum:number,scale:string,offset:number,
  * position:(value:number)=>number,valueAt:(fraction:number)=>number,
  * interval:(lower:number,upper:number)=>number[]|null,
- * notice:string}} Resolved transform and display limitations.
+ * notice:string}} Numeric limits, coordinate conversions, and display notices.
  * @throws {RangeError} If settings or the positive domain cannot form an axis.
  */
-export function resolveHistogramAxis(distribution, options = defaultHistogramAxisOptions()) {
+export function createHistogramAxis(distribution, options = defaultHistogramAxisOptions()) {
     const { edges, counts, total, frequency = false, nice = false } = distribution;
     const positiveHeights = counts.filter(count => count > 0).map(count => count / total * 100).sort((a, b) => a - b);
     if (!(total > 0) || positiveHeights.length === 0) throw new RangeError("No sampled pixels to display.");
