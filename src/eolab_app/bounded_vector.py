@@ -339,6 +339,9 @@ class PolygonRasterizer:
         self.filtered_vector = filtered_vector
         self.maximum_coordinates = maximum_coordinates
         self.cancellation_requested = cancellation_requested
+        # None means reread/project features for each mask. An empty list
+        # enables retention; each entry stores a feature's pixel-space bounds
+        # and its polygons projected into the raster CRS.
         self._retained: (
             list[
                 tuple[tuple[float, float, float, float], tuple[dict[str, object], ...]]
