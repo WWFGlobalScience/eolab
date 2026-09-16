@@ -39,7 +39,7 @@ from eolab_app.processing.aggregate_models import (
     RasterAggregateLimits,
 )
 from eolab_app.processing.raster_aggregate import aggregate_process_target
-from eolab_app.processing.raster_mask import aggregate_storage_bytes
+from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import (
     JobArtifactStore,
     JobStore,
@@ -95,7 +95,7 @@ def prepare_aggregate_job(
             **{key: data[key] for key in ("sources", "calculations", "grid")},
             "area": {"kind": spec.area.kind, "bounds": spec.area.bounds},
         },
-        reserved_bytes=aggregate_storage_bytes(spec, limits),
+        reserved_bytes=estimate_calculation_disk_bytes(spec, limits),
         operation=spec.operation,
         minimum_claim_version=(
             6

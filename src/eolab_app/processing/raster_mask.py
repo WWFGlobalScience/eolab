@@ -17,12 +17,12 @@ MASK_TILE_SIDE = 512
 MASK_METADATA_BYTES = 1024**2
 
 
-def mask_storage_bytes(width: int, height: int) -> int:
-    """Estimate an uncompressed byte GeoTIFF, including padded edge tiles.
+def estimate_mask_disk_bytes(width: int, height: int) -> int:
+    """Estimate disk bytes for an uncompressed, one-byte-per-pixel mask TIFF.
 
     Args:
-        width: Admitted mask width in pixels.
-        height: Admitted mask height in pixels.
+        width: Width of the selected raster window in pixels.
+        height: Height of the selected raster window in pixels.
 
     Returns:
         Conservative bytes for tile data, BigTIFF tile offsets and metadata.
@@ -33,28 +33,38 @@ def mask_storage_bytes(width: int, height: int) -> int:
     return tiles * (MASK_TILE_SIDE**2 + 16) + MASK_METADATA_BYTES
 
 
-def aggregate_storage_bytes(
+def estimate_calculation_disk_bytes(
     calculation_plan: AggregateSpec, limits: RasterAggregateLimits
 ) -> int:
-    """Reserve result files plus possible polygon-mask scratch for a calculation.
+    """Estimate disk bytes needed for one calculation's mask and result files.
 
-    Box selections reserve conservatively even when their grid needs no mask.
-    Whole-raster calculations never need a polygon mask.
+    This function only computes the required space and checks the configured
+    disk limit; the job store reserves that space when accepting the job.
+    The estimate includes a temporary mask GeoTIFF plus an allowance for the
+    result CSV and provenance JSON. Whole-raster calculations need no mask.
+    Box selections include a mask allowance even when no mask is ultimately
+    needed.
 
     Args:
-        calculation_plan: Validated area and native grid.
-        limits: Result reservation and shared storage limit.
+        calculation_plan: AggregateSpec built by the Processing planning service
+            from the requested raster, formulas and area, plus the grid returned
+            by plan_aggregate(). This estimate uses area.kind to decide whether
+            a mask may be needed, and grid.width/grid.height for its pixel count.
+        limits: Calculation limits. result_reservation_bytes is the disk
+            allowance for CSV/JSON outputs; max_stored_bytes is the total
+            Processing disk budget shared by jobs. Both are bytes, not RAM.
 
     Returns:
-        Worst-case temporary mask and result-file bytes.
+        Disk bytes to reserve for the temporary mask and final result files.
 
     Raises:
-        ProcessingError: If this calculation exceeds the storage ceiling.
+        ProcessingError: If these files exceed the configured Processing disk
+            budget, even with no other jobs using it.
     """
     mask_bytes = (
         0
         if calculation_plan.area.kind == "wholeRaster"
-        else mask_storage_bytes(
+        else estimate_mask_disk_bytes(
             calculation_plan.grid.width, calculation_plan.grid.height
         )
     )
@@ -103,7 +113,7 @@ def temporary_polygon_mask(
         return
     path = directory / "polygon-mask.tif"
     width, height = int(raster_window.width), int(raster_window.height)
-    reserved = mask_storage_bytes(width, height)
+    reserved = estimate_mask_disk_bytes(width, height)
     if (
         reserved + limits.result_reservation_bytes > limits.max_stored_bytes
         or shutil.disk_usage(directory).free

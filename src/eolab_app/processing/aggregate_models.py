@@ -340,7 +340,19 @@ class AggregateGrid(BaseModel):
 
 
 class AggregateSpec(BaseModel):
-    """Versioned, source-fenced executable intent derived from an accepted plan."""
+    """The raster, formulas, selected area and grid for a calculation job.
+
+    The Processing planning service builds this object from the user's request
+    and the grid returned by plan_aggregate(). The service saves it with the job;
+    the worker loads it and passes it to calculate_raster_statistics_for_area().
+
+    sources maps the formula alias (such as a) to a catalog raster.
+    calculations contains the named formulas. area describes the map box,
+    uploaded polygons, filtered vector layer or whole-raster selection.
+    grid contains the selected window's dimensions, pixel alignment and planned
+    read sizes. It contains metadata, not raster pixel values.
+    sourceSignature is source metadata retained in the stored job contract.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     operation: Literal["raster.aggregate.v1"] = OPERATION_VERSION

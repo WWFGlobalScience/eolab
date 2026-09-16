@@ -23,7 +23,7 @@ from eolab_app.processing.aggregate_models import (
     AggregateExecutionTiming,
 )
 from eolab_app.processing.raster_aggregate import aggregate_process_target
-from eolab_app.processing.raster_mask import aggregate_storage_bytes
+from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import JobArtifactStore, JobStore, JobWakeup
 from eolab_app.processing.raster_clip import clip_process_target
 from eolab_app.raster.errors import RasterFeatureError
@@ -82,7 +82,7 @@ class ProcessingWorker:
             target, action, limits = clip_process_target, "clip", self.limits
         elif operation == "raster.aggregate.v1":
             spec = AggregateSpec.model_validate(row["spec"])
-            if row["reserved_bytes"] < aggregate_storage_bytes(
+            if row["reserved_bytes"] < estimate_calculation_disk_bytes(
                 spec, self.aggregate_limits
             ):
                 raise ProcessingError(

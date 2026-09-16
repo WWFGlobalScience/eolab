@@ -93,7 +93,9 @@ def test_file_mask_matches_full_grid_and_window_reads(
             np.testing.assert_array_equal(
                 mask.read(1, window=Window(7, 9, 10, 11)), expected[9:20, 7:17]
             )
-            assert Path(mask.name).stat().st_size <= masks.mask_storage_bytes(35, 27)
+            assert Path(mask.name).stat().st_size <= masks.estimate_mask_disk_bytes(
+                35, 27
+            )
         assert not (tmp_path / "polygon-mask.tif").exists()
     assert len(calls) == 1
 
@@ -156,7 +158,7 @@ def test_storage_admission_and_old_job_guard(
     assert (
         prepared.reserved_bytes
         == limits.result_reservation_bytes
-        + masks.mask_storage_bytes(plan.grid.width, plan.grid.height)
+        + masks.estimate_mask_disk_bytes(plan.grid.width, plan.grid.height)
     )
     worker = object.__new__(ProcessingWorker)
     worker.aggregate_limits = limits
