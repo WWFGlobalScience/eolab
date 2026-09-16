@@ -9,8 +9,6 @@ from math import isfinite
 from threading import Event
 from typing import Any
 
-from osgeo import gdal, ogr
-
 from eolab_app.vector.errors import VectorConflictError
 from eolab_app.vector.models import (
     ResolvedVectorSource,
@@ -236,6 +234,10 @@ class OgrVectorFieldReader:
             )
         if feature_limit < 1:
             raise ValueError("feature_limit must be positive")
+        # Keep native OGR loading local to field reads, including in spawned
+        # Processing interpreters that import application modules.
+        from osgeo import gdal, ogr
+
         try:
             with gdal.ExceptionMgr(), ogr.ExceptionMgr():
                 with gdal.OpenEx(
@@ -250,11 +252,11 @@ class OgrVectorFieldReader:
                     if layer is None:
                         raise ValueError("The exact source layer is missing")
                     definition = layer.GetLayerDefn()
-                    field_types: dict[str, int] = {}
+                    field_types: dict[str, str] = {}
                     for index in range(definition.GetFieldCount()):
                         field_definition = definition.GetFieldDefn(index)
                         field_types[field_definition.GetName()] = (
-                            field_definition.GetType()
+                            field_definition.GetTypeName()
                         )
                     if any(field not in field_types for field in fields):
                         raise VectorConflictError(
@@ -306,7 +308,7 @@ class OgrVectorFieldReader:
             ) from error
 
 
-def _property_value(value: Any, field_type: int) -> Any:
+def _property_value(value: Any, field_type: str) -> Any:
     """Normalize OGR batch scalars for the existing property consumer contract.
 
     Args:
@@ -319,9 +321,9 @@ def _property_value(value: Any, field_type: int) -> Any:
     Raises:
         UnicodeDecodeError: If a text column contains invalid UTF-8.
     """
-    if field_type == ogr.OFTString and isinstance(value, bytes):
+    if field_type == "String" and isinstance(value, bytes):
         return value.decode("utf-8")
-    if field_type == ogr.OFTDate and isinstance(value, date):
+    if field_type == "Date" and isinstance(value, date):
         return value.isoformat()
     return value
 

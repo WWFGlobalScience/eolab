@@ -4,9 +4,13 @@ from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from typing import Any
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from types import SimpleNamespace
+import subprocess
+import sys
 
 import fiona
-from osgeo import ogr
 import pytest
 
 from eolab_app.vector import fields as field_module
@@ -130,20 +134,17 @@ def test_native_batches_exclude_geometry_and_unselected_fields(
         batch_source: Real mounted GPKG or Shapefile.
         monkeypatch: Scoped OGR stream instrumentation.
     """
-    original = ogr.Layer.GetArrowStreamAsNumPy
     sizes: list[int] = []
 
-    def observe(layer: ogr.Layer, options: list[str]) -> Any:
+    def observe(stream: Any) -> Any:
         """Instrument the real stream while preserving its lifetime.
 
         Args:
-            layer: Native source layer.
-            options: Production stream options.
+            stream: Real NumPy stream returned by the native layer.
 
         Returns:
             Original context-managed stream with an observed batch read.
         """
-        stream = original(layer, options)
         read = stream.GetNextRecordBatch
 
         def next_batch() -> Any:
@@ -161,7 +162,7 @@ def test_native_batches_exclude_geometry_and_unselected_fields(
         stream.GetNextRecordBatch = next_batch
         return stream
 
-    monkeypatch.setattr(ogr.Layer, "GetArrowStreamAsNumPy", observe)
+    _instrument_stream(monkeypatch, observe)
     result = OgrVectorFieldReader().read_numbers(batch_source, "number", 5000, Event())
     assert result.complete
     assert sizes == [4096, 5]
@@ -299,20 +300,17 @@ def test_native_read_error_releases_stream(
         batch_source: Real mounted GPKG or Shapefile.
         monkeypatch: Scoped native read failure injection.
     """
-    original = ogr.Layer.GetArrowStreamAsNumPy
     streams: list[Any] = []
 
-    def fail_after_first_batch(layer: ogr.Layer, options: list[str]) -> Any:
+    def fail_after_first_batch(stream: Any) -> Any:
         """Wrap a real stream with a failure after its first native read.
 
         Args:
-            layer: Native source layer.
-            options: Production stream options.
+            stream: Real NumPy stream returned by the native layer.
 
         Returns:
             Original stream with an injected read failure.
         """
-        stream = original(layer, options)
         streams.append(stream)
         read = stream.GetNextRecordBatch
         calls = 0
@@ -336,7 +334,7 @@ def test_native_read_error_releases_stream(
         return stream
 
     with monkeypatch.context() as patch:
-        patch.setattr(ogr.Layer, "GetArrowStreamAsNumPy", fail_after_first_batch)
+        _instrument_stream(patch, fail_after_first_batch)
         with pytest.raises(VectorConflictError, match="could not be read safely"):
             OgrVectorFieldReader().read_numbers(batch_source, "number", 5000, Event())
     assert streams[0].stream is None
@@ -344,4 +342,78 @@ def test_native_read_error_releases_stream(
         OgrVectorFieldReader()
         .read_numbers(batch_source, "number", 5000, Event())
         .complete
+    )
+
+
+def _instrument_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    wrap: Callable[[Any], Any],
+) -> None:
+    """Instrument streams at the opened-source boundary across GDAL bindings.
+
+    Args:
+        monkeypatch: Scoped native open replacement.
+        wrap: Observer or failure injector for an actual native NumPy stream.
+
+    Returns:
+        None.
+    """
+    from osgeo import gdal
+
+    original = gdal.OpenEx
+
+    def wrap_layer(layer: Any) -> Any:
+        """Forward layer operations while instrumenting its stream.
+
+        Args:
+            layer: Actual native layer.
+
+        Returns:
+            Delegating layer handle, or None when the native layer is absent.
+        """
+        if layer is None:
+            return None
+        return SimpleNamespace(
+            GetLayerDefn=layer.GetLayerDefn,
+            SetIgnoredFields=layer.SetIgnoredFields,
+            GetArrowStreamAsNumPy=lambda options: wrap(
+                layer.GetArrowStreamAsNumPy(options)
+            ),
+        )
+
+    @contextmanager
+    def open_source(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        """Preserve the real dataset lifetime and both layer-selection paths.
+
+        Args:
+            args: Positional native open arguments.
+            kwargs: Keyword native open arguments.
+
+        Yields:
+            Delegating dataset handle.
+
+        Raises:
+            RuntimeError: If native open or stream access fails.
+        """
+        with original(*args, **kwargs) as dataset:
+            yield SimpleNamespace(
+                GetLayerByName=lambda name: wrap_layer(dataset.GetLayerByName(name)),
+                GetLayer=lambda index: wrap_layer(dataset.GetLayer(index)),
+            )
+
+    monkeypatch.setattr(gdal, "OpenEx", open_source)
+
+
+def test_import_does_not_load_ogr_into_unrelated_processes() -> None:
+    """Keep the new native dependency out of processes that do not read fields."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import eolab_app.vector.fields; "
+            "assert 'osgeo.gdal' not in sys.modules",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
