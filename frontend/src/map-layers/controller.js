@@ -111,6 +111,7 @@ export class MapLayerController {
             onCopyStyle: (key) => this.copyStyle(key),
             onPasteStyle: (key) => void this.pasteStyle(key),
             onVisibility: (key, visible) => this.setVisible(key, visible),
+            onAllVisibility: (visible) => this.setAllVisible(visible),
             onReorder: (key, targetIndex) => this.reorder(key, targetIndex),
             onRemove: (key) => this.removeKey(key),
         });
@@ -395,14 +396,49 @@ export class MapLayerController {
      * @return {void}
      */
     setVisible(key, visible) {
-        const entry = this.stack.setVisible(key, visible);
-        this.leafletLayers.setVisible(key, visible);
-        const record = this.#requireRecord(key);
-        record.adapter.visibilityChanged?.(record, visible);
+        this.#applyVisibility(key, visible);
+        const entry = this.stack.get(key);
         this.view.setStatus(
             `${entry.label} is now ${visible ? "visible" : "hidden"}.`
         );
         this.render({ key, action: "visibility" });
+    }
+
+    /**
+     * Show or hide all currently retained layers, publishing the final state once.
+     * Pending additions and the basemap are outside the retained stack.
+     *
+     * @param {boolean} visible Requested visibility for every retained layer.
+     * @return {void}
+     * @throws {TypeError} If visibility is not boolean.
+     */
+    setAllVisible(visible) {
+        if (typeof visible !== "boolean") {
+            throw new TypeError("Map layer visibility must be boolean.");
+        }
+        const changed = this.stack.entries.filter((entry) => entry.visible !== visible);
+        if (changed.length === 0) return;
+        for (const entry of changed) this.#applyVisibility(entry.key, visible);
+        this.render();
+        this.view.announceStatus(
+            `${changed.length} map layer${changed.length === 1 ? "" : "s"} ` +
+            `${visible ? "shown" : "hidden"}.`
+        );
+    }
+
+    /**
+     * Apply the same state, map attachment and owner callback for either control.
+     *
+     * @param {string} key Retained layer key.
+     * @param {boolean} visible Requested visibility.
+     * @return {void}
+     * @throws {Error} If the layer is not retained or visibility is invalid.
+     */
+    #applyVisibility(key, visible) {
+        this.stack.setVisible(key, visible);
+        this.leafletLayers.setVisible(key, visible);
+        const record = this.#requireRecord(key);
+        record.adapter.visibilityChanged?.(record, visible);
     }
 
     /**

@@ -385,6 +385,17 @@ h5 {
   display: none;
 }
 
+.map-layer-visibility-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.map-layer-visibility-actions .secondary-button {
+  padding: 4px 8px;
+}
+
 .map-layers-body {
   max-height: none;
   flex: 1;
