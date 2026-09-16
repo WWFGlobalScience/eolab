@@ -1,6 +1,6 @@
 """Bounded raster sampling and distribution algorithms."""
 
-from eolab_app.bounded_vector import ProjectedCatalogSelection, pixels_inside_area
+from eolab_app.bounded_vector import PolygonRasterizer, pixels_inside_area
 import math
 from pathlib import Path
 
@@ -233,7 +233,7 @@ def selected_raster_area_for_catalog_selection(
         ValueError: If projection fails or exceeds the statistics budget.
         NoRasterBoundsOverlapError: If the selection misses the source grid.
     """
-    reader = ProjectedCatalogSelection(
+    reader = PolygonRasterizer(
         dataset,
         sampling_area.resolved,
         RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,

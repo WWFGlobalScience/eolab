@@ -299,8 +299,13 @@ def _geometry_memory_bytes(value: object) -> int:
     return total
 
 
-class ProjectedCatalogSelection:
-    """Project selected polygons for streaming or caller-bounded reusable masks."""
+class PolygonRasterizer:
+    """Project filtered vector polygons and rasterize them onto raster tile grids.
+
+    Polygons can be retained within a caller-provided memory budget or read
+    and projected for each tile. Close the rasterizer to release retained
+    polygons and prevent further use.
+    """
 
     def __init__(
         self,
@@ -433,7 +438,7 @@ class ProjectedCatalogSelection:
             raise ValueError("A feature exceeds the transformed-coordinate buffer")
         return project_wgs84_polygons(self.dataset, (geometry,), count)
 
-    def rasterize_selected_polygons(
+    def rasterize(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
@@ -567,9 +572,7 @@ def pixels_inside_area(
         ValueError: If source geometry or bounded reading is invalid.
     """
     if not isinstance(selected_polygons, tuple):
-        return selected_polygons.rasterize_selected_polygons(
-            out_shape, transform, all_touched, timings
-        )
+        return selected_polygons.rasterize(out_shape, transform, all_touched, timings)
     rasterization_started = time.perf_counter() if timings is not None else 0.0
     inside = geometry_mask(
         selected_polygons,

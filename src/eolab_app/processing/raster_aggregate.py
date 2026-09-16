@@ -1,6 +1,6 @@
 """Plan native single-raster calculations and stream scalar results to artifacts."""
 
-from eolab_app.bounded_vector import pixels_inside_area, ProjectedCatalogSelection
+from eolab_app.bounded_vector import pixels_inside_area, PolygonRasterizer
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -169,7 +169,7 @@ def prepare_raster_area_tools(
     Returns:
         Tools with one final pixel window and the separate setup timings.
         No raster pixel values are read during setup. The caller must close any
-        returned ProjectedCatalogSelection when the calculation ends.
+        returned PolygonRasterizer when the calculation ends.
 
     Raises:
         ProcessingError: If the area cannot be read or projected, does not
@@ -206,7 +206,7 @@ def prepare_raster_area_tools(
         else:
             raster_window = selection_window
     except BaseException:
-        if isinstance(selected_polygons, ProjectedCatalogSelection):
+        if isinstance(selected_polygons, PolygonRasterizer):
             selected_polygons.close()
         raise
     area_ready = time.perf_counter()
@@ -218,7 +218,7 @@ def prepare_raster_area_tools(
         pixel_area_setup_seconds=area_ready - selection_ready,
         retained_polygon_bytes=(
             selected_polygons.retained_bytes
-            if isinstance(selected_polygons, ProjectedCatalogSelection)
+            if isinstance(selected_polygons, PolygonRasterizer)
             else 0
         ),
     )
@@ -490,9 +490,7 @@ def calculate_raster_statistics_for_area(
             raster_area_tools = prepare_raster_area_tools(
                 dataset, calculation_plan, limits
             )
-            if isinstance(
-                raster_area_tools.selected_polygons, ProjectedCatalogSelection
-            ):
+            if isinstance(raster_area_tools.selected_polygons, PolygonRasterizer):
                 resources.callback(raster_area_tools.selected_polygons.close)
             pixel_area_calculator = raster_area_tools.pixel_area_calculator
             last_progress = 0.0

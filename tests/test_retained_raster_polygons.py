@@ -60,12 +60,12 @@ def test_calculation_reuses_polygons_and_releases_them(
     limits = RasterAggregateLimits()
     plan = make_spec(path, ["sum(a)"], area, target_chunk_pixels=chunk_pixels)
     plan = plan.model_copy(update={"area": area})
-    original_project = vector.ProjectedCatalogSelection.project
-    prepared: list[vector.ProjectedCatalogSelection] = []
+    original_project = vector.PolygonRasterizer.project
+    prepared: list[vector.PolygonRasterizer] = []
     calls = 0
 
     def project(
-        reader: vector.ProjectedCatalogSelection, geometry: dict[str, Any]
+        reader: vector.PolygonRasterizer, geometry: dict[str, Any]
     ) -> tuple[dict[str, object], ...]:
         """Count projections and retain the reader only to inspect its cleanup.
 
@@ -94,7 +94,7 @@ def test_calculation_reuses_polygons_and_releases_them(
         """
         raise OSError("Injected raster read failure")
 
-    monkeypatch.setattr(vector.ProjectedCatalogSelection, "project", project)
+    monkeypatch.setattr(vector.PolygonRasterizer, "project", project)
     if fail_read:
         monkeypatch.setattr(kernel, "read_native_raster_block", forbidden_read)
         monkeypatch.setattr(kernel, "read_native_raster_window", forbidden_read)
@@ -127,7 +127,7 @@ def test_calculation_reuses_polygons_and_releases_them(
     assert len(prepared) == 1
     assert prepared[0].retained_bytes == 0
     with pytest.raises(ValueError, match="released"):
-        prepared[0].rasterize_selected_polygons((1, 1), from_origin(0, 8, 1, 1), False)
+        prepared[0].rasterize((1, 1), from_origin(0, 8, 1, 1), False)
 
 
 @pytest.mark.parametrize("failure", ["budget", "cancel", "projection"])
@@ -151,13 +151,13 @@ def test_preparation_limits_and_cancellation_release_prior_features(
         np.ones((8, 8), dtype="uint8"),
         transform=from_origin(0, 8, 1, 1),
     )
-    original = vector.ProjectedCatalogSelection.project
-    readers: list[vector.ProjectedCatalogSelection] = []
+    original = vector.PolygonRasterizer.project
+    readers: list[vector.PolygonRasterizer] = []
     calls = 0
     cancelled = False
 
     def project(
-        reader: vector.ProjectedCatalogSelection, geometry: dict[str, Any]
+        reader: vector.PolygonRasterizer, geometry: dict[str, Any]
     ) -> tuple[dict[str, object], ...]:
         """Inject a second-feature failure after retaining the first.
 
@@ -181,14 +181,14 @@ def test_preparation_limits_and_cancellation_release_prior_features(
             cancelled = True
         return original(reader, geometry)
 
-    monkeypatch.setattr(vector.ProjectedCatalogSelection, "project", project)
+    monkeypatch.setattr(vector.PolygonRasterizer, "project", project)
     expected = {
         "budget": vector.ProjectedGeometryMemoryError,
         "cancel": RasterReadCancelled,
         "projection": ValueError,
     }[failure]
     with rasterio.open(path) as dataset, pytest.raises(expected):
-        vector.ProjectedCatalogSelection(
+        vector.PolygonRasterizer(
             dataset,
             selected,
             20,
@@ -217,7 +217,7 @@ def test_retained_masks_do_not_reopen_sources_and_remain_cancellable(
     )
     cancelled = False
     with rasterio.open(path) as dataset:
-        reader = vector.ProjectedCatalogSelection(
+        reader = vector.PolygonRasterizer(
             dataset, selected, 100, lambda: cancelled, retain_projected_bytes=100000
         )
 
@@ -237,13 +237,11 @@ def test_retained_masks_do_not_reopen_sources_and_remain_cancellable(
         monkeypatch.setattr(vector, "native_bbox_for_grid", forbidden)
         timings = RasterMaskTimings()
         for _ in range(3):
-            mask = reader.rasterize_selected_polygons(
-                (8, 8), dataset.transform, False, timings
-            )
+            mask = reader.rasterize((8, 8), dataset.transform, False, timings)
             assert mask.sum() == 9
         cancelled = True
         with pytest.raises(RasterReadCancelled):
-            reader.rasterize_selected_polygons((8, 8), dataset.transform, False)
+            reader.rasterize((8, 8), dataset.transform, False)
         reader.close()
         assert reader.retained_bytes == 0
         assert timings.feature_reading_seconds == timings.projection_seconds == 0

@@ -93,7 +93,7 @@ class RasterMaskTimings:
 class RasterAreaMask(Protocol):
     """A bounded polygon-membership reader independent of its invoking feature."""
 
-    def rasterize_selected_polygons(
+    def rasterize(
         self,
         out_shape: tuple[int, int],
         affine: Affine,

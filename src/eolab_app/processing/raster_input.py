@@ -1,7 +1,7 @@
 """Shared source checks and native-area planning for clip and aggregate kernels."""
 
 from eolab_app.bounded_vector import (
-    ProjectedCatalogSelection,
+    PolygonRasterizer,
     ProjectedGeometryMemoryError,
 )
 from eolab_app.catalog_selection import ResolvedCatalogSelection
@@ -79,7 +79,7 @@ def select_area(
                 raise ValueError(
                     "Catalog source must be authorized before native execution"
                 )
-            reader = ProjectedCatalogSelection(
+            reader = PolygonRasterizer(
                 dataset,
                 resolved,
                 max_coordinates,
