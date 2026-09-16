@@ -127,7 +127,7 @@ def test_calculation_reuses_polygons_and_releases_them(
     assert len(prepared) == 1
     assert prepared[0].retained_bytes == 0
     with pytest.raises(ValueError, match="released"):
-        prepared[0].read_polygon_mask((1, 1), from_origin(0, 8, 1, 1), False)
+        prepared[0].rasterize_selected_polygons((1, 1), from_origin(0, 8, 1, 1), False)
 
 
 @pytest.mark.parametrize("failure", ["budget", "cancel", "projection"])
@@ -237,11 +237,13 @@ def test_retained_masks_do_not_reopen_sources_and_remain_cancellable(
         monkeypatch.setattr(vector, "native_bbox_for_grid", forbidden)
         timings = RasterMaskTimings()
         for _ in range(3):
-            mask = reader.read_polygon_mask((8, 8), dataset.transform, False, timings)
+            mask = reader.rasterize_selected_polygons(
+                (8, 8), dataset.transform, False, timings
+            )
             assert mask.sum() == 9
         cancelled = True
         with pytest.raises(RasterReadCancelled):
-            reader.read_polygon_mask((8, 8), dataset.transform, False)
+            reader.rasterize_selected_polygons((8, 8), dataset.transform, False)
         reader.close()
         assert reader.retained_bytes == 0
         assert timings.feature_reading_seconds == timings.projection_seconds == 0

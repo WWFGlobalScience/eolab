@@ -433,19 +433,23 @@ class ProjectedCatalogSelection:
             raise ValueError("A feature exceeds the transformed-coordinate buffer")
         return project_wgs84_polygons(self.dataset, (geometry,), count)
 
-    def read_polygon_mask(
+    def rasterize_selected_polygons(
         self,
         out_shape: tuple[int, int],
         affine: Affine,
         all_touched: bool,
         timings: RasterMaskTimings | None = None,
     ) -> NDArray[np.bool_]:
-        """Rasterize retained polygons, or read/project them in streaming mode.
+        """Create a Boolean mask of selected polygons on a raster tile's grid.
+
+        Reuse retained projected polygons when available; otherwise read and
+        project the selected features for this tile.
 
         Args:
-            out_shape: Already admitted raster output dimensions.
-            affine: Existing numeric grid's affine transform.
-            all_touched: Caller-owned pixel inclusion policy.
+            out_shape: Number of rows and columns in the output mask.
+            affine: Mapping from tile pixel coordinates to the raster CRS.
+            all_touched: Include every pixel touched by a polygon when True;
+                otherwise use Rasterio's default pixel-center inclusion rule.
             timings: Optional accumulator; excludes mask allocation and union.
 
         Returns:
@@ -563,7 +567,7 @@ def pixels_inside_area(
         ValueError: If source geometry or bounded reading is invalid.
     """
     if not isinstance(selected_polygons, tuple):
-        return selected_polygons.read_polygon_mask(
+        return selected_polygons.rasterize_selected_polygons(
             out_shape, transform, all_touched, timings
         )
     rasterization_started = time.perf_counter() if timings is not None else 0.0
