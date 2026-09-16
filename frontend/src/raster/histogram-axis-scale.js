@@ -11,14 +11,16 @@ export function defaultHistogramAxisOptions() {
 }
 
 /**
- * Resolve a sampled-value percentile by interpolating uniformly inside its bin.
- * Endpoints use the outer edges of occupied bins; empty bins carry no weight.
- * @param {number[]} edges Ordered bin edges.
- * @param {number[]} counts Nonnegative counts.
- * @param {number} percentile Percentile in [0, 100].
- * @return {number} Approximate sampled value.
+ * Estimate the raster value at a requested percentile of sampled pixels.
+ * Use bin counts to find the containing bin, then estimate the value assuming
+ * pixels are evenly distributed within that bin. P0 and P100 use the outer
+ * edges of the first and last occupied bins; empty bins carry no weight.
+ * @param {number[]} edges Ascending raster-value bin boundaries.
+ * @param {number[]} counts Sampled pixel count for each bin.
+ * @param {number} percentile Requested percentile from 0 to 100.
+ * @return {number} Estimated percentile in the raster's value units.
  */
-function valueQuantile(edges, counts, percentile) {
+function estimateRasterValuePercentile(edges, counts, percentile) {
     const target = counts.reduce((sum, count) => sum + count, 0) * percentile / 100;
     let accumulated = 0;
     for (let i = 0; i < counts.length; i++) {
@@ -31,15 +33,20 @@ function valueQuantile(edges, counts, percentile) {
 }
 
 /**
- * Resolve a quantile using linear interpolation at (n - 1) * p.
- * @param {number[]} sorted Nonempty ascending observations.
- * @param {number} percentile Percentile in [0, 100].
- * @return {number} Interpolated observation.
+ * Calculate a percentile of non-empty histogram bar heights.
+ * P0 is the smallest height and P100 is the largest. Between them, use the
+ * zero-based position (sortedHeights.length - 1) * percentile / 100 and
+ * interpolate between the two neighboring heights when the position is fractional.
+ * For example, heights [2, 6] have P25 = 3 and P50 = 4.
+ * @param {number[]} sortedHeights Nonempty ascending bar heights, each expressed
+ * as a percentage of sampled pixels. Zero-height bins have already been removed.
+ * @param {number} percentile Requested percentile from 0 to 100.
+ * @return {number} Bar height in percentage-of-sampled-pixels units.
  */
-function heightQuantile(sorted, percentile) {
-    const position = (sorted.length - 1) * percentile / 100;
+function calculateBarHeightPercentile(sortedHeights, percentile) {
+    const position = (sortedHeights.length - 1) * percentile / 100;
     const lower = Math.floor(position), upper = Math.ceil(position);
-    return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+    return sortedHeights[lower] + (sortedHeights[upper] - sortedHeights[lower]) * (position - lower);
 }
 
 /**
@@ -93,8 +100,8 @@ export function resolveHistogramAxis(distribution, options = defaultHistogramAxi
         }
         if (options.bounds === "percentiles") {
             if (lower < 0 || upper > 100) throw new RangeError("Percentiles must be between 0 and 100.");
-            minimum = frequency ? heightQuantile(positiveHeights, lower) : valueQuantile(edges, counts, lower);
-            maximum = frequency ? heightQuantile(positiveHeights, upper) : valueQuantile(edges, counts, upper);
+            minimum = frequency ? calculateBarHeightPercentile(positiveHeights, lower) : estimateRasterValuePercentile(edges, counts, lower);
+            maximum = frequency ? calculateBarHeightPercentile(positiveHeights, upper) : estimateRasterValuePercentile(edges, counts, upper);
         } else {
             minimum = lower;
             maximum = upper;
