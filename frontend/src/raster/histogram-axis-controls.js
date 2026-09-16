@@ -52,7 +52,7 @@ export class HistogramAxisControls {
             clearTimeout(this.timer);
             for (const definition of this.definitions) {
                 this.state.options[definition.key] = defaultHistogramAxisOptions();
-                this.#writeRow(definition.key);
+                this.#populateAxisInputs(definition.key);
             }
             this.axes = this.#resolve();
             this.onChange(this.axes);
@@ -118,15 +118,16 @@ export class HistogramAxisControls {
         fieldset.append(status);
         this.rows.set(definition.key, { fields, status });
         this.root.append(fieldset);
-        this.#writeRow(definition.key);
+        this.#populateAxisInputs(definition.key);
     }
 
     /**
-     * Restore one row from accepted settings.
-     * @param {string} key Axis key.
+     * Fill one axis's dropdowns and number inputs from its saved settings.
+     * Show Min/Max inputs only when the saved range mode needs them.
+     * @param {string} key Axis whose inputs should be populated.
      * @return {void}
      */
-    #writeRow(key) {
+    #populateAxisInputs(key) {
         const { fields } = this.rows.get(key);
         for (const name of Object.keys(fields)) fields[name].input.value = this.state.options[key][name];
         this.#rangeFields(key);
