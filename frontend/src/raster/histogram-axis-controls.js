@@ -54,11 +54,11 @@ export class HistogramAxisControls {
                 this.state.options[definition.key] = defaultHistogramAxisOptions();
                 this.#populateAxisInputs(definition.key);
             }
-            this.axes = this.#resolve();
+            this.axes = this.#buildAxesFromSettings();
             this.onChange(this.axes);
         });
         this.root.append(reset);
-        this.axes = this.#resolve();
+        this.axes = this.#buildAxesFromSettings();
     }
 
     /**
@@ -148,11 +148,15 @@ export class HistogramAxisControls {
     }
 
     /**
-     * Resolve stored settings for a new sample. If no valid domain remains,
-     * use Auto/Linear for that axis and explicitly report the temporary fallback.
-     * @return {Object} Resolved axes by key.
+     * Build numeric axis limits and coordinate conversions from saved settings
+     * and the current histogram. Percentile limits are recalculated for this sample.
+     * If a saved range or log scale cannot be used, build that axis with Auto/Linear
+     * and show a warning without overwriting the saved settings.
+     * Update each axis's status text and the "Axes & scale" label.
+     * @return {Object} Axis limits and coordinate conversions, indexed by axis key.
+     * @throws {RangeError} If the histogram cannot form even an Auto/Linear axis.
      */
-    #resolve() {
+    #buildAxesFromSettings() {
         let fallback = false;
         const axes = Object.fromEntries(this.definitions.map(definition => {
             const { status } = this.rows.get(definition.key);
