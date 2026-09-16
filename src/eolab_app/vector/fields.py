@@ -1,15 +1,13 @@
-"""Bounded geometry-free Fiona field reads for vector styling."""
+"""Bounded geometry-free OGR batch field reads for vector styling."""
 
 from collections.abc import Callable, Mapping
 from time import monotonic
 from eolab_app.vector.filters import VectorFilter, VectorFilterCount, matches_filter
 from dataclasses import dataclass
+from datetime import date
 from math import isfinite
 from threading import Event
 from typing import Any
-
-import fiona
-from fiona.errors import FionaError
 
 from eolab_app.vector.errors import VectorConflictError
 from eolab_app.vector.models import (
@@ -22,6 +20,7 @@ from eolab_app.vector.models import (
 
 
 _UNSUPPORTED = object()
+_FIELD_BATCH_SIZE = 4096
 
 
 @dataclass(frozen=True)
@@ -32,7 +31,7 @@ class _BoundedFieldValues:
     complete: bool
 
 
-class FionaVectorFieldReader:
+class OgrVectorFieldReader:
     """Read bounded scalar properties from exact mounted vector layers."""
 
     def read_categories(
@@ -197,66 +196,143 @@ class FionaVectorFieldReader:
         return VectorFilterCount(matched=matched, total=total, complete=True) if complete else VectorFilterCount()
 
     def _visit_properties(
-        self, source: ResolvedVectorSource, fields: tuple[str, ...],
-        feature_limit: int, cancel_event: Event,
+        self,
+        source: ResolvedVectorSource,
+        fields: tuple[str, ...],
+        feature_limit: int,
+        cancel_event: Event,
         visit: Callable[[Mapping[str, Any]], None],
     ) -> bool:
-        """Visit bounded properties through the exact-source Fiona boundary.
+        """Visit scalar properties in bounded, geometry-free OGR batches.
+
+        The callback sees at most feature_limit rows in native source order.
+        One additional row determines exhaustion. Native reads may prefetch the
+        rest of that row's batch, bounded by 4,096 rows; only one batch is held.
+        Cancellation is checked before each native read and each callback.
 
         Args:
-            source: Catalog-derived mounted file and native layer.
+            source: Catalog-derived mounted file and exact native layer.
             fields: Unique authoritative non-geometry fields.
             feature_limit: Maximum visited rows.
             cancel_event: Cooperative cancellation signal.
             visit: Owner-provided scalar accumulator; must not retain geometry.
 
         Returns:
-            Whether the iterator was exhausted without cancellation.
+            Whether the source was exhausted without cancellation.
 
         Raises:
             ValueError: If the feature limit is not positive.
-            VectorConflictError: If the exact source or fields cannot be read.
+            VectorConflictError: If the source, layer, or fields cannot be read.
         """
-        if source.source_kind != "mounted" or source.source_path is None or source.source_format not in {"shapefile", "geopackage"}:
-            raise VectorConflictError("Field summary unavailable: unsupported mounted layer.")
+        if (
+            source.source_kind != "mounted"
+            or source.source_path is None
+            or source.source_format not in {"shapefile", "geopackage"}
+        ):
+            raise VectorConflictError(
+                "Field summary unavailable: unsupported mounted layer."
+            )
         if feature_limit < 1:
             raise ValueError("feature_limit must be positive")
-        options: dict[str, Any] = {"include_fields": list(fields), "ignore_geometry": True}
-        if source.layer_name is not None:
-            options["layer"] = source.layer_name
+        # Keep native OGR loading local to field reads, including in spawned
+        # Processing interpreters that import application modules.
+        from osgeo import gdal, ogr
+
         try:
-            with fiona.open(source.source_path, **options) as collection:
-                if any(field not in collection.schema.get("properties", {}) for field in fields):
-                    raise VectorConflictError("Field summary unavailable: the selected field is not present in the current source layer.")
-                iterator = iter(collection)
-                for _ in range(feature_limit):
-                    if cancel_event.is_set():
-                        return False
-                    try:
-                        feature = next(iterator)
-                    except StopIteration:
-                        return True
-                    properties = feature.get("properties")
-                    visit(properties if isinstance(properties, Mapping) else {})
-                if cancel_event.is_set():
+            with gdal.ExceptionMgr(), ogr.ExceptionMgr():
+                with gdal.OpenEx(
+                    str(source.source_path),
+                    gdal.OF_VECTOR | gdal.OF_READONLY,
+                ) as dataset:
+                    layer = (
+                        dataset.GetLayerByName(source.layer_name)
+                        if source.layer_name is not None
+                        else dataset.GetLayer(0)
+                    )
+                    if layer is None:
+                        raise ValueError("The exact source layer is missing")
+                    definition = layer.GetLayerDefn()
+                    field_types: dict[str, str] = {}
+                    for index in range(definition.GetFieldCount()):
+                        field_definition = definition.GetFieldDefn(index)
+                        field_types[field_definition.GetName()] = (
+                            field_definition.GetTypeName()
+                        )
+                    if any(field not in field_types for field in fields):
+                        raise VectorConflictError(
+                            "Field summary unavailable: the selected field is "
+                            "not present in the current source layer."
+                        )
+                    layer.SetIgnoredFields(
+                        [
+                            "OGR_GEOMETRY",
+                            *(field for field in field_types if field not in fields),
+                        ]
+                    )
+                    options = [
+                        f"MAX_FEATURES_IN_BATCH={min(_FIELD_BATCH_SIZE, feature_limit + 1)}",
+                        # With no selected fields the FID supplies the row count.
+                        f"INCLUDE_FID={'NO' if fields else 'YES'}",
+                    ]
+                    visited = 0
+                    with layer.GetArrowStreamAsNumPy(options) as stream:
+                        while not cancel_event.is_set():
+                            batch = stream.GetNextRecordBatch()
+                            if batch is None:
+                                return not cancel_event.is_set()
+                            row_count = len(next(iter(batch.values())))
+                            columns = {field: batch[field].tolist() for field in fields}
+                            for index in range(row_count):
+                                if cancel_event.is_set():
+                                    return False
+                                if visited == feature_limit:
+                                    return False
+                                visit(
+                                    {
+                                        field: _property_value(
+                                            columns[field][index], field_types[field]
+                                        )
+                                        for field in fields
+                                    }
+                                )
+                                visited += 1
+                            # Drop buffers before allocating the next batch.
+                            del batch, columns
                     return False
-                try:
-                    next(iterator)
-                except StopIteration:
-                    return True
-                return False
         except VectorConflictError:
             raise
-        except (FionaError, OSError, ValueError) as error:
-            raise VectorConflictError("Field summary unavailable: the current vector source could not be read safely.") from error
+        except (RuntimeError, OSError, ValueError) as error:
+            raise VectorConflictError(
+                "Field summary unavailable: the current vector source "
+                "could not be read safely."
+            ) from error
 
+
+def _property_value(value: Any, field_type: str) -> Any:
+    """Normalize OGR batch scalars for the existing property consumer contract.
+
+    Args:
+        value: Python scalar from a NumPy column, with masked values as None.
+        field_type: OGR schema type, distinguishing text from binary values.
+
+    Returns:
+        Native Python scalars, UTF-8 text, or an ISO date string.
+
+    Raises:
+        UnicodeDecodeError: If a text column contains invalid UTF-8.
+    """
+    if field_type == "String" and isinstance(value, bytes):
+        return value.decode("utf-8")
+    if field_type == "Date" and isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 def _bounded_category_value(value: Any) -> VectorCategoryScalar | object:
     """Return one safe strict JSON scalar or the unsupported sentinel.
 
     Args:
-        value: Fiona property value from the selected source field.
+        value: Normalized property value from the selected source field.
 
     Returns:
         A bounded bool, int, float, or string; otherwise ``_UNSUPPORTED``.

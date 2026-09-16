@@ -57,11 +57,12 @@ def build_image(application_image: str | None) -> str:
     """
     if application_image and any(c.isspace() for c in application_image):
         raise ValueError("Application image must be a single Docker image reference")
-    base = application_image or "python:3.12-slim-bookworm"
+    base = application_image or "python:3.12-slim-trixie"
     recipe = f"FROM {base}\nUSER root\nWORKDIR /suite\n"
     if not application_image:
         recipe += (
-            "RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 "
+            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            "libexpat1 g++ libgdal-dev=3.10.3+dfsg-1 "
             "&& rm -rf /var/lib/apt/lists/*\n"
             "COPY pyproject.toml README.md LICENSE ./\nCOPY src/ ./src/\n"
             "RUN python -m pip install --no-cache-dir .\n"

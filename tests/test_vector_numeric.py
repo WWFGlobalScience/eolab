@@ -10,7 +10,7 @@ import pytest
 from eolab_app.catalog.geopackage import build_stac_items
 from eolab_app.vector.assessment import VectorAssessmentFinalizer
 from eolab_app.vector.errors import VectorConflictError
-from eolab_app.vector.fields import FionaVectorFieldReader
+from eolab_app.vector.fields import OgrVectorFieldReader
 from eolab_app.vector.models import CatalogVectorNumericClassificationRequest
 from eolab_app.vector.sources import MountedVectorResolver
 from tests.test_vector_categories import assessed_category_item, category_service
@@ -200,7 +200,7 @@ def test_numeric_reader_is_bounded_and_rejects_non_numeric_fields(
     """
     item, _ = assessed_category_item(tmp_path)
     source = MountedVectorResolver(tmp_path).resolve(item)
-    partial = FionaVectorFieldReader().read_numbers(
+    partial = OgrVectorFieldReader().read_numbers(
         source,
         "score",
         4,

@@ -249,6 +249,21 @@ The application image targets Linux amd64 and Python 3.12. Pinned runtime wheels
 and their hashes are in `deployment/application-runtime-requirements.txt`; build
 tools are in `deployment/application-build-requirements.txt`.
 
+The OGR Python bindings are the explicit source-build exception:
+`deployment/application-gdal-requirements.txt` pins the GDAL 3.10.3 source archive
+and SHA-256. A separate Docker stage builds it with the pinned Python/NumPy build
+inputs and Debian `libgdal-dev=3.10.3+dfsg-1`; runtime uses the matching
+`libgdal36` version. Compilers and development headers stay in the builder.
+The build inventory records OGR's loaded GDAL version and the builder's compiler
+and Debian package inventory. No PyArrow dependency is needed.
+
+For local development, install GDAL 3.10.x with NumPy support using your native
+package manager (for example, conda-forge), then install `.[dev]`. The batch
+reader uses OGR's NumPy stream for selected attributes only; it excludes geometry,
+holds at most one 4,096-row batch, and preserves the existing default styling.
+The visited-row limit remains unchanged; the native stream may prefetch the
+remainder of the final batch when checking whether more rows exist.
+
 For a deployment report, retrieve the installed Python/native versions and build
 inputs without starting the app (replace `IMAGE` with the image being inspected):
 

@@ -16,7 +16,7 @@ from eolab_app.diagnostics.tracker import GetMapRequestTracker
 from eolab_app.routes.wms_proxy import create_wms_proxy_router
 from eolab_app.routes.vectors import create_vector_feature
 from eolab_app.vector.errors import VectorConflictError
-from eolab_app.vector.fields import FionaVectorFieldReader
+from eolab_app.vector.fields import OgrVectorFieldReader
 from eolab_app.vector.filters import (
     OGC, SLD, CatalogVectorFilterRequest, VectorFilter, VectorFilterCount,
     filter_ecql, filter_vector_sld, matches_filter, validate_filter,
@@ -60,7 +60,7 @@ def context(tmp_path, reader=None):
     registry = PublishedVectorRegistry()
     service = VectorPublicationService(
         StaticCatalog(item), MountedVectorResolver(tmp_path), RecordingPublisher(),
-        registry, field_reader=reader or FionaVectorFieldReader(),
+        registry, field_reader=reader or OgrVectorFieldReader(),
     )
     publication = asyncio.run(service.publish(CatalogVectorRequest(
         collectionId=item["collection"], itemId=item["id"],
@@ -138,7 +138,7 @@ def test_exact_counts_and_partial_counts_share_bounded_field_reader(tmp_path):
     """
     item, _ = assessed_category_item(tmp_path)
     source = MountedVectorResolver(tmp_path).resolve(item)
-    reader = FionaVectorFieldReader()
+    reader = OgrVectorFieldReader()
     candidate = predicate(("category", "eq", "A"), ("score", "ge", 1))
     exact = reader.count_filter(source, candidate, 8, Event())
     assert exact == VectorFilterCount(matched=2, total=8, complete=True)
