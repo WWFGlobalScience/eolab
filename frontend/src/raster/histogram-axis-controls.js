@@ -3,8 +3,9 @@ import { defaultHistogramAxisOptions, resolveHistogramAxis } from "./histogram-a
 import { formatRasterPixelValue } from "./value-format.js";
 
 /**
- * Own one expandable axis editor. Draft input never replaces a valid plot.
- * State belongs to its chart owner and can survive replacement of the DOM.
+ * Display controls for choosing histogram axis limits and linear or log scales.
+ * Validate entered settings and notify the chart to redraw when they are valid.
+ * The caller retains settings so they can be reapplied when the sample changes.
  */
 export class HistogramAxisControls {
     /**
@@ -61,7 +62,9 @@ export class HistogramAxisControls {
     }
 
     /**
-     * Build one labeled axis row using native keyboard-accessible form controls.
+     * Add the Scale and Range dropdowns, Min/Max number inputs, and status text
+     * for one axis. Standard HTML select and input elements provide keyboard
+     * navigation and editing without custom key handlers.
      * @param {Object} definition Axis key, label and distribution.
      * @return {void}
      */
