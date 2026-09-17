@@ -66,3 +66,31 @@ native read may finish its current block before stopping. Capacity conflicts
 retry briefly; a persistent error offers **Retry**. Cataloged rasters are immutable;
 analysis does not poll file metadata for changes. Failure to draw the optional vector outline does
 not invalidate its analysis area.
+
+### Reusing raster summary results
+
+Completed raster-calculator values are cached in PostgreSQL for up to 24 hours,
+shared by viewers connected to the same EOLab database. The UI identifies these
+as **Reused cached result**. A reused value gets its own job and CSV download
+with the current statistic title and formula; it does not inherit another
+session's download permissions or execution timings.
+
+The match includes the immutable catalog raster, source metadata, exact area
+or vector filter, parsed formula, and calculation grid. Titles and formula
+whitespace do not affect matching. Different filters with the same bounding
+box remain different areas. Algebraically equivalent formulas and reordered
+filter rules are not automatically considered identical.
+
+Source authorization, planning, queue admission and cancellation still apply.
+A hit skips the numerical execution, including raster reads and polygon-mask
+creation. When a request groups several formulas, all must be cached; otherwise
+the normal combined calculation runs. Separate deployments with separate
+databases do not share values.
+
+The Processing limits `calculation_cache_capacity` (default 1,000) and
+`calculation_cache_ttl_seconds` (default 86,400) configure this cache in Python,
+like the other Processing limits. A zero capacity disables reads and writes.
+Payloads are limited to 32 KiB each; expired entries and oldest entries beyond
+capacity are removed when results are added. Deleting an owned job removes its
+download, not the independently cached numerical values. Cache entries contain
+no user titles, raster pixels, polygon geometry, source paths or download links.

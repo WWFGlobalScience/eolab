@@ -176,6 +176,7 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
                 **(
                     {
                         "rows": row["artifact"]["rows"],
+                        "cacheHit": row["artifact"].get("cache_hit", False),
                         "performance": row["artifact"].get("performance"),
                         "executionTiming": row["artifact"].get("execution_timing"),
                         "queuedToReadySeconds": max(

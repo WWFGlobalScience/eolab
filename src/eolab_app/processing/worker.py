@@ -15,14 +15,22 @@ from eolab_app.execution.bounded_process import (
     ProcessDeadlineError,
 )
 from eolab_app.execution.reusable_process import ReusableProcess, run_process
-from eolab_app.processing.models import ProcessingError
+from eolab_app.processing.models import Artifact, ProcessingError
 from eolab_app.processing.clip_models import ClipSpec, RasterClipLimits
 from eolab_app.processing.aggregate_models import (
     AggregateSpec,
     RasterAggregateLimits,
     AggregateExecutionTiming,
 )
-from eolab_app.processing.raster_aggregate import aggregate_process_target
+from eolab_app.processing.raster_aggregate import (
+    aggregate_process_target,
+    write_statistics_result,
+)
+from eolab_app.processing.calculation_cache import (
+    calculation_result_cache_keys,
+    restore_cached_calculation_rows,
+    prepare_calculation_values_for_cache,
+)
 from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import JobArtifactStore, JobStore, JobWakeup
 from eolab_app.processing.raster_clip import clip_process_target
@@ -62,14 +70,14 @@ class ProcessingWorker:
         self.native = native
         self.aggregate_limits = RasterAggregateLimits.with_lifecycle(limits)
 
-    async def _execute(self, row: dict[str, Any]) -> Any:
-        """Authorize, run a native child, and publish only a validated result.
+    async def _execute(self, row: dict[str, Any]) -> Artifact:
+        """Authorize the inputs, reuse or calculate values, and publish result files.
 
         Args:
             row: Job claimed with a unique execution fencing token.
 
         Returns:
-            Validated artifact metadata after an atomic filesystem rename.
+            Result-file metadata after publication, marked when values were cached.
 
         Raises:
             ProcessingError: If the source, resources, or native operation fail.
@@ -129,6 +137,22 @@ class ProcessingWorker:
             row["reserved_bytes"],
             self.limits,
         )
+        if operation == "raster.aggregate.v1":
+            cached = await asyncio.to_thread(
+                self.jobs.get_cached_calculation_results,
+                calculation_result_cache_keys(spec),
+            )
+            cached_rows = restore_cached_calculation_rows(spec, cached)
+            if cached_rows is not None:
+                # These tiny writes stay synchronous so cancellation cannot race
+                # a background writer against attempt-directory cleanup.
+                value = write_statistics_result(
+                    spec, cached_rows, directory, cache_hit=True
+                )
+                if resolved_area is not None:
+                    await self.areas.resolve_for_sampling(resolved_area.selection)
+                self.artifacts.publish(row["attempt_id"], row["reserved_bytes"])
+                return value
         prepared = time.perf_counter()
         outcome = await run_process(
             target,
@@ -201,8 +225,20 @@ class ProcessingWorker:
                         return True
                     await asyncio.wait((task,), timeout=2)
                 artifact = task.result()
+                reusable_results = None
+                if (
+                    row["spec"]["operation"] == "raster.aggregate.v1"
+                    and not artifact.cache_hit
+                ):
+                    reusable_results = prepare_calculation_values_for_cache(
+                        AggregateSpec.model_validate(row["spec"]), artifact.rows
+                    )
                 finished = await asyncio.to_thread(
-                    self.jobs.finish, identifier, attempt, artifact
+                    self.jobs.finish,
+                    identifier,
+                    attempt,
+                    artifact,
+                    reusable_results=reusable_results,
                 )
                 if not finished:
                     await asyncio.to_thread(

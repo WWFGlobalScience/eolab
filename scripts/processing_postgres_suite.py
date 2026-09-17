@@ -8,6 +8,7 @@ import pytest
 SUITES = (
     "test_processing_jobs.py",
     "test_processing_calculations.py",
+    "test_calculation_cache_postgres.py",
     "test_processing_events_postgres.py",
     "test_processing_area_limits.py",
     "test_processing_ground_area.py",

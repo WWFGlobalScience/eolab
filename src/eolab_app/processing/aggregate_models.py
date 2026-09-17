@@ -418,6 +418,8 @@ class AggregateResultResponse(JobResultResponse):
     performance: AggregatePerformance | None = None
     executionTiming: AggregateExecutionTiming | None = None
     queuedToReadySeconds: StageSeconds | None = None
+    # True only when all values were reused; timings describe this request only.
+    cacheHit: bool = False
 
 
 class AggregateProgress(JobProgressResponse):
@@ -509,5 +511,6 @@ class AggregateArtifact(Artifact):
     rows: list[dict[str, object]]
     performance: dict[str, object] | None = field(default=None, kw_only=True)
     execution_timing: dict[str, object] | None = field(default=None, kw_only=True)
+    cache_hit: bool = field(default=False, kw_only=True)
     media_type: str = field(default="text/csv", kw_only=True)
     result_name: str = field(default="result.csv", kw_only=True)

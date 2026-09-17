@@ -83,3 +83,14 @@ DROP TRIGGER IF EXISTS processing_job_change ON processing.jobs;
 CREATE TRIGGER processing_job_change AFTER INSERT OR UPDATE OF status, progress ON processing.jobs
 FOR EACH ROW EXECUTE FUNCTION processing.notify_job_change();
 INSERT INTO processing.schema_version VALUES (3) ON CONFLICT DO NOTHING;
+
+-- Small completed values only: no source paths, polygons or artifact references.
+CREATE TABLE IF NOT EXISTS processing.calculation_results (
+    cache_key text PRIMARY KEY CHECK (cache_key ~ '^[0-9a-f]{64}$'),
+    payload jsonb NOT NULL CHECK (octet_length(payload::text) <= 32768),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS calculation_results_expiry
+    ON processing.calculation_results(expires_at);
+INSERT INTO processing.schema_version VALUES (4) ON CONFLICT DO NOTHING;

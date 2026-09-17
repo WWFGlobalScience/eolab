@@ -609,6 +609,59 @@ def calculate_raster_statistics_for_area(
         completed_blocks,
         calculation_plan.grid.nativeBlocks,
     )
+    performance = AggregatePerformance(
+        execution=raster_batch_plan,
+        readWindows=read_count,
+        evaluationTiles=tile_count,
+        reducerUpdates=tile_count * len(calculations),
+        readSeconds=read_seconds,
+        calculationSeconds=calculation_seconds,
+        resultWriteSeconds=0.0,
+        kernelSeconds=time.perf_counter() - started,
+        retainedPolygonBytes=raster_area_tools.retained_polygon_bytes,
+        temporaryMaskBytes=mask_bytes,
+        stages=AggregateKernelStages(
+            sourceSetupSeconds=source_ready - started,
+            selectionSetupSeconds=raster_area_tools.selection_setup_seconds,
+            groundAreaSetupSeconds=raster_area_tools.pixel_area_setup_seconds,
+            gridCheckSeconds=0.0,
+            selectionMaskSeconds=mask_seconds,
+            maskPreparationSeconds=mask_preparation_seconds,
+            maskReadSeconds=mask_read_seconds,
+            areaWeightsSeconds=weights_seconds,
+            reductionSeconds=reduction_seconds,
+        ),
+    )
+    return write_statistics_result(
+        calculation_plan, rows, directory, performance=performance
+    )
+
+
+def write_statistics_result(
+    calculation_plan: AggregateSpec,
+    rows: list[dict[str, object]],
+    directory: Path,
+    *,
+    performance: AggregatePerformance | None = None,
+    cache_hit: bool = False,
+) -> AggregateArtifact:
+    """Write this calculation's CSV and provenance, including reused values.
+
+    Args:
+        calculation_plan: Raster, area and formulas recorded for this request.
+        rows: Completed result rows with the current labels and formula text.
+        directory: Existing private job directory in which to write both files.
+        performance: Measurements through calculation completion, when executed.
+            CSV writing time is added here. Omit for cached results.
+        cache_hit: Whether all values came from the shared result cache.
+
+    Returns:
+        CSV size, checksum, inline values and this request's cache/timing metadata.
+
+    Raises:
+        OSError: If result files cannot be written.
+        ValueError: If result metadata cannot be serialized as finite JSON.
+    """
     writing_started = time.perf_counter()
     result = directory / "result.csv"
     with result.open("w", newline="", encoding="utf-8") as stream:
@@ -628,35 +681,21 @@ def calculate_raster_statistics_for_area(
     with result.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     source = next(iter(calculation_plan.sources.values()))
-    performance = AggregatePerformance(
-        execution=raster_batch_plan,
-        readWindows=read_count,
-        evaluationTiles=tile_count,
-        reducerUpdates=tile_count * len(calculations),
-        readSeconds=read_seconds,
-        calculationSeconds=calculation_seconds,
-        resultWriteSeconds=time.perf_counter() - writing_started,
-        kernelSeconds=time.perf_counter() - started,
-        retainedPolygonBytes=raster_area_tools.retained_polygon_bytes,
-        temporaryMaskBytes=mask_bytes,
-        stages=AggregateKernelStages(
-            sourceSetupSeconds=source_ready - started,
-            selectionSetupSeconds=raster_area_tools.selection_setup_seconds,
-            groundAreaSetupSeconds=raster_area_tools.pixel_area_setup_seconds,
-            gridCheckSeconds=0.0,
-            selectionMaskSeconds=mask_seconds,
-            maskPreparationSeconds=mask_preparation_seconds,
-            maskReadSeconds=mask_read_seconds,
-            areaWeightsSeconds=weights_seconds,
-            reductionSeconds=reduction_seconds,
-        ),
-    )
+    if performance is not None:
+        write_seconds = time.perf_counter() - writing_started
+        performance = performance.model_copy(
+            update={
+                "resultWriteSeconds": write_seconds,
+                "kernelSeconds": performance.kernelSeconds + write_seconds,
+            }
+        )
     artifact = AggregateArtifact(
         size=result.stat().st_size,
         sha256=digest,
         filename=f"{source.item_id}-calculations.csv",
         rows=rows,
-        performance=performance.model_dump(mode="json"),
+        performance=performance.model_dump(mode="json") if performance else None,
+        cache_hit=cache_hit,
     )
     provenance = {
         **calculation_plan.model_dump(mode="json", by_alias=True),

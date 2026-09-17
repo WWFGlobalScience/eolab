@@ -105,7 +105,13 @@ class JobListResponse(BaseModel, Generic[JobResponseType]):
 
 @dataclass(frozen=True)
 class ProcessingLimits:
-    """Deployment-wide scheduling, native execution, and result-lifetime policy."""
+    """Deployment-wide scheduling, execution and retention limits.
+
+    calculation_cache_capacity bounds the number of shared numerical results;
+    zero disables cache reads and writes. calculation_cache_ttl_seconds limits
+    reuse to 24 hours by default, independently of job/download expiry. Each
+    database cache payload is additionally limited to 32 KiB.
+    """
 
     plan_timeout_seconds: float = 15
     runtime_seconds: float = 600
@@ -118,6 +124,9 @@ class ProcessingLimits:
     result_metadata_reservation_bytes: int = 9 * 1024**2
     lease_seconds: int = 20
     transfer_seconds: int = 120
+    # Shared numerical results; independent of owned job/download lifetimes.
+    calculation_cache_capacity: int = 1_000
+    calculation_cache_ttl_seconds: int = 86_400
 
 
 class ProcessingError(Exception):

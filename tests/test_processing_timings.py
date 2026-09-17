@@ -39,6 +39,7 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
     )
     authorizer = SimpleNamespace(authorize=AsyncMock(return_value=authorized))
     store = Mock()
+    store.get_cached_calculation_results.return_value = {}
     identifier = "a" * 32
     store.reserve_plan.return_value = identifier
     store.finish_plan.return_value = {

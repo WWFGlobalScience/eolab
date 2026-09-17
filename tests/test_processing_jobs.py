@@ -64,8 +64,10 @@ def store(request: pytest.FixtureRequest) -> PostgresJobStore:
     dsn = request.config.getoption("--processing-dsn")
     if dsn is None:
         pytest.skip("Pass --processing-dsn for real PostgreSQL integration tests")
-    if not psycopg.conninfo.conninfo_to_dict(dsn).get("dbname", "").startswith(
-        "eolab_processing_test"
+    if (
+        not psycopg.conninfo.conninfo_to_dict(dsn)
+        .get("dbname", "")
+        .startswith("eolab_processing_test")
     ):
         pytest.fail(
             "Processing tests require an explicit disposable eolab_processing_test* database"
@@ -80,7 +82,7 @@ def store(request: pytest.FixtureRequest) -> PostgresJobStore:
     result.migrate()  # Exercise redeployment of an already initialized schema.
     with psycopg.connect(dsn) as connection:
         connection.execute(
-            "TRUNCATE processing.transfers, processing.jobs, processing.plans"
+            "TRUNCATE processing.transfers, processing.jobs, processing.plans, processing.calculation_results"
         )
     return result
 

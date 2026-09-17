@@ -78,7 +78,11 @@ function validateProcessTiming(value) {
     if (typeof value.reusedProcess !== "boolean") throw new Error("Processing returned invalid process reuse metadata.");
 }
 
-/** Validate a public owned job before presenting actions. @param {Object} job API response. @return {Object} Validated job. */
+/** Validate a public owned job before presenting values or download actions.
+ * @param {Object} job API response, including optional timing and cache metadata.
+ * @return {Object} Validated job.
+ * @throws {Error} If the lifecycle, results, metadata or download links are invalid.
+ */
 function validateJob(job) {
     opaqueId(job?.jobId);
     if (!["queued", "running", "cancelling", "ready", "failed", "cancelled", "interrupted", "expired", "deleted"].includes(job.status) ||
@@ -89,6 +93,9 @@ function validateJob(job) {
         processingDownloadUrl(job.result.provenanceUrl, job.jobId, "provenance");
         if (job.operation === "raster.aggregate.v1") {
             validateCalculationRows(job.result.rows);
+            if (job.result.cacheHit != null && typeof job.result.cacheHit !== "boolean") {
+                throw new Error("Processing returned invalid cache metadata.");
+            }
             validatePerformance(job.result.performance);
             validateStages(job.result.executionTiming, ["queueSeconds", "preparationSeconds", "nativeProcessSeconds", "publicationSeconds"]);
             validateProcessTiming(job.result.executionTiming?.process);

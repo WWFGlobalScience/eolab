@@ -8,6 +8,7 @@ grids, AOI geometry, or any other operation-specific input fields.
 from contextlib import contextmanager
 from dataclasses import asdict
 from importlib.resources import files
+import json
 from typing import Any, Iterator
 from uuid import uuid4
 
@@ -467,14 +468,17 @@ class PostgresJobStore:
         attempt: str,
         artifact: Artifact | None,
         error: dict[str, str] | None = None,
+        reusable_results: dict[str, dict[str, object]] | None = None,
     ) -> bool:
-        """Commit only after native completion/cleanup and artifact publication.
+        """Publish completed work and cache values only while this attempt owns the job.
 
         Args:
             identifier: Running job.
             attempt: Execution fencing token.
             artifact: Atomically published immutable result, or None on failure.
             error: Sanitized reason for a failed or interrupted operation.
+            reusable_results: Small completed values keyed by the operation's
+                input hash. Stored only if this attempt becomes ready.
 
         Returns:
             True only if the still-current attempt reached the requested state.
@@ -498,7 +502,38 @@ class PostgresJobStore:
                         identifier,
                     ),
                 )
-                return cursor.fetchone() is not None
+                completed = cursor.fetchone() is not None
+                if (
+                    completed
+                    and reusable_results
+                    and self.limits.calculation_cache_capacity > 0
+                ):
+                    cursor.execute(
+                        "DELETE FROM processing.calculation_results WHERE expires_at <= now()"
+                    )
+                    for key, payload in reusable_results.items():
+                        # Leave oversized results uncached rather than failing a completed job.
+                        if (
+                            len(json.dumps(payload, allow_nan=False).encode("utf-8"))
+                            > 32768
+                        ):
+                            continue
+                        cursor.execute(
+                            "INSERT INTO processing.calculation_results(cache_key,payload,expires_at) "
+                            "VALUES (%s,%s,now()+%s*interval '1 second') ON CONFLICT DO NOTHING",
+                            (
+                                key,
+                                Jsonb(payload),
+                                self.limits.calculation_cache_ttl_seconds,
+                            ),
+                        )
+                    cursor.execute(
+                        "DELETE FROM processing.calculation_results WHERE cache_key IN "
+                        "(SELECT cache_key FROM processing.calculation_results "
+                        "ORDER BY created_at DESC,cache_key OFFSET %s)",
+                        (self.limits.calculation_cache_capacity,),
+                    )
+                return completed
             status = (
                 "cancelled"
                 if row["status"] == "cancelling"
@@ -513,6 +548,36 @@ class PostgresJobStore:
                 (status, Jsonb(error), identifier),
             )
             return True
+
+    def get_cached_calculation_results(
+        self, keys: list[str]
+    ) -> dict[str, dict[str, object]]:
+        """Read unexpired numerical results for operation-generated input hashes.
+
+        Callers must authorize the current raster and area before using these
+        shared values. This method returns no job IDs or download permissions.
+
+        Args:
+            keys: At most five hashes generated from validated calculation inputs.
+
+        Returns:
+            Matching payloads by hash; missing or expired entries are omitted.
+
+        Raises:
+            ProcessingError: If PostgreSQL is unavailable.
+            ValueError: If more than five keys are requested.
+        """
+        if len(keys) > 5:
+            raise ValueError("At most five cached calculations can be requested")
+        if not keys or self.limits.calculation_cache_capacity <= 0:
+            return {}
+        with self._transaction() as cursor:
+            cursor.execute(
+                "SELECT cache_key,payload FROM processing.calculation_results "
+                "WHERE cache_key=ANY(%s) AND expires_at>now()",
+                (keys,),
+            )
+            return {row["cache_key"]: row["payload"] for row in cursor.fetchall()}
 
     def acquire_transfer(
         self, identifier: str, owner: str
