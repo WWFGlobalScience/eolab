@@ -4020,6 +4020,24 @@ summary:hover > .raster-disclosure-chevron {
 .raster-sampling-vector:not([open]) > summary {
   padding-bottom: 2px;
 }
+[data-vector-sampling="status"].vector-selection-warning {
+  padding: 12px;
+  border: 1px solid var(--status-warning);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-2));
+  color: var(--text-1);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+[data-vector-sampling="status"].is-working {
+  padding: 8px 12px;
+  border-left: 4px solid var(--brand);
+  background: var(--surface-selected);
+  color: var(--text-1);
+}
+
 .raster-sampling-vector .vector-selection-card {
   display: block;
   margin: 0;

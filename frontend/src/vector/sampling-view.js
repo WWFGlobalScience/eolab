@@ -13,6 +13,7 @@ export class VectorSamplingView {
         this.root = documentContext.querySelector(root);
         this.elements = Object.fromEntries(["layer", "filter", "use", "confirm", "remove", "status", "predicate"]
             .map(name => [name, documentContext.querySelector(`${root} [data-vector-sampling="${name}"]`)]));
+        this.useLabel = this.elements.use.textContent;
         this.choice = choice ? documentContext.querySelector(choice) : null;
         this.disclosure = disclosure ? documentContext.querySelector(disclosure) : null;
         this.abort = new AbortController();
@@ -26,7 +27,11 @@ export class VectorSamplingView {
         }
         if (this.choice && this.disclosure) on(this.choice, "change", () => { this.disclosure.open = true; this.elements.layer.focus(); });
     }
-    /** @param {Object} state Current selection and review state. */
+    /**
+     * Show selection progress or a prominent large-area confirmation.
+     * @param {Object} state Current targets, selected layer, phase and message.
+     * @return {void}
+     */
     render(state) {
         const signature = JSON.stringify(state.targets.map(target => [target.key, target.label]));
         if (signature !== this.signature) {
@@ -38,8 +43,12 @@ export class VectorSamplingView {
         this.elements.layer.value = state.key;
         this.elements.predicate.textContent = state.filterSummary;
         this.elements.status.textContent = state.targets.length ? state.message : "Add a Shapefile or GeoPackage polygon layer to the map first.";
-        this.elements.status.setAttribute("role", "status");
+        const reviewing = ["review", "confirm"].includes(state.phase);
+        this.elements.status.setAttribute("role", reviewing ? "alert" : "status");
+        this.elements.status.classList.toggle("vector-selection-warning", reviewing);
+        this.elements.status.classList.toggle("is-working", state.phase === "reading");
         this.elements.use.disabled = !state.key || state.phase === "reading";
+        this.elements.use.textContent = state.phase === "reading" ? "Reading selected features…" : this.useLabel;
         this.elements.filter.disabled = !state.key;
         this.elements.use.hidden = !!state.analysis || ["review", "confirm"].includes(state.phase);
         this.elements.confirm.hidden = !["review", "confirm"].includes(state.phase);

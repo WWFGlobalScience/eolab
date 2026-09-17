@@ -317,18 +317,30 @@ def plan_aggregate(
     limits: RasterAggregateLimits,
     target_chunk_pixels: int | None = None,
 ) -> AggregateGrid:
-    """Plan only metadata, syntax and geometry inside a bounded child process.
+    """Estimate raster reads and memory needed for the requested formulas.
+
+    For north-up WGS84, Web Mercator and equal-area cylindrical rasters,
+    estimate filtered-vector work from its server-measured bounding rectangle.
+    These projections have independent, monotonic longitude/latitude axes, so
+    the rectangle contains the selected polygons. Read and project the exact
+    polygons later, in the cancellable calculation job. Other grids retain
+    exact geometry planning because their projected envelopes can curve.
 
     Args:
-        path: Catalog-authorized mounted source.
-        area: Explicit immutable selection.
-        calculations: Validated named result expressions.
-        alias: Single bound source alias.
-        limits: Operation-owned resource ceilings.
-        target_chunk_pixels: Optional combined read/evaluation pixel budget.
+        path: Path to the input raster.
+        area: Selected box, filtered vector, historical polygons or whole raster.
+        calculations: Labeled formulas to evaluate, such as sum(a).
+        alias: Variable representing the raster in those formulas, such as a.
+        limits: Maximum raster reads, memory, and geometry work.
+        target_chunk_pixels: Optional maximum pixels per read/calculation batch.
 
     Returns:
-        Native grid and read/memory estimates, without reading the raster band.
+        Raster grid and conservative read/memory estimates, without reading
+        pixel values. The saved calculation keeps the exact area descriptor.
+
+    Raises:
+        ProcessingError: If the area misses the raster or exceeds work limits.
+        rasterio.errors.RasterioIOError: If the raster cannot be opened.
     """
     roots = [compile_expression(item.expression, alias) for item in calculations]
     nodes = sum(sum(1 for _ in walk(root)) for root in roots)
@@ -337,14 +349,23 @@ def plan_aggregate(
     ):
         with rasterio.open(path) as dataset:
             validate_supported_raster(dataset, path)
-            raster_window, _ = get_raster_window_and_mask_source(dataset, area, limits)
+            planning_area = area
+            if (
+                area.kind == "catalogSelection"
+                and dataset.crs.to_epsg() in {4326, 3857, 6933}
+                and dataset.transform.b == dataset.transform.d == 0
+            ):
+                planning_area = AggregateArea(kind="bounds", bounds=area.bounds)
+            raster_window, _ = get_raster_window_and_mask_source(
+                dataset, planning_area, limits
+            )
             needs_ground_area = any(
                 node.op == "areaha" for root in roots for node in walk(root)
             )
             pixel_area_calculator = None
             if needs_ground_area:
                 pixel_area_calculator = PixelAreaCalculator(
-                    dataset, area, limits, planning=True
+                    dataset, planning_area, limits, planning=True
                 )
             if pixel_area_calculator is not None:
                 raster_window = pixel_area_calculator.window
@@ -421,6 +442,7 @@ def calculate_raster_statistics_for_area(
         with rasterio.open(raster_path) as dataset, ExitStack() as resources:
             validate_supported_raster(dataset, raster_path)
             source_ready = time.perf_counter()
+            write_progress(directory, "preparing_selected_polygons", 0, 0)
             raster_area_tools = prepare_raster_area_tools(
                 dataset, calculation_plan, limits
             )
