@@ -64,10 +64,8 @@ def store(request: pytest.FixtureRequest) -> PostgresJobStore:
     dsn = request.config.getoption("--processing-dsn")
     if dsn is None:
         pytest.skip("Pass --processing-dsn for real PostgreSQL integration tests")
-    if (
-        not psycopg.conninfo.conninfo_to_dict(dsn)
-        .get("dbname", "")
-        .startswith("eolab_processing_test")
+    if not psycopg.conninfo.conninfo_to_dict(dsn).get("dbname", "").startswith(
+        "eolab_processing_test"
     ):
         pytest.fail(
             "Processing tests require an explicit disposable eolab_processing_test* database"
