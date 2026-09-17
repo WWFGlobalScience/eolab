@@ -516,3 +516,60 @@ test("closing the last tool hides its empty surface while result cards remain us
     assert.equal(h.panels.hidden, true);
     h.controller.destroy();
 });
+
+
+for (const [name, show, hide, args] of [
+    ["histogram", "showHistogram", "closeHistogram", []],
+    ["features", "showFeatureInspector", "hideFeatureInspector", []],
+    ["field across features", "showVectorTimeSeries", "hideVectorTimeSeries", []],
+    ["fields from feature", "showVectorFeatureProfile", "hideVectorFeatureProfile", []],
+    ["summaries", "showCalculations", "hideCalculations", []],
+    ["downloads", "showDownloads", "hideDownloads", []],
+    ["style", "showStyle", "hideStyle", ["Raster"]],
+    ["filter", "showFilter", "hideFilter", ["Countries"]],
+]) {
+    test(`closing ${name} hides the shared surface beneath retained map results`, () => {
+        const h = fixture();
+        h.controller.beginMapClick({ lat: -10, lng: -60 });
+        h.controller.setClickResult("histogram", { state: "ready", message: "Raster ready" });
+        h.controller.setClickResult("feature", { state: "ready", message: "Feature ready" });
+        h.controller[show](...args);
+        assert.equal(h.panels.hidden, false);
+        h.controller[hide]();
+        assert.equal(h.panels.hidden, true);
+        assert.equal(h.doc.querySelector("#map-click-summary").hidden, false);
+        assert.deepEqual(h.calls, ["show"]);
+        h.controller.destroy();
+    });
+}
+
+test("mixed raster and vector clicks never restore an empty inspection surface", () => {
+    const h = fixture();
+    h.controller.beginMapClick({ lat: -10, lng: -60 });
+    h.controller.setClickResult("histogram", { state: "loading", message: "Sampling" });
+    h.controller.showHistogram();
+    h.controller.setClickResult("feature", { state: "ready", message: "Two features" });
+    h.controller.showFeatureInspector({ activate: false });
+    h.doc.querySelector("#map-click-feature").dispatchEvent(new Event("click"));
+    h.controller.showVectorFeatureProfile();
+    h.controller.showStyle("Countries");
+    h.controller.hideStyle();
+    h.controller.hideVectorFeatureProfile();
+    h.controller.hideFeatureInspector();
+    assert.equal(h.panels.hidden, false, "histogram remains open");
+    h.controller.closeHistogram();
+    assert.equal(h.panels.hidden, true);
+
+    h.controller.beginMapClick({ lat: -11, lng: -61 });
+    h.controller.setClickResult("histogram", { state: "ready", message: "Updated raster" });
+    h.controller.setClickResult("feature", { state: "empty", message: "No features" });
+    assert.equal(h.panels.hidden, true, "new result cards alone do not occupy panel space");
+    h.doc.querySelector("#map-click-histogram").dispatchEvent(new Event("click"));
+    assert.equal(h.panels.hidden, false);
+    h.controller.closeHistogram(false);
+    h.controller.setClickResult("histogram", null);
+    h.controller.setClickResult("feature", null);
+    assert.equal(h.panels.hidden, true);
+    assert.deepEqual(h.calls, ["show", "hide"]);
+    h.controller.destroy();
+});
