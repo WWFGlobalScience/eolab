@@ -62,7 +62,7 @@ def test_cache_ignores_titles_whitespace_and_formula_order(
 
 
 @pytest.mark.parametrize(
-    "change", ["raster", "signature", "area", "formula", "grid", "version"]
+    "change", ["raster", "signature", "area", "formula", "batch", "version"]
 )
 def test_changed_inputs_cannot_reuse_results(
     calculation_plan: AggregateSpec, change: str, monkeypatch: pytest.MonkeyPatch
@@ -98,14 +98,22 @@ def test_changed_inputs_cannot_reuse_results(
                 )
             }
         )
-    elif change == "grid":
+    elif change == "batch":
         calculation_plan = calculation_plan.model_copy(
             update={
-                "grid": calculation_plan.grid.model_copy(update={"nodata": "-9999"})
+                "grid": calculation_plan.grid.model_copy(
+                    update={
+                        "execution": calculation_plan.grid.execution.model_copy(
+                            update={"targetChunkPixels": 1024}
+                        )
+                    }
+                )
             }
         )
     else:
-        monkeypatch.setattr(cache, "CALCULATION_CACHE_VERSION", 2)
+        monkeypatch.setattr(
+            cache, "CALCULATION_CACHE_VERSION", cache.CALCULATION_CACHE_VERSION + 1
+        )
     assert cache.calculation_result_cache_keys(calculation_plan) != before
 
 
@@ -295,3 +303,186 @@ def test_worker_reuses_results_after_authorization(
     assert asyncio.run(worker.run_once())
     assert store.finish.call_args.args[2] is None
     assert calls == ["calculate"]
+
+
+@pytest.mark.parametrize("area_kind", ["wholeRaster", "bounds", "catalogSelection"])
+def test_cache_hit_skips_planning_and_pins_values(
+    calculation_plan: AggregateSpec,
+    area_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reuse all area types without native planning, including after cache eviction.
+
+    Args:
+        calculation_plan: Real raster grid and formulas.
+        area_kind: Whole raster, map box or filtered vector to exercise.
+        monkeypatch: Forbid native planning and polygon summary reads.
+    """
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from eolab_app.catalog_selection import CatalogSelection
+    from eolab_app.processing.aggregate_models import (
+        AggregatePlanRequest,
+        AggregatePlanResponse,
+    )
+    from eolab_app.processing.models import JobSubmitRequest, ProcessingError
+    from eolab_app.processing.service import ProcessingService
+    import eolab_app.processing.service as service_module
+
+    if area_kind == "catalogSelection":
+        area = AggregateArea(
+            kind=area_kind,
+            bounds=(-80, -20, -60, 0),
+            catalogSelection=CatalogSelection(
+                collectionId="eolab-mounted-vectors",
+                itemId="countries",
+                assetKey="data",
+                layerName="countries",
+                sourceSignature="a" * 64,
+                filter={"enabled": False, "match": "all", "rules": []},
+            ),
+        )
+        area_input = {"catalogSelection": area.catalogSelection}
+    elif area_kind == "bounds":
+        area = AggregateArea(kind="bounds", bounds=(-80, -20, -60, 0))
+        area_input = {
+            "selectedBounds": dict(zip(("west", "south", "east", "north"), area.bounds))
+        }
+    else:
+        area = AggregateArea(kind="wholeRaster")
+        area_input = {"wholeRaster": True}
+    calculation_plan = calculation_plan.model_copy(update={"area": area})
+    request = AggregatePlanRequest(
+        sources=calculation_plan.sources,
+        calculations=calculation_plan.calculations,
+        **area_input,
+    )
+    rows = [
+        {
+            "label": item.label,
+            "expression": item.expression,
+            "value": "42",
+            "valueType": "integer",
+            "state": "ok",
+            "aggregates": [],
+        }
+        for item in calculation_plan.calculations
+    ]
+    saved = cache.prepare_calculation_values_for_cache(calculation_plan, rows)
+    assert cache.calculation_result_cache_keys(
+        request, calculation_plan.sourceSignature
+    ) == list(saved)
+    authorizer = SimpleNamespace(
+        authorize=AsyncMock(
+            return_value=SimpleNamespace(
+                source_signature=SimpleNamespace(
+                    to_catalog=lambda: calculation_plan.sourceSignature
+                )
+            )
+        )
+    )
+    areas = SimpleNamespace(resolve_for_sampling=AsyncMock())
+    store = Mock()
+    store.get_cached_calculation_results.return_value = saved
+    store.reserve_plan.return_value = "a" * 32
+    store.finish_plan.return_value = {
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5)
+    }
+    service = ProcessingService(
+        authorizer, areas, store, Mock(), RasterAggregateLimits()
+    )
+    forbidden = AsyncMock(
+        side_effect=AssertionError("Cache reuse must not plan raster work")
+    )
+    monkeypatch.setattr(service_module, "run_process", forbidden)
+    response = AggregatePlanResponse.model_validate(
+        asyncio.run(service.plan_raster_calculation("owner", request))
+    )
+    assert response.cacheHit
+    assert response.timing.nativeProcessSeconds == 0
+    assert response.timing.process is None
+    forbidden.assert_not_called()
+    prepared = store.finish_plan.call_args.args[2]
+    retained = AggregateSpec.model_validate(prepared.specification)
+    assert retained.cachedRows[0].value == "42"
+    assert prepared.reserved_bytes == service.aggregate_limits.result_reservation_bytes
+    assert prepared.minimum_claim_version == 7
+
+    # Expiry/eviction after preparation cannot turn a cache hit into raster work.
+    store.get_cached_calculation_results.return_value = {}
+    store.find_request.return_value = None
+    store.get_plan.return_value = {
+        "operation": retained.operation,
+        "spec": prepared.specification,
+        "request": request.model_dump(mode="json", by_alias=True),
+    }
+    store.submit.return_value = {
+        "id": "b" * 32,
+        "spec": prepared.specification,
+        "status": "queued",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "expires_at": None,
+        "progress": {},
+        "error": None,
+        "artifact": None,
+    }
+    asyncio.run(
+        service.submit_raster_calculation(
+            "owner", JobSubmitRequest(planId="a" * 32, requestId="b" * 32)
+        )
+    )
+    forbidden.assert_not_called()
+    assert authorizer.authorize.await_count == 2
+    assert areas.resolve_for_sampling.await_count == (
+        2 if area_kind == "catalogSelection" else 0
+    )
+
+    # Cached values never waive current raster or vector access.
+    denied = (
+        areas.resolve_for_sampling
+        if area_kind == "catalogSelection"
+        else authorizer.authorize
+    )
+    denied.side_effect = ProcessingError(
+        "source_unavailable", "Source unavailable", 409
+    )
+    with pytest.raises(ProcessingError):
+        asyncio.run(service.plan_raster_calculation("owner", request))
+
+
+def test_partial_or_malformed_cache_still_requires_normal_planning(
+    calculation_plan: AggregateSpec,
+) -> None:
+    """Missing or corrupt values cannot be promoted to an executable cached plan.
+
+    Args:
+        calculation_plan: Two-formula plan.
+    """
+    from eolab_app.processing.aggregate_models import AggregatePlanRequest
+
+    request = AggregatePlanRequest(
+        sources=calculation_plan.sources,
+        calculations=calculation_plan.calculations,
+        wholeRaster=True,
+    )
+    assert (
+        cache.restore_cached_calculation_plan(
+            request, calculation_plan.sourceSignature, {}
+        )
+        is None
+    )
+    entries = {
+        key: {"row": {}, "area": {}, "grid": {}}
+        for key in cache.calculation_result_cache_keys(
+            request, calculation_plan.sourceSignature
+        )
+    }
+    assert (
+        cache.restore_cached_calculation_plan(
+            request, calculation_plan.sourceSignature, entries
+        )
+        is None
+    )

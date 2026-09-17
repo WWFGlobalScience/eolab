@@ -138,11 +138,14 @@ class ProcessingWorker:
             self.limits,
         )
         if operation == "raster.aggregate.v1":
-            cached = await asyncio.to_thread(
-                self.jobs.get_cached_calculation_results,
-                calculation_result_cache_keys(spec),
-            )
-            cached_rows = restore_cached_calculation_rows(spec, cached)
+            if spec.cachedRows is not None:
+                cached_rows = [row.model_dump(mode="json") for row in spec.cachedRows]
+            else:
+                cached = await asyncio.to_thread(
+                    self.jobs.get_cached_calculation_results,
+                    calculation_result_cache_keys(spec),
+                )
+                cached_rows = restore_cached_calculation_rows(spec, cached)
             if cached_rows is not None:
                 # These tiny writes stay synchronous so cancellation cannot race
                 # a background writer against attempt-directory cleanup.

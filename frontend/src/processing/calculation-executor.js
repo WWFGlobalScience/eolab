@@ -310,7 +310,7 @@ export class CalculationExecutor {
             if (!this.#pendingCalculation) return;
             const target = this.#pendingCalculation;
             this.#executionStatus.phase = "planning";
-            this.#executionStatus.message = "Checking calculation size…";
+            this.#executionStatus.message = "Preparing calculation…";
             this.#notifyListeners();
             if (target.plan && Date.parse(target.plan.expiresAt) <= Date.now()) {
                 this.plansToRelease.add(target.plan.planId);

@@ -204,7 +204,12 @@ export class ProcessingApiClient {
         return this.request("/raster-calculations/validate", "POST", { alias: "a", calculations }, signal);
     }
 
-    /** Review one immutable calculation intent. @param {Object} intent Source, expressions, and area. @param {AbortSignal} signal Superseded plan. @return {Promise<Object>} Estimate. */
+    /** Prepare cached results or estimate a new calculation.
+     * @param {Object} intent Source, expressions and area.
+     * @param {AbortSignal} signal Superseded request.
+     * @return {Promise<Object>} Validated plan with an optional cache-hit flag.
+     * @throws {Error} If the request fails or returned plan metadata is invalid.
+     */
     async planCalculation(intent, signal) {
         const area = normalizeRasterSamplingArea(intent.area);
         const targetChunkPixels = chunkPixels(intent.targetChunkPixels);
@@ -218,6 +223,9 @@ export class ProcessingApiClient {
         }, signal);
         opaqueId(plan.planId);
         validateGrid(plan.grid);
+        if (plan.cacheHit != null && typeof plan.cacheHit !== "boolean") {
+            throw new Error("Processing returned invalid cache metadata.");
+        }
         if (plan.operation !== "raster.aggregate.v1" || !Number.isFinite(Date.parse(plan.expiresAt)) ||
             !Number.isSafeInteger(plan.grid.nativeBlocks) || plan.grid.nativeBlocks < 1 ||
             !Number.isSafeInteger(plan.grid.decodedBytes) || plan.grid.decodedBytes < 1) {

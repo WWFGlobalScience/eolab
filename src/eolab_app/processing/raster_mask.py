@@ -43,7 +43,8 @@ def estimate_calculation_disk_bytes(
     The estimate includes a temporary mask GeoTIFF plus an allowance for the
     result CSV and provenance JSON. Whole-raster calculations need no mask.
     Box selections include a mask allowance even when no mask is ultimately
-    needed.
+    needed. Plans with retained cached values reserve only result-file space;
+    they never rasterize polygons or allocate a mask.
 
     Args:
         calculation_plan: AggregateSpec built by the Processing planning service
@@ -63,7 +64,8 @@ def estimate_calculation_disk_bytes(
     """
     mask_bytes = (
         0
-        if calculation_plan.area.kind == "wholeRaster"
+        if calculation_plan.cachedRows is not None
+        or calculation_plan.area.kind == "wholeRaster"
         else estimate_mask_disk_bytes(
             calculation_plan.grid.width, calculation_plan.grid.height
         )

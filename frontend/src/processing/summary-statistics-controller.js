@@ -22,14 +22,16 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const sourceKey = source => source ? `${source.collectionId}\n${source.itemId}` : "";
 
 /** Decide whether an edit or map click may run without another Calculate click.
- * Only rectangular map selections within the block, memory and geometry limits
- * below qualify. Larger areas, whole rasters and vector selections need Calculate.
+ * Cached values can be reused for any area without confirming raster work.
+ * Uncached requests qualify only for rectangular map selections within the
+ * block, memory and geometry limits below.
  * This UI policy does not replace the server's resource limits.
  * @param {Object} plan Server plan with estimated grid work.
  * @param {Object} intent Calculation settings including the sampling area.
  * @return {boolean} Whether automatic submission is allowed.
  */
 export function canAutomaticallyCalculate(plan, intent) {
+    if (plan?.cacheHit === true) return true;
     const grid = plan?.grid;
     return intent.area.kind === "selectedArea" && !!grid &&
         Number.isFinite(grid.nativeBlocks) && grid.nativeBlocks <= AUTOMATIC_CALCULATION_LIMITS.nativeBlocks &&
@@ -429,7 +431,7 @@ export class SummaryStatisticsController {
             calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
         this.batch = { intent, previousJobId: execution.completedJob?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted, vectorSelectionSeconds: card.vectorSelectionSeconds })) };
-        for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Checking calculation size…"; }
+        for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Preparing calculation…"; }
         this.executor.prepare(intent);
         this.render();
     }

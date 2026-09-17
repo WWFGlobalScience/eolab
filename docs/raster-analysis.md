@@ -76,14 +76,18 @@ with the current statistic title and formula; it does not inherit another
 session's download permissions or execution timings.
 
 The match includes the immutable catalog raster, source metadata, exact area
-or vector filter, parsed formula, and calculation grid. Titles and formula
+or vector filter, parsed formula, requested batch size and calculation-policy
+version. Titles and formula
 whitespace do not affect matching. Different filters with the same bounding
 box remain different areas. Algebraically equivalent formulas and reordered
 filter rules are not automatically considered identical.
 
-Source authorization, planning, queue admission and cancellation still apply.
-A hit skips the numerical execution, including raster reads and polygon-mask
-creation. When a request groups several formulas, all must be cached; otherwise
+Source authorization, queue admission and cancellation still apply. The cache
+lookup runs before polygon-envelope reads and raster size estimation. A hit skips
+those planning steps, the large-calculation confirmation, raster reads and
+polygon-mask creation. The small cached values are copied into the prepared job,
+so cache expiry while it waits cannot unexpectedly start a full calculation.
+An uncached request goes through the usual planning and confirmation. When a request groups several formulas, all must be cached; otherwise
 the normal combined calculation runs. Separate deployments with separate
 databases do not share values.
 

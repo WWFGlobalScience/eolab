@@ -339,6 +339,20 @@ class AggregateGrid(BaseModel):
         return result
 
 
+class AggregateValue(BaseModel):
+    """Lossless decimal value and explicit per-calculation data state."""
+
+    label: str
+    expression: str
+    value: str | None
+    valueType: Literal["integer", "float"] | None
+    state: Literal[
+        "ok", "no_matches", "no_valid_data", "invalid_arithmetic", "overflow"
+    ]
+    aggregates: list[dict[str, str | int]]
+    unit: Literal["ha"] | None = None
+
+
 class AggregateSpec(BaseModel):
     """The raster, formulas, selected area and grid for a calculation job.
 
@@ -352,6 +366,8 @@ class AggregateSpec(BaseModel):
     grid contains the selected window's dimensions, pixel alignment and planned
     read sizes. It contains metadata, not raster pixel values.
     sourceSignature is source metadata retained in the stored job contract.
+    cachedRows holds already-computed values when planning found a cache hit;
+    that job writes result files without recalculating pixels.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -363,20 +379,31 @@ class AggregateSpec(BaseModel):
     calculations: tuple[NamedCalculation, ...]
     area: AggregateArea
     grid: AggregateGrid
+    # Server-only copy of cached values; retained through plan expiry/eviction.
+    cachedRows: (
+        Annotated[tuple[AggregateValue, ...], Field(min_length=1, max_length=5)] | None
+    ) = None
 
+    @model_validator(mode="after")
+    def validate_cached_result_formulas(self) -> "AggregateSpec":
+        """Require retained values to match the formulas in this stored job.
 
-class AggregateValue(BaseModel):
-    """Lossless decimal value and explicit per-calculation data state."""
+        Returns:
+            This plan with matching cached rows, or an ordinary calculation plan.
 
-    label: str
-    expression: str
-    value: str | None
-    valueType: Literal["integer", "float"] | None
-    state: Literal[
-        "ok", "no_matches", "no_valid_data", "invalid_arithmetic", "overflow"
-    ]
-    aggregates: list[dict[str, str | int]]
-    unit: Literal["ha"] | None = None
+        Raises:
+            ValueError: If cached rows differ in count, label or formula.
+        """
+        if self.cachedRows is not None and (
+            len(self.cachedRows) != len(self.calculations)
+            or any(
+                row.label != calculation.label
+                or row.expression != calculation.expression
+                for row, calculation in zip(self.cachedRows, self.calculations)
+            )
+        ):
+            raise ValueError("Cached values must match this plan's formulas")
+        return self
 
 
 class NativeProcessTiming(BaseModel):
@@ -456,6 +483,7 @@ class AggregatePlanResponse(BaseModel):
     inclusion: Literal["cell_center", "per_function"] = "cell_center"
     limits: dict[str, int | float]
     timing: AggregatePlanTiming | None = None
+    cacheHit: bool = False
 
 
 @dataclass(frozen=True)

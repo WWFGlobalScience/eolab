@@ -1058,3 +1058,21 @@ test("the API preserves boolean cache metadata and rejects misleading values", a
     job.result.cacheHit = "false";
     await assert.rejects(() => api.getJob(id), /invalid cache metadata/);
 });
+
+
+test("cached whole-raster results submit without the large-calculation prompt", async () => {
+    const h = fixture();
+    const prepare = h.api.planCalculation;
+    h.api.planCalculation = async (...args) => ({...await prepare(...args), cacheHit: true});
+    await h.open();
+    h.controller.chooseArea("whole");
+    await h.tick();
+    const card = h.controller.state.statistics[0];
+    assert.equal(h.submits(), 1);
+    assert.equal(card.manualRequired, false);
+    assert.equal(canAutomaticallyCalculate(
+        {cacheHit: true, grid: {...grid, decodedBytes: 1e12}},
+        {area: {kind: "catalogSelection"}}), true);
+    await h.finish();
+    assert.equal(card.current, true);
+});
