@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createLeafletDouble } from "../test-support/fake-basemap-leaflet.js";
 
 import {
   createSingleWorldMap,
@@ -31,50 +32,6 @@ test("missing and malformed catalog bounds never reach Leaflet", () => {
     assert.equal(getCatalogItemMapBounds({ bbox }), null, JSON.stringify(bbox));
   }
 });
-
-function createLeafletDouble() {
-  const calls = {
-    map: null,
-    setView: null,
-    zoomControl: null,
-    basemap: null,
-  };
-  const leafletMap = {
-    setView(center, zoom) {
-      calls.setView = { center, zoom };
-      return this;
-    },
-  };
-  const zoomControl = {
-    addTo(map) {
-      calls.zoomControl.map = map;
-      return this;
-    },
-  };
-  const basemapLayer = {
-    addTo(map) {
-      calls.basemap.map = map;
-      return this;
-    },
-  };
-  const leaflet = {
-    map(container, options) {
-      calls.map = { container, options };
-      return leafletMap;
-    },
-    control: {
-      zoom(options) {
-        calls.zoomControl = { options };
-        return zoomControl;
-      },
-    },
-    tileLayer(url, options) {
-      calls.basemap = { url, options };
-      return basemapLayer;
-    },
-  };
-  return { calls, leaflet, leafletMap };
-}
 
 test("application map is bounded to one strict WGS 84 world", () => {
   const { calls, leaflet, leafletMap } = createLeafletDouble();
@@ -124,6 +81,7 @@ test("basemap tile requests do not wrap into another world", () => {
     options: {
       attribution: "Example tiles",
       className: "eolab-basemap",
+      pane: "eolab-basemap-pane",
       errorTileUrl:
         "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 " +
         "width=%221%22 height=%221%22/%3E",

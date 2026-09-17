@@ -85,6 +85,41 @@ EOLAB_GEOSERVER_DATA_VOLUME_NAME=my-workshop-geoserver
 EOLAB_PROCESSING_DATA_VOLUME_NAME=my-workshop-processing
 ```
 
+## Basemap choices
+
+The **Basemap** dropdown sits at the lower-right of the map, above attribution.
+**Detailed** uses `EOLAB_BASEMAP_URL` and `EOLAB_BASEMAP_ATTRIBUTION`, and is selected
+when the app opens. **Country outlines** uses bundled Natural Earth boundaries.
+**None** removes the background. These choices do not change data layers,
+map position, sampling, or analysis results. The choice lasts for the open map;
+it is not included in saved-map links or browser-local saved views.
+
+To offer **Light (CARTO)**, set this optional deployment variable and redeploy:
+
+```text
+EOLAB_CARTO_BASEMAP_API_KEY=<your CARTO basemap key>
+```
+
+When the variable is missing or blank, the CARTO choice is absent. Compose passes
+it as `CARTO_BASEMAP_API_KEY` inside the app container. The app includes it in
+the public tile URL because the browser requests tiles directly. Use a
+domain-restricted **basemap** key, not a private CARTO account credential.
+Request a key and configure restrictions using
+[CARTO's basemap key page](https://carto.com/basemaps/apikey/).
+CARTO/OSM attribution stays visible while that background is selected.
+CARTO documents that its raster tile service is being retired; this optional
+Leaflet raster integration can be disabled by clearing the key. No additional
+renderer is required by EOLab.
+
+The outline asset is Natural Earth **1:110m Admin 0 Countries**, version 5.1.2,
+[public-domain data](https://www.naturalearthdata.com/about/terms-of-use/).
+`frontend/src/assets/country-outlines.geojson` retains the coordinates of all
+177 features and removes their unused attributes. Source:
+[`ne_110m_admin_0_countries.geojson`](https://github.com/nvkelso/natural-earth-vector/blob/v5.1.2/geojson/ne_110m_admin_0_countries.geojson).
+Source SHA-256: `6866c877d39cba9c357620878839b336d569f8c662d3cfab4cb1dbe2d39c977f`.
+These generalized boundaries are a display background, not analysis geometry.
+They load from EOLab on first selection and need no external tile service.
+
 ## Deploy with Coolify
 
 1. Create a resource from this repository.

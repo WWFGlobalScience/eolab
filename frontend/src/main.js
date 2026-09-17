@@ -123,7 +123,7 @@ const CATALOG_LOAD_ROOT_MARGIN = "300px 0px";
  * @property {string} wmsUrl Browser-facing WMS endpoint.
  * @property {string} scanDisplayPathPrefix User-facing root for mounted files.
  * @property {string[]} scanDisplayPaths User-facing directories scanned recursively.
- * @property {{url: string, attribution: string}} basemap Basemap settings.
+ * @property {{url:string,attribution:string,carto?:{url:string,attribution:string,maxNativeZoom:number}}} basemap Background tile settings; CARTO is present only when configured.
  * @property {{latitude: number, longitude: number, zoom: number}} initialView Initial map view.
  */
 

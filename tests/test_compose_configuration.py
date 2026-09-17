@@ -17,6 +17,7 @@ def test_public_app_variables_are_not_self_referential() -> None:
         "APP_SUBTITLE": "EOLAB_APP_SUBTITLE",
         "CATALOG_URL": "EOLAB_CATALOG_URL",
         "BASEMAP_URL": "EOLAB_BASEMAP_URL",
+        "CARTO_BASEMAP_API_KEY": "EOLAB_CARTO_BASEMAP_API_KEY",
         "BASEMAP_ATTRIBUTION": "EOLAB_BASEMAP_ATTRIBUTION",
         "INITIAL_LATITUDE": "EOLAB_INITIAL_LATITUDE",
         "INITIAL_LONGITUDE": "EOLAB_INITIAL_LONGITUDE",
@@ -581,3 +582,12 @@ def test_catalog_random_selection_uses_an_indexed_key_seek() -> None:
     assert "count(*)" not in migration
     assert "OFFSET" not in migration
     assert "ORDER BY random()" not in migration
+
+
+def test_carto_basemap_key_is_optional() -> None:
+    """Allow deployment without a CARTO key and document its browser-visible use."""
+    compose = COMPOSE_PATH.read_text(encoding="utf-8")
+    example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert '"CARTO_BASEMAP_API_KEY=${EOLAB_CARTO_BASEMAP_API_KEY:-}"' in compose
+    assert "EOLAB_CARTO_BASEMAP_API_KEY=\n" in example
+    assert "basemap key is browser-visible" in example

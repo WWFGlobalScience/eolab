@@ -4539,3 +4539,18 @@ summary:hover > .raster-disclosure-chevron {
   stroke-dasharray: 2 2;
   vector-effect: non-scaling-stroke;
 }
+
+.eolab-basemap-control {
+  max-width: min(230px, calc(100vw - 40px));
+  padding: 8px 10px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-1);
+  box-shadow: var(--elevation-control);
+}
+.eolab-basemap-control label { display: grid; gap: 4px; margin: 0; }
+.eolab-basemap-control label > span { font-size: 0.7rem; font-weight: 600; }
+.eolab-basemap-control select { width: 100%; min-width: 0; font-size: 0.8rem; padding: 4px; }
+.eolab-basemap-control p { max-width: 200px; margin: 6px 0 0; font-size: 0.75rem; }
+.eolab-basemap-control p[hidden] { display: none; }
