@@ -161,8 +161,13 @@ export class SummaryStatisticsView {
             row.stop.hidden = !card.pending && !card.requested && !state.vectorSelecting;
             row.statusRow.hidden = row.status.hidden && row.run.hidden && row.stop.hidden;
             const progress = card.progress;
-            row.progress.hidden = !card.pending || !(progress?.totalBlocks > 0);
-            if (!row.progress.hidden) { row.progress.max = progress.totalBlocks; row.progress.value = progress.completedBlocks ?? 0; }
+            row.progress.hidden = !(card.pending || card.requested || state.vectorSelecting);
+            if (progress?.phase === "calculating" && progress.totalBlocks > 0) {
+                row.progress.max = progress.totalBlocks;
+                row.progress.value = progress.completedBlocks ?? 0;
+            } else {
+                row.progress.removeAttribute("value");
+            }
             const result = card.result;
             row.valueActions.hidden = !result;
             const text = result ? `${calculationValue(result.row)}${result.row.unit ? ` ${result.row.unit}` : ""}` : "";

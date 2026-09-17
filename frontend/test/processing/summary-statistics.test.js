@@ -6,6 +6,7 @@ import { VectorSamplingController } from "../../src/vector/sampling.js";
 import { SummaryStatisticsController, canAutomaticallyCalculate } from "../../src/processing/summary-statistics-controller.js";
 import { SummaryStatisticsView } from "../../src/processing/summary-statistics-view.js";
 import { CalculationSessionStorage } from "../../src/processing/calculation-session.js";
+import { describeJobProgress } from "../../src/processing/presentation.js";
 import { ProcessingJobs } from "../../src/processing/jobs.js";
 import { ProcessingApiClient } from "../../src/processing/api.js";
 import { SummaryControlDocument, SUMMARY_MARKUP } from "../../test-support/processing/summary-document.js";
@@ -987,4 +988,37 @@ test("cancelled selection wait is not charged to a replacement selection", async
     h.controller.setVectorSamplingArea({ selection: CATALOG_SELECTION, label: "Replacement" }, true);
     await h.tick(); await h.finish();
     assert.equal(h.controller.state.statistics[0].result.stages.vectorSelectionSeconds, 1);
+});
+
+
+test("summary progress is visible while planning and preparing, then measures raster reads", async () => {
+    const h = fixture();
+    await h.open();
+    const card = h.controller.state.statistics[0];
+    const row = h.view.cards.get(card.id);
+    card.pending = true;
+    card.progress = null;
+    h.view.render(h.controller.state);
+    assert.equal(row.progress.hidden, false);
+    assert.equal(row.progress.getAttribute("value"), null);
+    for (const phase of ["preparing_selected_polygons", "preparing_polygon_mask"]) {
+        card.progress = {phase, totalBlocks: 4, completedBlocks: 0};
+        assert.match(describeJobProgress({status: "running", progress: card.progress}),
+            phase === "preparing_selected_polygons" ? /Reading and projecting/ : /Creating the polygon mask/);
+        h.view.render(h.controller.state);
+        assert.equal(row.progress.hidden, false);
+        assert.equal(row.progress.getAttribute("value"), null);
+    }
+    card.progress = {phase: "calculating", totalBlocks: 4, completedBlocks: 2};
+    h.view.render(h.controller.state);
+    assert.equal(row.progress.max, 4);
+    assert.equal(row.progress.value, 2);
+    row.progress.setAttribute("value", "2");
+    card.progress = null;
+    h.view.render(h.controller.state);
+    assert.equal(row.progress.getAttribute("value"), null);
+    card.pending = false;
+    card.requested = null;
+    h.view.render(h.controller.state);
+    assert.equal(row.progress.hidden, true);
 });

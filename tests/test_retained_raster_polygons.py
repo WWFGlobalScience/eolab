@@ -1,8 +1,10 @@
 """Calculation-local polygon reuse preserves masks, budgets and cleanup."""
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import json
 import numpy as np
 import pytest
 import rasterio
@@ -77,6 +79,9 @@ def test_calculation_reuses_polygons_and_releases_them(
             Unchanged production projection.
         """
         nonlocal calls
+        assert json.loads((tmp_path / "progress.json").read_text())["phase"] == (
+            "preparing_selected_polygons"
+        )
         calls += 1
         if reader not in prepared:
             prepared.append(reader)
@@ -274,3 +279,94 @@ def test_polygon_memory_shares_the_calculation_budget(tmp_path: Path) -> None:
         kernel.prepare_raster_area_tools(dataset, plan, limits)
     assert error.value.code == "polygon_memory_limit"
     assert error.value.status == 413
+
+
+@pytest.mark.parametrize("epsg", [4326, 3857, 6933])
+@pytest.mark.parametrize("expression", ["sum(a)", "areaha(a > 0)"])
+def test_plan_uses_selection_envelope_without_reading_polygons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    epsg: int,
+    expression: str,
+) -> None:
+    """Plan monotonic grids from measured bounds, leaving polygon work to execution.
+
+    Args:
+        tmp_path: Temporary raster and vector files.
+        monkeypatch: Reject any attempt to construct a polygon reader.
+        epsg: Raster projection with independent longitude and latitude axes.
+        expression: Numeric reduction or hectare measurement to plan.
+    """
+    from rasterio.transform import from_bounds
+    from rasterio.warp import transform_bounds
+
+    selected = write_selection(tmp_path / "selected.gpkg", [mapping(box(1, 1, 7, 7))])
+    bounds = (1, 1, 7, 7)
+    projected_bounds = transform_bounds("EPSG:4326", f"EPSG:{epsg}", 0, 0, 8, 8)
+    path = write_source(
+        tmp_path / "raster.tif",
+        np.ones((64, 64), dtype="uint16"),
+        crs=f"EPSG:{epsg}",
+        transform=from_bounds(*projected_bounds, 64, 64),
+    )
+    area = AggregateArea(
+        kind="catalogSelection",
+        bounds=bounds,
+        catalogSelection=selected.selection,
+        resolved=selected,
+    )
+
+    def reject_polygon_read(*args: Any, **kwargs: Any) -> None:
+        """Fail if metadata planning attempts to load or project exact polygons.
+
+        Args:
+            args: Unused polygon-reader arguments.
+            kwargs: Unused polygon-reader keyword arguments.
+
+        Raises:
+            AssertionError: Always; planning must use only the measured bounds.
+        """
+        raise AssertionError("Planning must not read selected polygons")
+
+    monkeypatch.setattr(vector.PolygonRasterizer, "__init__", reject_polygon_read)
+    plan = make_spec(path, [expression], area)
+    assert 0 < plan.grid.width <= 64
+    assert 0 < plan.grid.height <= 64
+    assert plan.area.catalogSelection == selected.selection
+    assert (plan.grid.groundArea is not None) == expression.startswith("areaha")
+    with pytest.raises(ProcessingError, match="decoded bytes"):
+        make_spec(
+            path,
+            [expression],
+            area,
+            limits=replace(RasterAggregateLimits(), max_decoded_bytes=1),
+        )
+
+
+def test_rotated_vector_planning_keeps_exact_polygon_window(tmp_path: Path) -> None:
+    """Use exact projected bounds where the geographic envelope is not sufficient.
+
+    Args:
+        tmp_path: Isolated raster and filtered-vector fixtures.
+    """
+    from affine import Affine
+
+    selected = write_selection(tmp_path / "selection.gpkg", [mapping(box(1, 1, 2, 2))])
+    area = AggregateArea(
+        kind="catalogSelection",
+        bounds=(1, 1, 2, 2),
+        catalogSelection=selected.selection,
+        resolved=selected,
+    )
+    path = write_source(
+        tmp_path / "rotated.tif",
+        np.ones((64, 64), dtype="uint16"),
+        transform=Affine(0.125, 0.025, 0, 0.025, -0.125, 8),
+    )
+    with rasterio.open(path) as dataset:
+        window, polygons = kernel.get_raster_window_and_mask_source(
+            dataset, area, RasterAggregateLimits()
+        )
+        polygons.close()
+    plan = make_spec(path, ["sum(a)"], area)
+    assert plan.grid.window == tuple(int(value) for value in window.flatten())
