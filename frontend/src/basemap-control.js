@@ -104,7 +104,7 @@ export function addBasemapControl(leaflet, map, configuration, bounds, fetchAsse
     }
 
     /** Apply the dropdown's selected background. @return {void} */
-    function handleChange() {
+    function applySelectedBasemap() {
         void selectBasemap(select.value);
     }
 
@@ -148,7 +148,7 @@ export function addBasemapControl(leaflet, map, configuration, bounds, fetchAsse
         leaflet.DomEvent.disableClickPropagation(root);
         leaflet.DomEvent.disableScrollPropagation(root);
         root.addEventListener("keydown", stopMapKeys);
-        select.addEventListener("change", handleChange);
+        select.addEventListener("change", applySelectedBasemap);
         void selectBasemap("detailed");
         return root;
     };
@@ -157,7 +157,7 @@ export function addBasemapControl(leaflet, map, configuration, bounds, fetchAsse
     control.onRemove = function onRemove() {
         pending?.abort();
         pending = null;
-        select.removeEventListener("change", handleChange);
+        select.removeEventListener("change", applySelectedBasemap);
         control.getContainer().removeEventListener("keydown", stopMapKeys);
         if (activeLayer) map.removeLayer(activeLayer);
         activeLayer = null;
