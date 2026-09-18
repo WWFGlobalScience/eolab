@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AnnotationModel, readAnnotationLayers, matchingAnnotationPolygons, MAX_POLYGON_VERTICES } from "../../src/annotations/model.js";
+import { AnnotationModel, readAnnotationLayers, matchingAnnotationPolygons, MAX_ANNOTATION_LAYERS, MAX_POLYGON_VERTICES } from "../../src/annotations/model.js";
 import { polygonValidationMessage } from "../../src/annotations/geometry.js";
 
 /** @return {AnnotationModel} Model with deterministic local identifiers. */
@@ -185,4 +185,17 @@ test("invalid insertion indices and the vertex cap leave the draft unchanged", (
     annotations.draft.polygon.vertices = Array.from({ length: MAX_POLYGON_VERTICES }, () => [0, 0]);
     assert.throws(() => annotations.addVertex([1, 0], 1), /at most/);
     assert.equal(annotations.draft.polygon.vertices.length, MAX_POLYGON_VERTICES);
+});
+
+test("creating and loading annotations enforce the same layer limit", () => {
+    const annotations = model();
+    for (let index = 0; index < MAX_ANNOTATION_LAYERS; index += 1) annotations.createLayer();
+    const saved = annotations.document();
+    assert.equal(readAnnotationLayers(saved).length, MAX_ANNOTATION_LAYERS);
+    assert.throws(() => annotations.createLayer(), {
+        message: `This device already has ${MAX_ANNOTATION_LAYERS} annotation layers.`,
+    });
+    assert.deepEqual(annotations.document(), saved);
+    saved.layers.push({ ...structuredClone(saved.layers[0]), id: "extra-layer" });
+    assert.throws(() => readAnnotationLayers(saved), /exceed the storage limit/);
 });

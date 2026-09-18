@@ -10,6 +10,8 @@ import { polygonValidationMessage } from "./geometry.js";
  * @typedef {{layerId:string,polygon:AnnotationPolygon,isNew:boolean}} PolygonDraft
  */
 
+/** Maximum annotation layers saved on this device for this app. @type {number} */
+export const MAX_ANNOTATION_LAYERS = 32;
 export const MAX_POLYGON_VERTICES = 2000;
 export const DEFAULT_ANNOTATION_STYLE = Object.freeze({ color: "#1686b0", outline: "#202020", weight: 1, fillOpacity: 0.25, labels: true, notes: false });
 
@@ -35,7 +37,7 @@ export function validateAnnotationStyle(style) {
  * @throws {Error} If stored data is unsupported, malformed or too large.
  */
 export function readAnnotationLayers(document) {
-    if (!document || document.version !== 1 || !Array.isArray(document.layers) || document.layers.length > 32 ||
+    if (!document || document.version !== 1 || !Array.isArray(document.layers) || document.layers.length > MAX_ANNOTATION_LAYERS ||
         new TextEncoder().encode(JSON.stringify(document)).byteLength > 8 * 1024 * 1024) throw new Error("Saved annotations have an unsupported format or exceed the storage limit.");
     const layers = structuredClone(document.layers);
     const identifiers = new Set();
@@ -129,7 +131,7 @@ export class AnnotationModel {
      * @throws {Error} If the device collection is at its layer limit.
      */
     createLayer() {
-        if (this.layers.length >= 32) throw new Error("This device already has 32 annotation layers.");
+        if (this.layers.length >= MAX_ANNOTATION_LAYERS) throw new Error(`This device already has ${MAX_ANNOTATION_LAYERS} annotation layers.`);
         const layer = { id: this.newId(), name: `Annotations ${this.layers.length + 1}`, position: 0, visible: true, opacity: 1,
             style: { ...DEFAULT_ANNOTATION_STYLE }, filter: "", polygons: [] };
         this.layers.unshift(layer);
