@@ -15,7 +15,7 @@ export class AnnotationLayerControls {
         this.actions = actions;
         this.root = document.createElement("div");
         this.root.className = "annotation-layer-controls";
-        this.name = this.input("Layer name", "text", layer.name, value => {
+        this.name = this.createLabeledInput("Layer name", "text", layer.name, value => {
             layer.name = value.trim() || "Annotations";
             actions.change(false);
         }, 160);
@@ -32,7 +32,7 @@ export class AnnotationLayerControls {
         this.styleInputs = {};
         for (const [key, label, type] of [["color", "Fill color", "color"], ["outline", "Outline color", "color"],
             ["weight", "Outline width", "number"], ["fillOpacity", "Fill opacity", "number"], ["labels", "Show names", "checkbox"], ["notes", "Show notes", "checkbox"]]) {
-            const wrapper = this.input(label, type, layer.style[key], value => {
+            const wrapper = this.createLabeledInput(label, type, layer.style[key], value => {
                 layer.style[key] = type === "number" ? Number(value) : value;
                 actions.change();
             });
@@ -42,12 +42,12 @@ export class AnnotationLayerControls {
             this.styleInputs[key] = input;
             this.appearance.append(wrapper);
         }
-        const opacity = this.input("Layer opacity", "range", layer.opacity, value => actions.opacity(Number(value)));
+        const opacity = this.createLabeledInput("Layer opacity", "range", layer.opacity, value => actions.opacity(Number(value)));
         this.opacity = opacity.querySelector("input");
         this.opacity.min = "0"; this.opacity.max = "1"; this.opacity.step = "0.05";
         this.appearance.append(opacity);
         this.filter = this.details("Filter polygons");
-        this.filter.append(this.input("Name or note contains", "search", layer.filter, value => {
+        this.filter.append(this.createLabeledInput("Name or note contains", "search", layer.filter, value => {
             layer.filter = value;
             actions.change();
         }, 300));
@@ -60,15 +60,17 @@ export class AnnotationLayerControls {
     }
 
     /**
-     * Create a labeled input without using user text as HTML.
+     * Create a label containing text and an input, and connect valid edits to onChange.
+     * Text fields notify while typing; other input types notify on change.
+     * The label text is inserted as plain text, never HTML.
      * @param {string} label Accessible and visible label.
      * @param {string} type HTML input type.
      * @param {string|number|boolean} value Initial value.
-     * @param {(value:string|boolean)=>void} onChange Change callback.
+     * @param {(value:string|boolean)=>void} onChange Receives the edited value, or checked state for a checkbox.
      * @param {number} [maxLength=300] Text limit.
-     * @return {HTMLLabelElement} Label and input.
+     * @return {HTMLLabelElement} Wrapper containing the visible label text and its input.
      */
-    input(label, type, value, onChange, maxLength = 300) {
+    createLabeledInput(label, type, value, onChange, maxLength = 300) {
         const wrapper = this.document.createElement("label");
         wrapper.className = "annotation-field";
         const text = this.document.createElement("span");
@@ -149,7 +151,7 @@ export class AnnotationLayerControls {
     polygonRow(polygon) {
         const row = this.document.createElement("li");
         row.dataset.polygonId = polygon.id;
-        const name = this.input("Polygon name", "text", polygon.name, value => {
+        const name = this.createLabeledInput("Polygon name", "text", polygon.name, value => {
             polygon.name = value.trim() || "Polygon";
             this.actions.change(false);
         }, 160);
