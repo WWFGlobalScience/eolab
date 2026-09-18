@@ -294,12 +294,13 @@ export class SavedMapViewController {
     }
 
     /**
-     * Build one validated document from current neutral owners.
+     * Capture the viewport and catalog layers for map links and local map restoration.
+     * Annotation contents and their positions are saved separately on this device.
      *
-     * @return {Promise<Readonly<Object>>} Canonical complete map document.
+     * @return {Promise<Readonly<Object>>} Validated map document containing only catalog layers.
      */
     async #snapshotCurrentView() {
-        // Private local layers never enter portable map links.
+        // Local annotation layers have no catalog item (item is null); leave them out of this snapshot.
         const records = this.mapLayers.retainedRecords.filter(record => record.entry.item !== null);
         const viewport = this.viewport.snapshot();
         const layers = await Promise.all(
