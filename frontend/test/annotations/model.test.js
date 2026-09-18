@@ -138,3 +138,16 @@ test("existing saved annotation styles keep notes hidden and reject invalid note
     saved.layers[0].style.notes = "yes";
     assert.throws(() => readAnnotationLayers(saved), /style/);
 });
+
+
+test("saved positions accept older documents and reject invalid stack indices", () => {
+    const annotations = model();
+    annotations.createLayer(); annotations.createLayer();
+    const saved = annotations.document();
+    saved.layers.forEach(layer => { delete layer.position; });
+    assert.deepEqual(readAnnotationLayers(saved).map(layer => layer.position), [0, 1]);
+    for (const position of [-1, 1.5, "2", null, Number.MAX_SAFE_INTEGER + 1]) {
+        saved.layers[0].position = position;
+        assert.throws(() => readAnnotationLayers(saved), /position/);
+    }
+});

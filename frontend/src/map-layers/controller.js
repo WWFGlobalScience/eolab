@@ -60,6 +60,8 @@ export class MapLayerController {
      * @param {MapLayerStackView} [configuration.view] Layer-list DOM adapter.
      * @param {(layers:Object[])=>void} [configuration.onLayersChange]
      * Presentation change observer.
+     * @param {(layers:Object[])=>void} [configuration.onOrderChange]
+     * Observer for explicit reorders, excluding restoration and asynchronous layer additions.
      * @param {(item:Object)=>void} [configuration.onItemZoom] Requests that a
      * higher-level consumer fit the map to one authoritative Catalog Item.
      * @param {(item:Object)=>void} [configuration.onItemInfo] Requests that a
@@ -71,6 +73,7 @@ export class MapLayerController {
         leafletMap,
         view = new MapLayerStackView(),
         onLayersChange = () => {},
+        onOrderChange = () => {},
         onItemZoom = () => {},
         onItemInfo = () => {},
         stack = new MapLayerStack(),
@@ -86,6 +89,7 @@ export class MapLayerController {
         }
         this.view = view;
         this.onLayersChange = onLayersChange;
+        this.onOrderChange = onOrderChange;
         this.onItemZoom = onItemZoom;
         this.onItemInfo = onItemInfo;
         this.stack = stack;
@@ -613,6 +617,19 @@ export class MapLayerController {
             `${this.stack.entries.length} in the map drawing order.`
         );
         this.render({ key, action: "reorder" });
+        this.onOrderChange(this.snapshots());
+    }
+
+    /**
+     * Apply a complete saved drawing order without moving keyboard focus or announcing a user action.
+     * @param {string[]} keys Every retained layer key, exactly once, from top to bottom.
+     * @return {void}
+     * @throws {TypeError} If the requested order does not match the retained layers.
+     */
+    restoreOrder(keys) {
+        if (!this.stack.restoreOrder(keys)) return;
+        this.#applyLeafletOrder();
+        this.render();
     }
 
     /**

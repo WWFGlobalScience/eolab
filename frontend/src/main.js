@@ -749,6 +749,7 @@ async function initializeCatalog(
             }
             savedMapViewController?.scheduleRemember();
         },
+        onOrderChange: layers => annotations?.observeLayerOrder(layers, true),
         onItemZoom: zoomRetainedMapLayer,
         onItemInfo: inspectRetainedMapLayer,
     });
@@ -937,7 +938,7 @@ async function initializeCatalog(
     leafletMap.on("moveend", () =>
         savedMapViewController?.scheduleRemember()
     );
-    void savedMapViewController.restoreStartupView(globalThis.location.hash);
+    const startupMapRestore = savedMapViewController.restoreStartupView(globalThis.location.hash);
     const vectorTimeSeries = new VectorTimeSeriesController({
         onVisibilityChange: (visible, moveFocus) => {
             if (visible) mapInspection.showVectorTimeSeries();
@@ -1077,7 +1078,9 @@ async function initializeCatalog(
             onLayoutChange();
         },
     });
-    void annotations.load();
+    const startupAnnotations = annotations.load();
+    // Local editing remains available independently of Catalog loading; only order restoration waits.
+    void Promise.allSettled([startupMapRestore, startupAnnotations]).then(() => annotations.restoreLayerOrder());
     leafletMap.getContainer().classList.add("leaflet-crosshair");
     leafletMap.on("click", exploreMap);
     document.querySelector("#open-analysis-tools").addEventListener(

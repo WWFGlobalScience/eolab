@@ -28,6 +28,7 @@ export class AnnotationController {
         this.controls = new Map();
         this.layers = new Map();
         this.loaded = false;
+        this.orderRestored = false;
         this.dirty = false;
         this.saving = false;
         this.pendingSave = false;
@@ -250,15 +251,43 @@ export class AnnotationController {
     }
 
     /**
-     * Preserve relative annotation ordering after layer-stack changes.
-     * @param {Object[]} snapshots Complete top-first map-layer snapshots.
+     * Restore each annotation's saved position among all loaded layers without changing Catalog order.
+     * Composition calls this after both independent startup loads settle. Missing Catalog layers
+     * shorten the stack; annotation positions then stop at its end, retaining their relative order.
      * @return {void}
      */
-    observeLayerOrder(snapshots) {
-        if (!this.loaded) return;
+    restoreLayerOrder() {
+        if (!this.loaded || this.orderRestored) return;
+        const annotationKeys = new Set(this.model.layers.map(layer => `local:annotation:${layer.id}`));
+        const keys = this.mapLayers.snapshots().map(layer => layer.key).filter(key => !annotationKeys.has(key));
+        let nextIndex = 0;
+        for (const layer of [...this.model.layers].sort((a, b) => a.position - b.position)) {
+            const index = Math.min(keys.length, Math.max(nextIndex, layer.position));
+            keys.splice(index, 0, `local:annotation:${layer.id}`);
+            nextIndex = index + 1;
+        }
+        this.mapLayers.restoreOrder(keys);
+        this.orderRestored = true;
+        this.observeLayerOrder(this.mapLayers.snapshots());
+    }
+
+    /**
+     * Remember annotation positions in the full stack, including hidden Catalog layers.
+     * Startup insertion events must not overwrite saved positions; an explicit reorder may.
+     * @param {Object[]} snapshots Complete top-first map-layer snapshots.
+     * @param {boolean} [explicitReorder=false] Whether the user requested a reorder while loading.
+     * @return {void}
+     */
+    observeLayerOrder(snapshots, explicitReorder = false) {
+        if (!this.loaded || (!this.orderRestored && !explicitReorder)) return;
         const positions = new Map(snapshots.map((layer, index) => [layer.key, index]));
         const order = [...this.model.layers].sort((a, b) => positions.get(`local:annotation:${a.id}`) - positions.get(`local:annotation:${b.id}`));
-        if (order.some((layer, index) => layer !== this.model.layers[index])) {
+        let changed = order.some((layer, index) => layer !== this.model.layers[index]);
+        for (const layer of order) {
+            const position = positions.get(`local:annotation:${layer.id}`);
+            if (position !== layer.position) { layer.position = position; changed = true; }
+        }
+        if (changed) {
             this.model.layers = order;
             this.save();
         }

@@ -536,3 +536,25 @@ test("local layers keep their identity and survive Catalog clearing and restorat
     assert.equal(record.entry.opacity, 0.4);
     assert.throws(() => controller.addLocal({key: record.entry.key, label: "duplicate"}, local));
 });
+
+
+test("saved ordering applies atomically without user-reorder callbacks or focus requests", async () => {
+    const view = createView(), renders = [], reorders = [];
+    view.render = (...args) => renders.push(args);
+    const controller = new MapLayerController({ leafletMap: createMap(), view,
+        onOrderChange: layers => reorders.push(layers.map(layer => layer.key)) });
+    const adapter = createAdapter("raster");
+    await controller.show(catalogItem("one"), adapter);
+    await controller.show(catalogItem("two"), adapter);
+    const original = controller.snapshots().map(layer => layer.key);
+    assert.equal(reorders.length, 0);
+    const renderCount = renders.length;
+    const status = view.status;
+    controller.restoreOrder([...original].reverse());
+    assert.equal(renders.length, renderCount + 1);
+    assert.equal(reorders.length, 0);
+    assert.equal(view.status, status);
+    assert.equal(renders.at(-1)[2], null);
+    controller.reorder(original[0], 0);
+    assert.deepEqual(reorders, [original]);
+});

@@ -212,6 +212,21 @@ export class MapLayerStack {
     }
 
     /**
+     * Replace the complete top-first order while keeping every retained entry and active selection.
+     * @param {string[]} keys Every retained layer key, exactly once, in the requested order.
+     * @return {boolean} Whether the drawing order changed.
+     * @throws {TypeError} If keys are missing, duplicated or do not belong to this stack.
+     */
+    restoreOrder(keys) {
+        const entries = new Map(this.entries.map(entry => [entry.key, entry]));
+        if (!Array.isArray(keys) || keys.length !== entries.size || new Set(keys).size !== keys.length ||
+            keys.some(key => !entries.has(key))) throw new TypeError("Restored layer order must contain every retained key exactly once.");
+        if (keys.every((key, index) => this.entries[index].key === key)) return false;
+        this.entries = keys.map(key => entries.get(key));
+        return true;
+    }
+
+    /**
      * Remove one retained layer and choose a deterministic active fallback.
      *
      * @param {string} key Stable layer key.

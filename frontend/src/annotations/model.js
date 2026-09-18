@@ -4,7 +4,8 @@ import { polygonValidationMessage } from "./geometry.js";
 /**
  * @typedef {{color:string,outline:string,weight:number,fillOpacity:number,labels:boolean,notes:boolean}} AnnotationStyle
  * @typedef {{id:string,name:string,note:string,vertices:number[][]}} AnnotationPolygon
- * @typedef {{id:string,name:string,visible:boolean,opacity:number,style:AnnotationStyle,filter:string,polygons:AnnotationPolygon[]}} AnnotationLayer
+ * Annotation positions are zero-based indices in the complete top-first map-layer stack.
+ * @typedef {{id:string,name:string,position:number,visible:boolean,opacity:number,style:AnnotationStyle,filter:string,polygons:AnnotationPolygon[]}} AnnotationLayer
  * @typedef {{version:1,layers:AnnotationLayer[]}} AnnotationDocument
  * @typedef {{layerId:string,polygon:AnnotationPolygon,isNew:boolean}} PolygonDraft
  */
@@ -28,6 +29,7 @@ export function validateAnnotationStyle(style) {
 
 /**
  * Validate device storage before allowing it into the editor.
+ * Older documents without positions retain their annotation order at the top of the stack.
  * @param {AnnotationDocument} document Versioned annotation document.
  * @return {AnnotationLayer[]} Independent, validated annotation layers.
  * @throws {Error} If stored data is unsupported, malformed or too large.
@@ -37,7 +39,9 @@ export function readAnnotationLayers(document) {
         new TextEncoder().encode(JSON.stringify(document)).byteLength > 8 * 1024 * 1024) throw new Error("Saved annotations have an unsupported format or exceed the storage limit.");
     const layers = structuredClone(document.layers);
     const identifiers = new Set();
-    for (const layer of layers) {
+    for (const [index, layer] of layers.entries()) {
+        if (layer.position === undefined) layer.position = index;
+        if (!Number.isSafeInteger(layer.position) || layer.position < 0) throw new Error("Saved annotation layer position is invalid.");
         requireIdentifier(layer.id, identifiers);
         requireText(layer.name, 160, false);
         requireText(layer.filter, 300, true);
@@ -126,7 +130,7 @@ export class AnnotationModel {
      */
     createLayer() {
         if (this.layers.length >= 32) throw new Error("This device already has 32 annotation layers.");
-        const layer = { id: this.newId(), name: `Annotations ${this.layers.length + 1}`, visible: true, opacity: 1,
+        const layer = { id: this.newId(), name: `Annotations ${this.layers.length + 1}`, position: 0, visible: true, opacity: 1,
             style: { ...DEFAULT_ANNOTATION_STYLE }, filter: "", polygons: [] };
         this.layers.unshift(layer);
         return layer;
