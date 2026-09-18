@@ -227,17 +227,40 @@ class JobStore(Protocol):
         attempt: str,
         artifact: Artifact | None,
         error: dict[str, str] | None = None,
+        reusable_results: dict[str, dict[str, object]] | None = None,
     ) -> bool:
-        """Commit only after native completion/cleanup and artifact publication.
+        """Publish completed work and cache values only while this attempt owns the job.
 
         Args:
             identifier: Running job.
             attempt: Execution fencing token.
             artifact: Atomically published immutable result, or None on failure.
             error: Sanitized reason for a failed or interrupted operation.
+            reusable_results: Small completed values keyed by the operation's
+                input hash. Stored only if this attempt becomes ready.
 
         Returns:
             True only if the still-current attempt reached the requested state.
+        """
+        ...
+
+    def get_cached_calculation_results(
+        self, keys: list[str]
+    ) -> dict[str, dict[str, object]]:
+        """Read unexpired numerical results for operation-generated input hashes.
+
+        Callers must authorize the current raster and area before using these
+        shared values. This method returns no job IDs or download permissions.
+
+        Args:
+            keys: At most five hashes generated from validated calculation inputs.
+
+        Returns:
+            Matching payloads by hash; missing or expired entries are omitted.
+
+        Raises:
+            ProcessingError: If PostgreSQL is unavailable.
+            ValueError: If more than five keys are requested.
         """
         ...
 

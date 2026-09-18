@@ -38,6 +38,10 @@ from eolab_app.processing.aggregate_models import (
     AggregateSpec,
     RasterAggregateLimits,
 )
+from eolab_app.processing.calculation_cache import (
+    calculation_result_cache_keys,
+    restore_cached_calculation_plan,
+)
 from eolab_app.processing.raster_aggregate import aggregate_process_target
 from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import (
@@ -99,9 +103,13 @@ def prepare_aggregate_job(
         reserved_bytes=estimate_calculation_disk_bytes(spec, limits),
         operation=spec.operation,
         minimum_claim_version=(
-            6
-            if spec.area.kind != "wholeRaster"
-            else 4 if spec.grid.execution else 3 if spec.grid.groundArea else 2
+            7
+            if spec.cachedRows is not None
+            else (
+                6
+                if spec.area.kind != "wholeRaster"
+                else 4 if spec.grid.execution else 3 if spec.grid.groundArea else 2
+            )
         ),
     )
 
@@ -176,6 +184,7 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
                 **(
                     {
                         "rows": row["artifact"]["rows"],
+                        "cacheHit": row["artifact"].get("cache_hit", False),
                         "performance": row["artifact"].get("performance"),
                         "executionTiming": row["artifact"].get("execution_timing"),
                         "queuedToReadySeconds": max(
@@ -475,14 +484,15 @@ class ProcessingService:
     async def plan_raster_calculation(
         self, owner: str, request: AggregatePlanRequest
     ) -> dict[str, Any]:
-        """Review native work and expression intent without reading band values.
+        """Reuse authorized cached values, or estimate work for an uncached calculation.
 
         Args:
             owner: Current session hash.
             request: Exactly one catalog raster, explicit area, and scalar expressions.
 
         Returns:
-            Expiring immutable calculation plan with native work limits.
+            Expiring plan with retained cached values or estimated native work.
+            Cache hits skip raster planning and polygon-envelope reads.
 
         Raises:
             ProcessingError: For resource, source, or area admission failures.
@@ -500,43 +510,58 @@ class ProcessingService:
             async with asyncio.timeout(limits.plan_timeout_seconds):
                 alias, source = next(iter(request.sources.items()))
                 authorized = await self.authorizer.authorize(source)
-                area = await self._aggregate_area(request)
                 signature = tuple(authorized.source_signature.to_catalog())
-                prepared = time.perf_counter()
-                outcome = await run_process(
-                    aggregate_process_target,
-                    (
-                        "plan",
-                        (
-                            authorized.source_path,
-                            area,
-                            request.calculations,
-                            alias,
-                            limits,
-                            request.targetChunkPixels,
-                        ),
-                    ),
-                    limits.plan_timeout_seconds,
-                    self.native,
-                )
-                status, value = outcome.value
-                calculated = time.perf_counter()
-                if status != "ok":
-                    raise ProcessingError(*value)
-                if area.catalogSelection is not None:
+                if request.catalogSelection is not None:
                     try:
-                        await self.areas.resolve_for_sampling(area.catalogSelection)
+                        await self.areas.resolve_for_sampling(request.catalogSelection)
                     except SelectionUnavailableError as error:
                         raise ProcessingError(
                             "selection_unavailable", error.detail, 409
                         ) from error
-                spec = AggregateSpec(
-                    sources=request.sources,
-                    sourceSignature=signature,
-                    area=area,
-                    calculations=request.calculations,
-                    grid=value,
+                cached = await asyncio.to_thread(
+                    self.jobs.get_cached_calculation_results,
+                    calculation_result_cache_keys(request, signature),
                 )
+                spec = restore_cached_calculation_plan(request, signature, cached)
+                outcome = None
+                prepared = calculated = time.perf_counter()
+                if spec is None:
+                    area = await self._aggregate_area(request)
+                    prepared = time.perf_counter()
+                    outcome = await run_process(
+                        aggregate_process_target,
+                        (
+                            "plan",
+                            (
+                                authorized.source_path,
+                                area,
+                                request.calculations,
+                                alias,
+                                limits,
+                                request.targetChunkPixels,
+                            ),
+                        ),
+                        limits.plan_timeout_seconds,
+                        self.native,
+                    )
+                    status, value = outcome.value
+                    calculated = time.perf_counter()
+                    if status != "ok":
+                        raise ProcessingError(*value)
+                    if area.catalogSelection is not None:
+                        try:
+                            await self.areas.resolve_for_sampling(area.catalogSelection)
+                        except SelectionUnavailableError as error:
+                            raise ProcessingError(
+                                "selection_unavailable", error.detail, 409
+                            ) from error
+                    spec = AggregateSpec(
+                        sources=request.sources,
+                        sourceSignature=signature,
+                        area=area,
+                        calculations=request.calculations,
+                        grid=value,
+                    )
             plan = await asyncio.to_thread(
                 self.jobs.finish_plan,
                 identifier,
@@ -556,6 +581,7 @@ class ProcessingService:
                 **prepare_aggregate_job(spec, limits).summary,
                 "expiresAt": plan["expires_at"],
                 "resolution": "native",
+                "cacheHit": spec.cachedRows is not None,
                 "valueDomain": "stored",
                 "inclusion": "per_function" if spec.grid.groundArea else "cell_center",
                 "timing": AggregatePlanTiming(
@@ -563,7 +589,9 @@ class ProcessingService:
                     preparationSeconds=prepared - reserved,
                     nativeProcessSeconds=calculated - prepared,
                     finalizationSeconds=time.perf_counter() - calculated,
-                    process=asdict(outcome.timing) if outcome.timing else None,
+                    process=(
+                        asdict(outcome.timing) if outcome and outcome.timing else None
+                    ),
                 ).model_dump(),
                 "limits": {
                     "maxDecodedBytes": limits.max_decoded_bytes,
@@ -624,21 +652,30 @@ class ProcessingService:
             )
         spec = AggregateSpec.model_validate(plan["spec"])
         await self.authorizer.authorize(next(iter(spec.sources.values())))
-        area = await self._aggregate_area(
-            AggregatePlanRequest.model_validate(
-                {
-                    key: value
-                    for key, value in plan["request"].items()
-                    if key != "temporaryAoiId"
-                }
+        if spec.cachedRows is not None:
+            if spec.area.catalogSelection is not None:
+                try:
+                    await self.areas.resolve_for_sampling(spec.area.catalogSelection)
+                except SelectionUnavailableError as error:
+                    raise ProcessingError(
+                        "selection_unavailable", error.detail, 409
+                    ) from error
+        else:
+            area = await self._aggregate_area(
+                AggregatePlanRequest.model_validate(
+                    {
+                        key: value
+                        for key, value in plan["request"].items()
+                        if key != "temporaryAoiId"
+                    }
+                )
             )
-        )
-        if area.model_dump() != spec.area.model_dump():
-            raise ProcessingError(
-                "area_changed",
-                "The catalog selection changed since planning. Create a new calculation plan.",
-                409,
-            )
+            if area.model_dump() != spec.area.model_dump():
+                raise ProcessingError(
+                    "area_changed",
+                    "The catalog selection changed since planning. Create a new calculation plan.",
+                    409,
+                )
         row = await asyncio.to_thread(
             self.jobs.submit,
             owner,

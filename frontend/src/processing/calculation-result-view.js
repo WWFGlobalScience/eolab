@@ -32,6 +32,7 @@ export function renderSavedCalculation(root, job, sources) {
     root.replaceChildren(element("h3", "Previous / saved result"),
         element("p", `${label} · ${describeClipArea(job.area)}`));
     if (job.status !== "ready" || !job.result) { root.append(element("p", job.error?.detail ?? describeJobProgress(job))); return; }
+    if (job.result.cacheHit) root.append(element("p", "Reused cached result"));
     const states = { no_matches: "No cells matched the condition.", no_valid_data: "No valid cells in this area.",
         invalid_arithmetic: "Undefined arithmetic; no numeric result.", overflow: "Numeric overflow; no finite result." };
     for (const row of job.result.rows) {

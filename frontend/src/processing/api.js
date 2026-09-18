@@ -78,7 +78,11 @@ function validateProcessTiming(value) {
     if (typeof value.reusedProcess !== "boolean") throw new Error("Processing returned invalid process reuse metadata.");
 }
 
-/** Validate a public owned job before presenting actions. @param {Object} job API response. @return {Object} Validated job. */
+/** Validate a public owned job before presenting values or download actions.
+ * @param {Object} job API response, including optional timing and cache metadata.
+ * @return {Object} Validated job.
+ * @throws {Error} If the lifecycle, results, metadata or download links are invalid.
+ */
 function validateJob(job) {
     opaqueId(job?.jobId);
     if (!["queued", "running", "cancelling", "ready", "failed", "cancelled", "interrupted", "expired", "deleted"].includes(job.status) ||
@@ -89,6 +93,9 @@ function validateJob(job) {
         processingDownloadUrl(job.result.provenanceUrl, job.jobId, "provenance");
         if (job.operation === "raster.aggregate.v1") {
             validateCalculationRows(job.result.rows);
+            if (job.result.cacheHit != null && typeof job.result.cacheHit !== "boolean") {
+                throw new Error("Processing returned invalid cache metadata.");
+            }
             validatePerformance(job.result.performance);
             validateStages(job.result.executionTiming, ["queueSeconds", "preparationSeconds", "nativeProcessSeconds", "publicationSeconds"]);
             validateProcessTiming(job.result.executionTiming?.process);
@@ -197,7 +204,12 @@ export class ProcessingApiClient {
         return this.request("/raster-calculations/validate", "POST", { alias: "a", calculations }, signal);
     }
 
-    /** Review one immutable calculation intent. @param {Object} intent Source, expressions, and area. @param {AbortSignal} signal Superseded plan. @return {Promise<Object>} Estimate. */
+    /** Prepare cached results or estimate a new calculation.
+     * @param {Object} intent Source, expressions and area.
+     * @param {AbortSignal} signal Superseded request.
+     * @return {Promise<Object>} Validated plan with an optional cache-hit flag.
+     * @throws {Error} If the request fails or returned plan metadata is invalid.
+     */
     async planCalculation(intent, signal) {
         const area = normalizeRasterSamplingArea(intent.area);
         const targetChunkPixels = chunkPixels(intent.targetChunkPixels);
@@ -211,6 +223,9 @@ export class ProcessingApiClient {
         }, signal);
         opaqueId(plan.planId);
         validateGrid(plan.grid);
+        if (plan.cacheHit != null && typeof plan.cacheHit !== "boolean") {
+            throw new Error("Processing returned invalid cache metadata.");
+        }
         if (plan.operation !== "raster.aggregate.v1" || !Number.isFinite(Date.parse(plan.expiresAt)) ||
             !Number.isSafeInteger(plan.grid.nativeBlocks) || plan.grid.nativeBlocks < 1 ||
             !Number.isSafeInteger(plan.grid.decodedBytes) || plan.grid.decodedBytes < 1) {

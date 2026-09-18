@@ -1022,3 +1022,57 @@ test("summary progress is visible while planning and preparing, then measures ra
     h.view.render(h.controller.state);
     assert.equal(row.progress.hidden, true);
 });
+
+test("cached values are identified next to the number without claiming old kernel timings", async () => {
+    const h = fixture(); await h.open();
+    const card = h.controller.state.statistics[0];
+    h.controller.request(card.id, "manual"); await flush(); await h.finish();
+    card.result.job.result.cacheHit = true;
+    card.result.job.result.performance = null;
+    h.view.cards.get(card.id).resultSignature = null;
+    h.controller.render();
+    const row = h.view.cards.get(card.id);
+    assert.equal(row.status.textContent, "Reused cached result");
+    assert.equal(row.run.hidden, true);
+    assert.match(visibleText(row.detailsBody), /no raster pixels were read or calculated/);
+    assert.doesNotMatch(visibleText(row.detailsBody), /Kernel elapsed|Kernel measurements are unavailable/);
+    h.controller.editStatistic(card.id, { expression: "sum(a)" });
+    assert.notEqual(row.status.textContent, "Reused cached result");
+    assert.equal(row.root.classList.contains("is-previous"), true);
+});
+
+test("the API preserves boolean cache metadata and rejects misleading values", async () => {
+    const id = "a".repeat(32);
+    const job = {
+        jobId: id, operation: "raster.aggregate.v1", status: "ready", progress: {},
+        result: { url: `/api/processing/jobs/${id}/result`,
+            provenanceUrl: `/api/processing/jobs/${id}/provenance`,
+            rows: [{ label: "Sum", expression: "sum(a)", value: "42", valueType: "integer",
+                state: "ok", aggregates: [] }] },
+    };
+    const api = new ProcessingApiClient(async () => ({ ok: true, json: async () => job }));
+    for (const value of [true, false, undefined]) {
+        job.result.cacheHit = value;
+        assert.equal((await api.getJob(id)).result.cacheHit, value);
+    }
+    job.result.cacheHit = "false";
+    await assert.rejects(() => api.getJob(id), /invalid cache metadata/);
+});
+
+
+test("cached whole-raster results submit without the large-calculation prompt", async () => {
+    const h = fixture();
+    const prepare = h.api.planCalculation;
+    h.api.planCalculation = async (...args) => ({...await prepare(...args), cacheHit: true});
+    await h.open();
+    h.controller.chooseArea("whole");
+    await h.tick();
+    const card = h.controller.state.statistics[0];
+    assert.equal(h.submits(), 1);
+    assert.equal(card.manualRequired, false);
+    assert.equal(canAutomaticallyCalculate(
+        {cacheHit: true, grid: {...grid, decodedBytes: 1e12}},
+        {area: {kind: "catalogSelection"}}), true);
+    await h.finish();
+    assert.equal(card.current, true);
+});

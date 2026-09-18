@@ -149,7 +149,10 @@ export class SummaryStatisticsView {
             row.expression.setAttribute("aria-invalid", String(card.error && !card.valid));
             row.root.setAttribute("aria-busy", String(!!(card.pending || state.vectorSelecting)));
             row.root.classList.toggle("is-previous", !!card.result && !card.current);
-            const message = card.current ? RESULT_STATES[card.result?.row.state] ?? "" : card.message;
+            const message = card.current
+                ? [card.result?.job.result?.cacheHit ? "Reused cached result" : "",
+                    RESULT_STATES[card.result?.row.state] ?? ""].filter(Boolean).join(" · ")
+                : card.message;
             row.status.textContent = state.vectorCalculation && (card.pending || card.requested) && !message.startsWith("Calculating")
                 ? `Calculating · ${message}` : message;
             row.status.hidden = !row.status.textContent;
