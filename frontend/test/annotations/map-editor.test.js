@@ -86,3 +86,53 @@ test("a click or another pointer cannot accidentally move the polygon", () => {
     assert.equal(editor.polygonDrag.moved, false);
     editor.finishPolygonDrag(false);
 });
+
+
+/**
+ * Provide screen-coordinate points for edge hit-testing, without a DOM or geographic projection.
+ * @param {number} x Horizontal coordinate.
+ * @param {number} y Vertical coordinate.
+ * @return {Object} Point supporting Leaflet's distance contract.
+ */
+function screenPoint(x, y) {
+    return { x, y, distanceTo: other => Math.hypot(x - other.x, y - other.y) };
+}
+
+/**
+ * Connect edge selection to an identity projection and the closest-segment provider contract.
+ * The real Leaflet implementation is also exercised in browser verification.
+ * @param {number[][]} vertices Polygon vertices in test screen coordinates.
+ * @return {AnnotationMapEditor} Editor that can identify insertions in the supplied ring.
+ */
+function edgeEditor(vertices) {
+    const editor = Object.create(AnnotationMapEditor.prototype);
+    editor.draft = { polygon: { vertices } };
+    editor.map = { latLngToContainerPoint: ([lat, lng]) => screenPoint(lng, lat),
+        containerPointToLatLng: point => ({ lng: point.x, lat: point.y }) };
+    editor.leaflet = { LineUtil: { closestPointOnSegment(point, a, b) {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const lengthSquared = dx * dx + dy * dy;
+        const t = lengthSquared ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared)) : 0;
+        return screenPoint(a.x + t * dx, a.y + t * dy);
+    } } };
+    return editor;
+}
+
+test("edge hit-testing snaps to the segment and includes the closing edge without moving the first vertex", () => {
+    const editor = edgeEditor([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    assert.deepEqual(editor.findEdgeInsertion(screenPoint(35, 7)), { index: 1, position: [35, 0] });
+    assert.deepEqual(editor.findEdgeInsertion(screenPoint(-6, 40)), { index: 4, position: [0, 40] });
+    assert.equal(editor.findEdgeInsertion(screenPoint(50, 50)), null, "interior remains a whole-polygon drag target");
+    assert.equal(editor.findEdgeInsertion(screenPoint(50, 11)), null, "preview only appears close to an edge");
+    assert.equal(editor.findEdgeInsertion(screenPoint(0, 0)), null, "first vertex keeps its closing action");
+    assert.equal(editor.findEdgeInsertion(screenPoint(90, 1)), null, "existing handles take priority");
+    assert.equal(editor.findEdgeInsertion(screenPoint(120, 0)), null, "edge extensions are not insertions");
+});
+
+test("an unfinished line supports edge insertion but zero or one vertex has no edge", () => {
+    for (const vertices of [[], [[0, 0]]]) assert.equal(edgeEditor(vertices).findEdgeInsertion(screenPoint(40, 0)), null);
+    const editor = edgeEditor([[0, 0], [100, 0]]);
+    assert.deepEqual(editor.findEdgeInsertion(screenPoint(40, -5)), { index: 1, position: [40, 0] });
+    editor.draft = null;
+    assert.equal(editor.findEdgeInsertion(screenPoint(40, 0)), null);
+});

@@ -70,6 +70,13 @@
     box-shadow: 0 0 0 1px #333;
     cursor: grab;
 }
+.annotation-vertex-preview {
+    pointer-events: none;
+    border-radius: 50%;
+    border: 2px dashed #087fbe;
+    background: rgb(8 127 190 / 25%);
+    box-shadow: 0 0 0 2px #fffc;
+}
 .annotation-vertex.is-first { background: #087fbe; border-radius: 3px; }
 .annotation-vertex:focus-visible { outline: 3px solid #111; outline-offset: 3px; }
 .annotation-polygon-label { background: #fffe; border: 0; box-shadow: none; color: #222; width: max-content; max-width: 18rem; white-space: normal; overflow-wrap: anywhere; }
@@ -91,4 +98,6 @@
 
 .annotation-draft-polygon.leaflet-interactive { cursor: grab; }
 .annotation-draft-polygon.leaflet-interactive:hover { fill-opacity: 0.25; }
+.is-inserting-annotation-vertex,
+.is-inserting-annotation-vertex .annotation-draft-polygon { cursor: crosshair; }
 .is-dragging-annotation, .is-dragging-annotation .annotation-draft-polygon { cursor: grabbing; }

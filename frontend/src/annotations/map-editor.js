@@ -1,6 +1,9 @@
 /** Leaflet drawing gestures and visible editing-mode instructions. */
 import { updatePolygonLabel } from "./polygon-label.js";
 
+const EDGE_INSERTION_DISTANCE_PIXELS = 10;
+const VERTEX_HANDLE_CLEARANCE_PIXELS = 14;
+
 /** Render one polygon draft and forward editing gestures to its owner. */
 export class AnnotationMapEditor {
     /**
@@ -9,20 +12,23 @@ export class AnnotationMapEditor {
      * @param {Object} options.leaflet Leaflet namespace.
      * @param {Object} options.map Leaflet map.
      * @param {(point:number[])=>void} options.onAdd Add a longitude/latitude vertex.
+     * @param {(index:number,point:number[])=>void} options.onInsert Insert a vertex before the index.
      * @param {(index:number,point:number[])=>void} options.onMove Move a vertex.
      * @param {(index:number)=>void} options.onDelete Delete a vertex or the first-vertex polygon.
      * @param {()=>void} options.onSave Save the current draft.
      * @param {()=>void} options.onCancel Discard the current draft.
      */
-    constructor({ leaflet, map, onAdd, onMove, onDelete, onSave, onCancel }) {
+    constructor({ leaflet, map, onAdd, onInsert, onMove, onDelete, onSave, onCancel }) {
         this.leaflet = leaflet;
         this.map = map;
+        this.onInsert = onInsert;
         this.onMove = onMove;
         this.onDelete = onDelete;
         this.onSave = onSave;
         this.onCancel = onCancel;
         this.draft = null;
         this.polygonDrag = null;
+        this.edgePreview = null;
         this.suppressClick = false;
         this.vertexMarkers = [];
         this.drawing = leaflet.layerGroup();
@@ -48,15 +54,23 @@ export class AnnotationMapEditor {
         const summary = this.document.createElement("summary");
         summary.textContent = "Drawing help";
         const text = this.document.createElement("p");
-        text.textContent = "Left-click to add vertices. Drag a vertex to reshape, or drag inside the polygon to move it. Drag outside the polygon to pan. Scroll to zoom. Right-click a gray vertex to delete it. Click the blue first vertex to finish; right-click it to delete the polygon and return to inspection. Keyboard: Tab to a vertex, arrows to move it, Delete to remove it, Enter on the first vertex to finish. Escape cancels.";
+        text.textContent = "Left-click to add vertices. Hover near an edge and click the preview to insert a vertex. Drag a vertex to reshape, or drag inside the polygon to move it. Drag outside the polygon to pan. Scroll to zoom. Right-click a gray vertex to delete it. Click the blue first vertex to finish; right-click it to delete the polygon and return to inspection. Keyboard: Tab to a vertex, Insert to add one on its next edge, arrows to move it, Delete to remove it, Enter on the first vertex to finish. Escape cancels.";
         help.append(summary, text);
         this.strip.append(this.heading, this.instruction, actions, this.error, help);
         map.getContainer().append(this.strip);
         leaflet.DomEvent.disableClickPropagation(this.strip);
         leaflet.DomEvent.disableScrollPropagation(this.strip);
         this.click = event => {
-            if (this.draft && !this.polygonDrag && !this.suppressClick) onAdd([event.latlng.lng, event.latlng.lat]);
+            if (!this.draft || this.polygonDrag || this.suppressClick) return;
+            const insertion = this.findEdgeInsertion(this.map.latLngToContainerPoint(event.latlng));
+            if (insertion) this.onInsert(insertion.index, insertion.position);
+            else onAdd([event.latlng.lng, event.latlng.lat]);
         };
+        this.previewEdge = event => this.showEdgePreview(event);
+        this.clearPreview = () => this.clearEdgePreview();
+        map.getContainer().addEventListener("pointermove", this.previewEdge);
+        map.getContainer().addEventListener("pointerleave", this.clearPreview);
+        map.on("movestart zoomstart", this.clearPreview);
         this.keydown = event => {
             if (this.draft && event.key === "Escape") {
                 event.preventDefault();
@@ -65,6 +79,7 @@ export class AnnotationMapEditor {
             }
         };
         this.cancelDrag = () => {
+            this.clearEdgePreview();
             if (this.polygonDrag) { this.finishPolygonDrag(true); this.render(this.draft); }
         };
         map.on("zoomstart", this.cancelDrag);
@@ -109,6 +124,7 @@ export class AnnotationMapEditor {
         this.draft = draft;
         this.strip.hidden = !draft;
         this.map.getContainer().classList.toggle("is-editing-annotation", !!draft);
+        this.clearEdgePreview();
         this.drawing.clearLayers();
         this.vertexMarkers = [];
         this.error.textContent = message;
@@ -123,11 +139,11 @@ export class AnnotationMapEditor {
         this.remove.disabled = vertices.length === 0;
         this.instruction.textContent = vertices.length === 0 ? "Click on the map to start a polygon."
             : vertices.length < 3 ? `${vertices.length} ${vertices.length === 1 ? "vertex" : "vertices"} — click to add more; drag to adjust.`
-            : "Click the blue first vertex to finish. Drag inside to move the polygon; drag outside to pan.";
+            : "Hover an edge, then click to add a vertex. Click blue to finish; drag inside to move, outside to pan.";
         const latlngs = vertices.map(([lng, lat]) => [lat, lng]);
         if (vertices.length > 0) {
             const draggable = vertices.length >= 3;
-            const options = { color: "#087fbe", weight: 2, fillOpacity: 0.15, dashArray: "5 4",
+            const options = { color: "#087fbe", weight: 2, smoothFactor: 0, fillOpacity: 0.15, dashArray: "5 4",
                 interactive: draggable, bubblingMouseEvents: false, className: "annotation-draft-polygon" };
             const shape = draggable ? this.leaflet.polygon(latlngs, options) : this.leaflet.polyline(latlngs, options);
             shape.addTo(this.drawing);
@@ -195,6 +211,15 @@ export class AnnotationMapEditor {
         element.addEventListener("keydown", event => {
             if (event.key === "Delete" || event.key === "Backspace") {
                 event.preventDefault(); event.stopPropagation(); this.onDelete(index);
+            } else if (event.key === "Insert") {
+                event.preventDefault(); event.stopPropagation();
+                const vertices = this.draft.polygon.vertices;
+                if (vertices.length < 2 || (vertices.length === 2 && index === 1)) return;
+                const next = vertices[(index + 1) % vertices.length];
+                const a = this.map.latLngToContainerPoint(marker.getLatLng());
+                const b = this.map.latLngToContainerPoint([next[1], next[0]]);
+                const midpoint = this.map.containerPointToLatLng(a.add(b).divideBy(2));
+                this.onInsert(index + 1, [midpoint.lng, midpoint.lat]);
             } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
                 event.preventDefault(); event.stopPropagation();
                 const position = this.map.latLngToContainerPoint(marker.getLatLng());
@@ -215,6 +240,7 @@ export class AnnotationMapEditor {
      */
     startPolygonDrag(event, shape) {
         if (event.button !== 0 || !event.isPrimary || this.polygonDrag) return;
+        this.clearEdgePreview();
         event.preventDefault();
         event.stopPropagation();
         const zoom = this.map.getZoom();
@@ -269,10 +295,74 @@ export class AnnotationMapEditor {
         }
     }
 
+    /**
+     * Find the nearest displayed edge within ten screen pixels, clear of existing vertex handles.
+     * Two vertices form one open segment; three or more include the closing edge. The returned
+     * index keeps the first vertex first, even when inserting on the closing edge.
+     * @param {Object} point Leaflet point in map-container pixels.
+     * @return {{index:number,position:number[]}|null} Insertion index and longitude/latitude, or no hit.
+     */
+    findEdgeInsertion(point) {
+        const vertices = this.draft?.polygon.vertices ?? [];
+        if (vertices.length < 2) return null;
+        const projected = vertices.map(([lng, lat]) => this.map.latLngToContainerPoint([lat, lng]));
+        if (projected.some(vertex => vertex.distanceTo(point) <= VERTEX_HANDLE_CLEARANCE_PIXELS)) return null;
+        let nearest = null;
+        let distance = EDGE_INSERTION_DISTANCE_PIXELS;
+        const edgeCount = vertices.length === 2 ? 1 : vertices.length;
+        for (let index = 0; index < edgeCount; index += 1) {
+            const a = projected[index], b = projected[(index + 1) % projected.length];
+            const candidate = this.leaflet.LineUtil.closestPointOnSegment(point, a, b);
+            if (candidate.distanceTo(a) <= VERTEX_HANDLE_CLEARANCE_PIXELS ||
+                candidate.distanceTo(b) <= VERTEX_HANDLE_CLEARANCE_PIXELS) continue;
+            const candidateDistance = candidate.distanceTo(point);
+            if (candidateDistance <= distance) {
+                distance = candidateDistance;
+                const position = this.map.containerPointToLatLng(candidate);
+                nearest = { index: index + 1, position: [position.lng, position.lat] };
+            }
+        }
+        return nearest;
+    }
+
+    /**
+     * Show a translucent vertex at the cursor's closest edge without capturing map gestures.
+     * Hover over controls or handles, active drags and touch movement leave no preview.
+     * @param {PointerEvent} event Pointer movement within the map container.
+     * @return {void}
+     */
+    showEdgePreview(event) {
+        if (!this.draft || this.polygonDrag || event.buttons !== 0 || event.pointerType === "touch" ||
+            event.target.closest(".annotation-vertex, .annotation-editor-strip, .leaflet-control")) {
+            this.clearEdgePreview();
+            return;
+        }
+        const insertion = this.findEdgeInsertion(this.map.mouseEventToContainerPoint(event));
+        if (!insertion) { this.clearEdgePreview(); return; }
+        const [lng, lat] = insertion.position;
+        if (!this.edgePreview) {
+            this.edgePreview = this.leaflet.marker([lat, lng], {
+                interactive: false, keyboard: false, zIndexOffset: 900,
+                icon: this.leaflet.divIcon({ className: "annotation-vertex-preview", iconSize: [14, 14], iconAnchor: [7, 7], html: "" }),
+            }).addTo(this.drawing);
+            this.edgePreview.getElement().setAttribute("aria-hidden", "true");
+        } else this.edgePreview.setLatLng([lat, lng]);
+        this.map.getContainer().classList.add("is-inserting-annotation-vertex");
+    }
+
+    /** Remove an obsolete hover preview without changing draft geometry. @return {void} */
+    clearEdgePreview() {
+        if (this.edgePreview) { this.drawing.removeLayer(this.edgePreview); this.edgePreview = null; }
+        this.map.getContainer().classList.remove("is-inserting-annotation-vertex");
+    }
+
     /** Release map listeners, draft markers and editing-mode presentation. @return {void} */
     destroy() {
         this.render(null);
         this.map.off("click", this.click);
+        this.map.off("movestart zoomstart", this.clearPreview);
+        this.map.getContainer().removeEventListener("pointermove", this.previewEdge);
+        this.map.getContainer().removeEventListener("pointerleave", this.clearPreview);
         this.map.off("zoomstart", this.cancelDrag);
         this.document.defaultView.removeEventListener("blur", this.cancelDrag);
         clearTimeout(this.clickReset);

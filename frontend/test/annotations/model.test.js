@@ -151,3 +151,38 @@ test("saved positions accept older documents and reject invalid stack indices", 
         assert.throws(() => readAnnotationLayers(saved), /position/);
     }
 });
+
+
+test("edge insertion preserves ring order and remains an isolated edit until Save", () => {
+    const annotations = model();
+    const layer = annotations.createLayer();
+    const polygon = triangle(annotations, layer.id);
+    const saved = annotations.document();
+    annotations.beginPolygon(layer.id, polygon.id);
+    annotations.addVertex([-73.5, -5], 1);
+    assert.deepEqual(annotations.draft.polygon.vertices, [[-75, -5], [-73.5, -5], [-72, -5], [-74, -2]]);
+    annotations.addVertex([-74.5, -3.5], 4);
+    assert.deepEqual(annotations.document(), saved);
+    annotations.cancelPolygon();
+    assert.deepEqual(annotations.document(), saved);
+    annotations.beginPolygon(layer.id, polygon.id);
+    annotations.addVertex([-73.5, -5], 1);
+    assert.equal(annotations.savePolygon().vertices.length, 4);
+    assert.equal(layer.polygons[0].id, polygon.id);
+});
+
+test("invalid insertion indices and the vertex cap leave the draft unchanged", () => {
+    const annotations = model();
+    assert.throws(() => annotations.addVertex([0, 0], 1), /Start a polygon/);
+    const layer = annotations.createLayer();
+    annotations.beginPolygon(layer.id);
+    annotations.addVertex([0, 0]); annotations.addVertex([2, 0]);
+    const original = structuredClone(annotations.draft);
+    for (const index of [-1, 3, 0.5, null, "1"]) {
+        assert.throws(() => annotations.addVertex([1, 0], index), /Choose an edge/);
+        assert.deepEqual(annotations.draft, original);
+    }
+    annotations.draft.polygon.vertices = Array.from({ length: MAX_POLYGON_VERTICES }, () => [0, 0]);
+    assert.throws(() => annotations.addVertex([1, 0], 1), /at most/);
+    assert.equal(annotations.draft.polygon.vertices.length, MAX_POLYGON_VERTICES);
+});

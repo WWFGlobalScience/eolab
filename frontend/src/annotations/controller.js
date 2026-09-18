@@ -55,6 +55,11 @@ export class AnnotationController {
         globalThis.addEventListener?.("beforeunload", this.beforeUnload);
         this.editor = new AnnotationMapEditor({ leaflet, map,
             onAdd: point => this.perform(() => { this.model.addVertex(point); this.renderEditor(); }),
+            onInsert: (index, point) => this.perform(() => {
+                this.model.addVertex(point, index);
+                this.renderEditor();
+                this.editor.vertexMarkers[index].getElement().focus({ preventScroll: true });
+            }),
             onMove: (index, point) => this.perform(() => {
                 this.model.draft.polygon.vertices[index] = point;
                 this.renderEditor();

@@ -154,15 +154,20 @@ export class AnnotationModel {
     }
 
     /**
-     * Append a vertex to the current draft without changing saved geometry.
+     * Add a vertex to the current draft, inserting before an index or appending when omitted.
+     * Saved geometry is unchanged until the draft is saved.
      * @param {number[]} position Longitude and latitude.
+     * @param {number} [index] Insertion index, from zero through the current vertex count.
      * @return {void}
-     * @throws {Error} If no draft exists or its vertex limit is reached.
+     * @throws {Error} If no draft exists, the index is invalid or the vertex limit is reached.
      */
-    addVertex(position) {
+    addVertex(position, index = this.draft?.polygon.vertices.length) {
         if (!this.draft) throw new Error("Start a polygon before adding vertices.");
         if (this.draft.polygon.vertices.length >= MAX_POLYGON_VERTICES) throw new Error(`A polygon can have at most ${MAX_POLYGON_VERTICES} vertices.`);
-        this.draft.polygon.vertices.push([...position]);
+        if (!Number.isInteger(index) || index < 0 || index > this.draft.polygon.vertices.length) {
+            throw new Error("Choose an edge on the current polygon before inserting a vertex.");
+        }
+        this.draft.polygon.vertices.splice(index, 0, [...position]);
     }
 
     /**
