@@ -7,7 +7,7 @@ export class AnnotationLayerControls {
      * Build stable layer controls; notes and names are always plain text.
      * @param {Document} document Browser document.
      * @param {import("./model.js").AnnotationLayer} layer Annotation data.
-     * @param {Object} actions Named callbacks: add, edit, removePolygon, change, opacity.
+     * @param {Object} actions Named callbacks: add, edit, removePolygon, change, opacity, exportGeoJSON.
      */
     constructor(document, layer, actions) {
         this.document = document;
@@ -27,6 +27,9 @@ export class AnnotationLayerControls {
         share.disabled = true;
         share.title = "Workshop sharing is coming later. These annotations stay on this device.";
         buttons.append(share);
+        const exportButton = this.button("Export GeoJSON", actions.exportGeoJSON);
+        exportButton.title = "Download all saved polygons, names and notes in this layer, including filtered-out polygons. Save unfinished edits first to include them.";
+        buttons.append(exportButton);
         this.root.append(buttons);
         this.appearance = this.details("Annotation style");
         this.styleInputs = {};

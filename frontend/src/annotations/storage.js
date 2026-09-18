@@ -1,5 +1,5 @@
 /** Device-local annotation persistence with protection against stale tab writes. */
-import { readAnnotationLayers } from "./model.js";
+import { readAnnotationLayers, MAX_ANNOTATION_DOCUMENT_BYTES } from "./model.js";
 
 /** Own a versioned IndexedDB document; no annotations are sent to a server. */
 export class AnnotationStorage {
@@ -46,7 +46,7 @@ export class AnnotationStorage {
      * @throws {Error} If storage is full, closed, exceeds the document limit or changed in another tab.
      */
     async save(document) {
-        if (new TextEncoder().encode(JSON.stringify(document)).byteLength > 8 * 1024 * 1024) {
+        if (new TextEncoder().encode(JSON.stringify(document)).byteLength > MAX_ANNOTATION_DOCUMENT_BYTES) {
             throw new Error("Annotations exceed the 8 MiB device-document limit.");
         }
         if (!this.database) throw new Error("Annotation storage is unavailable. Keep this tab open.");

@@ -432,13 +432,20 @@
                       id="eomap-map-layers-body"
                       aria-hidden="false"
                     >
-                    <div class="annotation-layer-actions">
-                      <button class="secondary-button" id="create-annotation-layer" type="button" disabled>Create annotation layer</button>
-                      <button class="secondary-button" id="undo-annotation-delete" type="button" hidden>Undo deletion</button>
-                      <button class="secondary-button" id="retry-annotation-save" type="button" hidden>Retry saving</button>
-                      <p id="annotation-save-status" role="status" aria-live="polite">Opening local annotations…</p>
-                      <p class="annotation-storage-note">Annotation layers stay on this device and are not included in shared map links.</p>
-                    </div>
+                    <details id="annotation-tools" class="annotation-tools">
+                      <summary>Annotation tools</summary>
+                      <div class="annotation-layer-actions">
+                        <button class="secondary-button" id="create-annotation-layer" type="button" disabled>Create annotation layer</button>
+                        <button class="secondary-button" id="import-annotation-geojson" type="button" disabled>Import GeoJSON</button>
+                        <input id="annotation-geojson-file" type="file" accept=".geojson,.json,application/geo+json,application/json" aria-label="Import annotation GeoJSON file" hidden>
+                        <button class="secondary-button" id="undo-annotation-delete" type="button" hidden>Undo deletion</button>
+                        <button class="secondary-button" id="retry-annotation-save" type="button" hidden>Retry saving</button>
+                        <p id="annotation-save-status" role="status" aria-live="polite">Opening local annotations…</p>
+                        <p class="annotation-storage-note">Annotation layers stay on this device. Export GeoJSON to save or share a copy; map links do not include annotations.</p>
+                        <p class="annotation-storage-note">GeoJSON imports polygon names and notes; other attributes and styles are ignored.</p>
+                        <p id="annotation-file-status" role="status" aria-live="polite"></p>
+                      </div>
+                    </details>
                     <div class="map-layer-visibility-actions" role="group" aria-label="Map layer visibility">
                       <button class="secondary-button" id="map-layers-show-all" type="button" aria-label="Show all map layers" disabled>Show all</button>
                       <button class="secondary-button" id="map-layers-hide-all" type="button" aria-label="Hide all map layers" disabled>Hide all</button>
