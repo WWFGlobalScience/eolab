@@ -18,9 +18,11 @@ function setup() {
     const members = new Set();
     const leaflet = { DomUtil: { create: element }, svg: () => ({}),
         featureGroup: () => ({ addLayer: shape => members.add(shape), removeLayer: shape => members.delete(shape), clearLayers: () => members.clear() }),
-        polygon: () => ({ setLatLngs() {}, setStyle() {},
+        polygon: () => ({ setLatLngs(vertices) { this.center = vertices[0]; }, setStyle() {},
+            isTooltipOpen() { return !!this.tooltip; },
+            getCenter() { return this.center; },
             getTooltip() { return this.tooltip; },
-            bindTooltip(content) { this.tooltip = { getContent: () => content, update() {} }; },
+            bindTooltip(content) { this.tooltip = { getContent: () => content, setLatLng(position) { this.position = position; }, update() {} }; },
             unbindTooltip() { this.tooltip = undefined; } }) };
     const map = { getPane: element, getContainer: () => ({ ownerDocument: { createElement: element } }), removeLayer() {} };
     return { annotation, members, rendering: createAnnotationLeafletLayer(leaflet, map, annotation) };
@@ -67,4 +69,17 @@ test("names and notes can each be shown alone, together, or hidden without blank
     annotation.polygons[0].note = "   ";
     rendering.refresh();
     assert.equal(shape.getTooltip(), undefined);
+});
+
+test("geometry updates relocate labels and editing hides only the saved copy", () => {
+    const { annotation, members, rendering } = setup();
+    const shape = [...members][0];
+    annotation.polygons[0].vertices = [[10, 20], [11, 20], [10, 21]];
+    rendering.refresh();
+    assert.deepEqual(shape.getTooltip().position, [20, 10]);
+    rendering.setEditingPolygon("polygon");
+    assert.equal(members.size, 0);
+    rendering.setEditingPolygon(null);
+    assert.equal(members.size, 1);
+    assert.deepEqual([...members][0].getTooltip().position, [20, 10]);
 });

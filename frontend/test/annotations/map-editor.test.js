@@ -40,7 +40,8 @@ function setup(mapDragging = true) {
         dragging: { enabled: () => mapDragging, disable: () => { mapDragging = false; }, enable: () => { mapDragging = true; } },
         getContainer: () => ({ classList: { add() {}, remove() {} } }) };
     editor.vertexMarkers = model.draft.polygon.vertices.map(() => ({ setLatLng() {} }));
-    const shape = { setLatLngs() {} };
+    editor.style = { labels: false, notes: false };
+    const shape = { setLatLngs() {}, unbindTooltip() {} };
     const event = (x, y) => ({ pointerId: 7, button: 0, isPrimary: true,
         currentTarget: target, clientX: x, clientY: y, preventDefault() {}, stopPropagation() {} });
     return { model, editor, target, shape, event, panEnabled: () => mapDragging };

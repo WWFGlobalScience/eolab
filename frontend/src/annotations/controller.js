@@ -53,15 +53,15 @@ export class AnnotationController {
         this.beforeUnload = event => { if (this.dirty || this.model.draft) { event.preventDefault(); event.returnValue = ""; } };
         globalThis.addEventListener?.("beforeunload", this.beforeUnload);
         this.editor = new AnnotationMapEditor({ leaflet, map,
-            onAdd: point => this.perform(() => { this.model.addVertex(point); this.editor.render(this.model.draft); }),
+            onAdd: point => this.perform(() => { this.model.addVertex(point); this.renderEditor(); }),
             onMove: (index, point) => this.perform(() => {
                 this.model.draft.polygon.vertices[index] = point;
-                this.editor.render(this.model.draft);
+                this.renderEditor();
             }),
             onDelete: index => this.perform(() => {
                 const draft = this.model.draft;
                 if (index === 0) this.deletePolygon(draft.layerId, draft.polygon.id);
-                else { draft.polygon.vertices.splice(index, 1); this.editor.render(draft); }
+                else { draft.polygon.vertices.splice(index, 1); this.renderEditor(); }
             }),
             onSave: () => this.perform(() => {
                 const layerId = this.model.draft.layerId;
@@ -98,7 +98,7 @@ export class AnnotationController {
     perform(action) {
         try { action(); }
         catch (error) {
-            if (this.model.draft) this.editor.render(this.model.draft, error.message);
+            if (this.model.draft) this.renderEditor(error.message);
             else this.status.textContent = error.message;
         }
     }
@@ -198,9 +198,22 @@ export class AnnotationController {
     /** Synchronize map editing presentation and notify composition of the mode. @return {void} */
     updateEditor() {
         this.onEditingChange(!!this.model.draft);
-        this.editor.render(this.model.draft);
+        for (const [layerId, rendering] of this.layers) {
+            rendering.setEditingPolygon(this.model.draft?.layerId === layerId ? this.model.draft.polygon.id : null);
+        }
+        this.renderEditor();
         this.undoButton.hidden = !this.model.deleted;
         this.undoButton.disabled = !!this.model.draft;
+    }
+
+    /**
+     * Show the current draft with its layer's name/note settings and any validation message.
+     * @param {string} [message=""] Error shown next to the editing controls.
+     * @return {void}
+     */
+    renderEditor(message = "") {
+        const draft = this.model.draft;
+        this.editor.render(draft, message, draft ? this.model.layer(draft.layerId).style : null);
     }
 
     /**

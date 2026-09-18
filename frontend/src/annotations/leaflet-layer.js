@@ -1,12 +1,13 @@
 /** Independent Leaflet rendering for an annotation layer in the map stack. */
 import { matchingAnnotationPolygons } from "./model.js";
+import { updatePolygonLabel } from "./polygon-label.js";
 
 /**
  * Create a local vector layer with the same opacity/order hooks as tiled layers.
  * @param {Object} leaflet Leaflet namespace.
  * @param {Object} map Leaflet map.
  * @param {import("./model.js").AnnotationLayer} annotation Annotation layer data.
- * @return {Object} Leaflet layer supporting refresh, setOpacity and setZIndex.
+ * @return {Object} Leaflet layer supporting refresh, draft visibility, opacity and drawing order.
  */
 export function createAnnotationLeafletLayer(leaflet, map, annotation) {
     // Leaflet accepts a pane element, so deleting a layer can release the pane too.
@@ -15,12 +16,13 @@ export function createAnnotationLeafletLayer(leaflet, map, annotation) {
     const renderer = leaflet.svg({ pane });
     const group = leaflet.featureGroup();
     const shapes = new Map();
+    let editingPolygon = null;
     /**
      * Update retained shapes and labels without restarting tooltip fades while typing.
      * @return {void}
      */
     group.refresh = () => {
-        const polygons = matchingAnnotationPolygons(annotation);
+        const polygons = matchingAnnotationPolygons(annotation).filter(polygon => polygon.id !== editingPolygon);
         const visibleIds = new Set(polygons.map(polygon => polygon.id));
         for (const [id, { shape }] of shapes) {
             if (!visibleIds.has(id)) { group.removeLayer(shape); shapes.delete(id); }
@@ -40,28 +42,18 @@ export function createAnnotationLeafletLayer(leaflet, map, annotation) {
             }
             shape.setStyle({ color: annotation.style.outline, fillColor: annotation.style.color,
                 weight: annotation.style.weight, fillOpacity: annotation.style.fillOpacity });
-            const showNote = annotation.style.notes && !!polygon.note.trim();
-            if (annotation.style.labels || showNote) {
-                let label = shape.getTooltip()?.getContent();
-                if (!label) {
-                    const document = map.getContainer().ownerDocument;
-                    label = document.createElement("div");
-                    for (const name of ["name", "note"]) {
-                        const text = document.createElement("span");
-                        text.className = `annotation-polygon-${name}`;
-                        label.append(text);
-                    }
-                    shape.bindTooltip(label, { permanent: true, direction: "center", pane, className: "annotation-polygon-label" });
-                }
-                const name = label.querySelector(".annotation-polygon-name");
-                const note = label.querySelector(".annotation-polygon-note");
-                name.hidden = !annotation.style.labels;
-                note.hidden = !showNote;
-                if (name.textContent !== polygon.name) name.textContent = polygon.name;
-                if (note.textContent !== polygon.note) note.textContent = polygon.note;
-                shape.getTooltip().update();
-            } else shape.unbindTooltip();
+            updatePolygonLabel(shape, polygon, annotation.style, map.getContainer().ownerDocument, pane);
         }
+    };
+    /**
+     * Hide the saved polygon while the editor shows its draft and moving label.
+     * @param {string|null} id Edited polygon, or null to show every saved polygon again.
+     * @return {void}
+     */
+    group.setEditingPolygon = id => {
+        if (editingPolygon === id) return;
+        editingPolygon = id;
+        group.refresh();
     };
     /** @param {number} opacity Layer opacity. @return {void} */
     group.setOpacity = opacity => { pane.style.opacity = String(opacity); };
