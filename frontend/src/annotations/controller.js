@@ -84,7 +84,7 @@ export class AnnotationController {
             for (const layer of [...this.model.layers].reverse()) this.attachLayer(layer);
             this.loaded = true;
             this.createButton.disabled = false;
-            this.status.textContent = "Saved on this device. Annotation layers are not included in shared map links.";
+            this.status.textContent = "Saved on this device.";
         } catch (error) {
             this.status.textContent = `Cannot open saved annotations: ${error.message}`;
         }
@@ -204,7 +204,7 @@ export class AnnotationController {
     }
 
     /**
-     * Refresh a changed layer's geometry and optional polygon rows.
+     * Refresh annotation shapes and controls; text edits keep existing stack rows in place.
      * @param {string} id Annotation layer identifier.
      * @param {boolean} [rebuild=true] Whether to rebuild name/note controls.
      * @param {string|null} [focusPolygon=null] Saved polygon to focus.
@@ -213,11 +213,12 @@ export class AnnotationController {
     refreshLayer(id, rebuild = true, focusPolygon = null) {
         const layer = this.model.layer(id);
         const record = this.mapLayers.getRecord(`local:annotation:${id}`);
+        const labelChanged = record.entry.label !== layer.name;
         record.entry.label = layer.name;
         this.layers.get(id).refresh();
         if (rebuild) this.controls.get(id).refresh(focusPolygon);
-        // Reuse existing controls during typing; the stack view retains their focus.
-        this.mapLayers.render();
+        // Polygon text changes do not alter stack controls unless a filter is active.
+        if (rebuild || labelChanged || layer.filter) this.mapLayers.render();
     }
 
     /**
@@ -270,7 +271,7 @@ export class AnnotationController {
                 await this.storage.save(document);
             }
             this.dirty = false;
-            this.status.textContent = this.model.deleted ? "Polygon deleted. Saved on this device." : "Saved on this device. Annotation layers are not included in shared map links.";
+            this.status.textContent = "Saved on this device.";
         } catch (error) {
             this.status.textContent = `Not saved: ${error.message} Keep this tab open.`;
             this.retryButton.hidden = false;
