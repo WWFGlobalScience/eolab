@@ -149,7 +149,7 @@ export class LeafletLayerSet {
     /**
      * Synchronize complete top-first descriptors with the current strategy.
      *
-     * @param {Array<{key:string,visible:boolean,opacity:number,descriptor:Object}>}
+     * @param {Array<{key:string,visible:boolean,opacity:number,descriptor:Object|null}>}
      * rendering Complete retained-layer rendering state.
      * @return {void}
      * @throws {Error} If keys do not match the retained layer set.
@@ -252,6 +252,10 @@ export class LeafletLayerSet {
     /** Apply either one composite grid or the retained independent grids. */
     #applyRenderingStrategy() {
         if (this.compositeRenderer === null) return;
+        if (this.rendering.some(candidate => candidate.descriptor === null && candidate.visible)) {
+            this.#renderWithLocalLayers();
+            return;
+        }
         if (this.individualRenderingKeys !== null) {
             this.#prepareIndividualRendering();
             return;
@@ -266,12 +270,33 @@ export class LeafletLayerSet {
         }
         this.compositeRenderer.update(
             this.rendering
-                .filter(({ visible, opacity }) => visible && opacity > 0)
+                .filter(({ visible, opacity, descriptor }) => visible && opacity > 0 && descriptor !== null)
                 .map(({ opacity, descriptor }) => ({
                     ...structuredClone(descriptor),
                     opacity,
                 }))
         );
+    }
+
+    /**
+     * Interleave local overlays with the existing individual source layers.
+     * A null descriptor identifies local rendering, never a server source.
+     * Paired-raster mode keeps its selected sources and visible local layers.
+     * @return {void}
+     */
+    #renderWithLocalLayers() {
+        this.#cancelPendingIndividualRendering();
+        this.activeIndividualRenderingSignature = null;
+        this.compositeRenderer.clear();
+        for (const candidate of this.rendering) {
+            const record = this.#require(candidate.key);
+            const visible = candidate.visible && (candidate.descriptor === null ||
+                this.individualRenderingKeys === null || this.individualRenderingKeys.has(candidate.key));
+            this.#setLayerHidden(record.layer, false);
+            if (visible && !record.attached) record.layer.addTo(this.leafletMap);
+            if (!visible && record.attached) this.leafletMap.removeLayer(record.layer);
+            record.attached = visible;
+        }
     }
 
     /**

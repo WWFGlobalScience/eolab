@@ -1,0 +1,103 @@
+.annotation-layer-actions,
+.annotation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.annotation-layer-actions { margin-bottom: 0.75rem; }
+#annotation-save-status,
+.annotation-storage-note { flex-basis: 100%; margin: 0; font-size: 0.8rem; line-height: 1.4; color: #555; }
+#annotation-save-status { min-height: 2.8em; }
+.annotation-layer-controls { grid-column: 1 / -1; min-width: 0; border-top: 1px solid #d5d5d5; padding-top: 0.6rem; }
+.annotation-layer-controls details { margin-top: 0.5rem; }
+.annotation-layer-controls summary { cursor: pointer; }
+.annotation-layer-controls ul { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+.annotation-layer-controls li + li { border-top: 1px solid #d5d5d5; margin-top: 0.6rem; padding-top: 0.6rem; }
+.annotation-field { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.5rem; font-size: 0.85rem; }
+.annotation-field > span { flex: 0 0 7rem; }
+.annotation-field input:not([type="checkbox"]):not([type="color"]),
+.annotation-field textarea { min-width: 0; width: 100%; font: inherit; padding: 0.3rem; }
+.annotation-field textarea { resize: vertical; }
+.annotation-actions button { font-size: 0.85rem; padding: 0.3rem 0.6rem; }
+.annotation-layer-controls [hidden],
+.annotation-layer-actions [hidden],
+.annotation-editor-strip[hidden] { display: none; }
+
+/* Composition applies this mode to leave room for drawing while preserving panel state. */
+.is-editing-map-layer .map-tool-openers,
+.is-editing-map-layer #map-inspection,
+.is-editing-map-layer #map-inspection-panels { visibility: hidden; }
+.leaflet-container.is-editing-annotation { cursor: crosshair; }
+.leaflet-container.is-editing-annotation::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 500;
+    pointer-events: none;
+    border: 5px solid #087fbe;
+    background: rgb(8 127 190 / 5%);
+}
+.annotation-editor-strip {
+    position: absolute;
+    top: 0.75rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1100;
+    width: min(32rem, calc(100% - 8rem));
+    max-height: calc(100% - 1.5rem);
+    overflow: auto;
+    padding: 0.6rem 0.8rem;
+    border: 2px solid #087fbe;
+    border-radius: 0.4rem;
+    background: #fff;
+    color: #222;
+    box-shadow: 0 2px 8px #0003;
+    font: 0.85rem/1.4 system-ui, sans-serif;
+    cursor: default;
+}
+.annotation-editor-strip strong { color: #005e91; }
+.annotation-editor-strip p { margin: 0.25rem 0 0.5rem; }
+.annotation-editor-strip details { margin-top: 0.4rem; }
+.annotation-editor-strip summary { cursor: pointer; }
+.annotation-editor-strip .annotation-error { color: #a51e19; font-weight: 600; }
+.annotation-editor-strip .annotation-error:empty { display: none; }
+.annotation-vertex {
+    border-radius: 50%;
+    background: #747b82;
+    border: 2px solid white;
+    box-shadow: 0 0 0 1px #333;
+    cursor: grab;
+}
+.annotation-vertex-preview {
+    pointer-events: none;
+    border-radius: 50%;
+    border: 2px dashed #087fbe;
+    background: rgb(8 127 190 / 25%);
+    box-shadow: 0 0 0 2px #fffc;
+}
+.annotation-vertex.is-first { background: #087fbe; border-radius: 3px; }
+.annotation-vertex:focus-visible { outline: 3px solid #111; outline-offset: 3px; }
+.annotation-polygon-label { background: #fffe; border: 0; box-shadow: none; color: #222; width: max-content; max-width: 18rem; white-space: normal; overflow-wrap: anywhere; }
+.annotation-polygon-label::before { display: none; }
+.annotation-polygon-name { display: block; }
+.annotation-polygon-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; white-space: pre-wrap; font-size: 0.9em; }
+.annotation-polygon-name:not([hidden]) + .annotation-polygon-note { margin-top: 0.2rem; }
+.annotation-polygon-label [hidden] { display: none; }
+@media (max-width: 600px) {
+    .annotation-editor-strip { top: 3.5rem; width: calc(100% - 2rem); max-height: calc(100% - 4.5rem); }
+    .annotation-field { flex-wrap: wrap; }
+}
+
+@media (max-width: 1199px) {
+    #app.is-editing-map-layer #control-panel,
+    #app.is-editing-map-layer #open-panel { visibility: hidden; }
+    #app.is-editing-map-layer #map { left: 0; transition: none; }
+}
+
+.annotation-draft-polygon.leaflet-interactive { cursor: grab; }
+.annotation-draft-polygon.leaflet-interactive:hover { fill-opacity: 0.25; }
+.is-inserting-annotation-vertex,
+.is-inserting-annotation-vertex .annotation-draft-polygon { cursor: crosshair; }
+.is-dragging-annotation, .is-dragging-annotation .annotation-draft-polygon { cursor: grabbing; }

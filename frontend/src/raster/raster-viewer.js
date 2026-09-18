@@ -341,6 +341,7 @@ export function initializeRasterViewer(
     let clearing = false;
     let mapDragging = false;
     let pixelPickerEnabled = true;
+    let pointerInspectionEnabled = true;
     let rasterCursorPosition = null;
     let rasterStyleCommitTimeout = null;
     let rasterSampleWindowResizeTimeout = null;
@@ -3629,8 +3630,19 @@ export function initializeRasterViewer(
             cursorValuesView.clear();
             return;
         }
-        if (!pixelPickerEnabled) return;
+        if (!pixelPickerEnabled || !pointerInspectionEnabled) return;
         cursorValuesView.render(snapshot);
+    }
+
+    /**
+     * Enable pointer inspection when composition returns to map exploration.
+     * Disabling cancels transient reads without changing the user's picker preference.
+     * @param {boolean} enabled Whether pointer movement may request raster values.
+     * @return {void}
+     */
+    function setPointerInspectionEnabled(enabled) {
+        pointerInspectionEnabled = enabled;
+        if (!enabled) handleMapMouseLeave();
     }
 
     /** Hide the pixel picker and cancel its transient sampling operation. */
@@ -3901,6 +3913,7 @@ export function initializeRasterViewer(
      * @return {void}
      */
     function handleMapMouseMove(mapEvent) {
+        if (!pointerInspectionEnabled) return;
         const point = {
             longitude: mapEvent.latlng.lng,
             latitude: mapEvent.latlng.lat,
@@ -4239,6 +4252,7 @@ export function initializeRasterViewer(
         show,
         stage,
         syncVisibleLayers,
+        setPointerInspectionEnabled,
         exploreAt,
         openStyle,
         openPairedStyle,

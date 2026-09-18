@@ -60,6 +60,8 @@ export class MapLayerController {
      * @param {MapLayerStackView} [configuration.view] Layer-list DOM adapter.
      * @param {(layers:Object[])=>void} [configuration.onLayersChange]
      * Presentation change observer.
+     * @param {(layers:Object[])=>void} [configuration.onOrderChange]
+     * Observer for explicit reorders, excluding restoration and asynchronous layer additions.
      * @param {(item:Object)=>void} [configuration.onItemZoom] Requests that a
      * higher-level consumer fit the map to one authoritative Catalog Item.
      * @param {(item:Object)=>void} [configuration.onItemInfo] Requests that a
@@ -71,6 +73,7 @@ export class MapLayerController {
         leafletMap,
         view = new MapLayerStackView(),
         onLayersChange = () => {},
+        onOrderChange = () => {},
         onItemZoom = () => {},
         onItemInfo = () => {},
         stack = new MapLayerStack(),
@@ -86,6 +89,7 @@ export class MapLayerController {
         }
         this.view = view;
         this.onLayersChange = onLayersChange;
+        this.onOrderChange = onOrderChange;
         this.onItemZoom = onItemZoom;
         this.onItemInfo = onItemInfo;
         this.stack = stack;
@@ -104,10 +108,16 @@ export class MapLayerController {
             onFilter: (key) => this.onFilter?.(key),
             onDownload: (key) => this.onDownload?.(key),
             onCalculate: (key) => this.onCalculate?.(key),
-            onZoom: (key) =>
-                this.onItemZoom(this.#requireRecord(key).entry.item),
-            onInfo: (key) =>
-                this.onItemInfo(this.#requireRecord(key).entry.item),
+            onZoom: (key) => {
+                const record = this.#requireRecord(key);
+                if (record.entry.item === null) record.adapter.zoom?.(record);
+                else this.onItemZoom(record.entry.item);
+            },
+            onInfo: (key) => {
+                const record = this.#requireRecord(key);
+                if (record.entry.item === null) record.adapter.info?.(record);
+                else this.onItemInfo(record.entry.item);
+            },
             onCopyStyle: (key) => this.copyStyle(key),
             onPasteStyle: (key) => void this.pasteStyle(key),
             onVisibility: (key, visible) => this.setVisible(key, visible),
@@ -116,6 +126,38 @@ export class MapLayerController {
             onRemove: (key) => this.removeKey(key),
         });
         this.render();
+    }
+
+    /**
+     * Attach a local layer using its owner's synchronous rendering adapter.
+     * No Catalog Item or server publication is created. Local layers supply
+     * createState, createLayer and snapshot, plus optional lifecycle callbacks.
+     * @param {{key:string,label:string,visible?:boolean,opacity?:number}} source Local presentation.
+     * @param {Object} adapter Owner's rendering and presentation methods.
+     * @return {Object} Retained record.
+     * @throws {Error} If the identity is duplicated or construction fails.
+     */
+    addLocal(source, adapter) {
+        if (this.destroyed || this.records.has(source.key)) {
+            throw new Error("Local layer cannot be added to this stack.");
+        }
+        const { entry } = this.stack.addLocal(source.key, source.label, this.recordIntent());
+        const record = { entry, adapter, publication: null, state: null, error: null };
+        try {
+            this.stack.setVisible(entry.key, source.visible ?? true);
+            this.stack.setOpacity(entry.key, source.opacity ?? 1);
+            record.state = adapter.createState({ entry });
+            this.records.set(entry.key, record);
+            this.leafletLayers.add(entry.key, adapter.createLayer(record), entry);
+            this.#applyLeafletOrder();
+        } catch (error) {
+            this.leafletLayers.remove(entry.key);
+            this.records.delete(entry.key);
+            this.stack.remove(entry.key);
+            throw error;
+        }
+        this.render();
+        return record;
     }
 
     /**
@@ -229,7 +271,7 @@ export class MapLayerController {
      * @param {boolean} [options.fitToBounds=true] Whether adapter addition hooks
      * may fit the map to an added layer.
      * @return {Object[]} Committed retained records in top-first order.
-     * @throws {Error} If the controller is non-empty or the batch is invalid.
+     * @throws {Error} If Catalog layers remain or the batch is invalid; local layers are preserved.
      */
     commitStaged(stagedLayers, { fitToBounds = true } = {}) {
         if (!Array.isArray(stagedLayers)) {
@@ -239,11 +281,11 @@ export class MapLayerController {
             throw new TypeError("fitToBounds must be boolean.");
         }
         if (
-            this.stack.entries.length !== 0 ||
-            this.records.size !== 0 ||
+            this.stack.entries.some(entry => entry.item !== null) ||
+            [...this.records.values()].some(record => record.entry.item !== null) ||
             this.pendingPublications.size !== 0
         ) {
-            throw new Error("A staged layer batch requires an empty controller.");
+            throw new Error("A staged layer batch requires an empty Catalog layer stack.");
         }
         const keys = new Set();
         for (const staged of stagedLayers) {
@@ -284,7 +326,7 @@ export class MapLayerController {
                 });
             }
             this.#applyLeafletOrder();
-            for (const record of this.retainedRecords) {
+            for (const { record } of stagedLayers) {
                 record.adapter.added?.(record, { fitToBounds });
                 record.adapter.opacityChanged?.(record, record.entry.opacity);
                 if (!record.entry.visible) {
@@ -302,9 +344,11 @@ export class MapLayerController {
                 }
             }
         } catch (error) {
-            this.leafletLayers.clear();
-            this.stack.clear();
-            this.records.clear();
+            for (const { key } of stagedLayers) {
+                this.leafletLayers.remove(key);
+                if (this.stack.get(key)) this.stack.remove(key);
+                this.records.delete(key);
+            }
             this.presentationActiveKey = null;
             this.render();
             throw error;
@@ -573,6 +617,19 @@ export class MapLayerController {
             `${this.stack.entries.length} in the map drawing order.`
         );
         this.render({ key, action: "reorder" });
+        this.onOrderChange(this.snapshots());
+    }
+
+    /**
+     * Apply a complete saved drawing order without moving keyboard focus or announcing a user action.
+     * @param {string[]} keys Every retained layer key, exactly once, from top to bottom.
+     * @return {void}
+     * @throws {TypeError} If the requested order does not match the retained layers.
+     */
+    restoreOrder(keys) {
+        if (!this.stack.restoreOrder(keys)) return;
+        this.#applyLeafletOrder();
+        this.render();
     }
 
     /**
@@ -659,14 +716,23 @@ export class MapLayerController {
     }
 
     /**
-     * Remove every retained and pending layer.
-     *
+     * Remove retained layers and cancel pending Catalog publication.
+     * @param {Object} [options] Clearing policy.
+     * @param {boolean} [options.preserveLocal=false] Keep device-owned layers when restoring a Catalog view.
      * @return {void}
      */
-    clear() {
+    clear({ preserveLocal = false } = {}) {
         this.recordIntent();
         for (const key of this.pendingPublications.keys()) {
             this.#invalidatePublication(key);
+        }
+        if (preserveLocal) {
+            for (const record of [...this.records.values()]) {
+                if (record.entry.item !== null) this.removeKey(record.entry.key);
+            }
+            this.view.setStatus("");
+            this.render();
+            return;
         }
         this.leafletLayers.clear();
         this.stack.clear();
@@ -708,7 +774,7 @@ export class MapLayerController {
                     key: entry.key,
                     visible: entry.visible,
                     opacity: entry.opacity,
-                    descriptor: record.adapter.renderDescriptor(record),
+                    descriptor: entry.item === null ? null : record.adapter.renderDescriptor(record),
                 };
             })
         );

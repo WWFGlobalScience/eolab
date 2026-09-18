@@ -507,3 +507,54 @@ test("bulk visibility does not change empty stacks or pending additions", async 
     await pending;
     assert.equal(controller.visibleCount, 1);
 });
+
+test("local layers keep their identity and survive Catalog clearing and restoration", async () => {
+    const view = createView(), map = createMap();
+    const controller = new MapLayerController({ leafletMap: map, view });
+    const local = createAdapter("local");
+    local.snapshot = () => ({ datasetKind: "annotation" });
+    let zoomed = 0, inspected = 0;
+    local.zoom = () => zoomed++;
+    local.info = () => inspected++;
+    const record = controller.addLocal({key: "local:annotation:one", label: "Workshop"}, local);
+    assert.equal(record.entry.item, null);
+    view.handlers.onZoom(record.entry.key);
+    view.handlers.onInfo(record.entry.key);
+    assert.equal(zoomed, 1);
+    assert.equal(inspected, 1);
+    const catalog = createAdapter("raster");
+    await controller.show(catalogItem("raster"), catalog);
+    controller.clear({preserveLocal: true});
+    assert.deepEqual(controller.retainedRecords, [record]);
+    const staged = await controller.stage(catalogItem("restored"), catalog);
+    controller.commitStaged([staged]);
+    assert.equal(controller.retainedRecords.length, 2);
+    assert.equal(controller.getRecord(record.entry.key), record);
+    controller.setVisible(record.entry.key, false);
+    controller.setOpacity(record.entry.key, 0.4);
+    assert.equal(record.entry.visible, false);
+    assert.equal(record.entry.opacity, 0.4);
+    assert.throws(() => controller.addLocal({key: record.entry.key, label: "duplicate"}, local));
+});
+
+
+test("saved ordering applies atomically without user-reorder callbacks or focus requests", async () => {
+    const view = createView(), renders = [], reorders = [];
+    view.render = (...args) => renders.push(args);
+    const controller = new MapLayerController({ leafletMap: createMap(), view,
+        onOrderChange: layers => reorders.push(layers.map(layer => layer.key)) });
+    const adapter = createAdapter("raster");
+    await controller.show(catalogItem("one"), adapter);
+    await controller.show(catalogItem("two"), adapter);
+    const original = controller.snapshots().map(layer => layer.key);
+    assert.equal(reorders.length, 0);
+    const renderCount = renders.length;
+    const status = view.status;
+    controller.restoreOrder([...original].reverse());
+    assert.equal(renders.length, renderCount + 1);
+    assert.equal(reorders.length, 0);
+    assert.equal(view.status, status);
+    assert.equal(renders.at(-1)[2], null);
+    controller.reorder(original[0], 0);
+    assert.deepEqual(reorders, [original]);
+});

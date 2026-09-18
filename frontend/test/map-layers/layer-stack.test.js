@@ -161,3 +161,23 @@ test("clear removes all entries, visibility, and active selection", () => {
   assert.equal(stack.visibleCount, 0);
   assert.equal(stack.activeKey, null);
 });
+
+
+test("restoring complete order preserves retained entries and rejects partial or duplicated keys", () => {
+  const stack = new MapLayerStack();
+  const raster = stack.add(catalogItem("catalog", "raster"), "Raster").entry;
+  const local = stack.addLocal("local:annotation:one", "Annotations").entry;
+  const vector = stack.add(catalogItem("catalog", "vector"), "Vector").entry;
+  stack.setVisible(local.key, false);
+  const active = stack.activeKey;
+  assert.equal(stack.restoreOrder([local.key, vector.key, raster.key]), true);
+  assert.deepEqual(stack.entries, [local, vector, raster]);
+  assert.equal(stack.entries[0], local);
+  assert.equal(local.visible, false);
+  assert.equal(stack.activeKey, active);
+  assert.equal(stack.restoreOrder([local.key, vector.key, raster.key]), false);
+  for (const invalid of [null, [local.key], [local.key, local.key, raster.key], [local.key, vector.key, "missing"]]) {
+    assert.throws(() => stack.restoreOrder(invalid), TypeError);
+    assert.deepEqual(stack.entries, [local, vector, raster]);
+  }
+});

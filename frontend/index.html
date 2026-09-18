@@ -432,6 +432,13 @@
                       id="eomap-map-layers-body"
                       aria-hidden="false"
                     >
+                    <div class="annotation-layer-actions">
+                      <button class="secondary-button" id="create-annotation-layer" type="button" disabled>Create annotation layer</button>
+                      <button class="secondary-button" id="undo-annotation-delete" type="button" hidden>Undo deletion</button>
+                      <button class="secondary-button" id="retry-annotation-save" type="button" hidden>Retry saving</button>
+                      <p id="annotation-save-status" role="status" aria-live="polite">Opening local annotations…</p>
+                      <p class="annotation-storage-note">Annotation layers stay on this device and are not included in shared map links.</p>
+                    </div>
                     <div class="map-layer-visibility-actions" role="group" aria-label="Map layer visibility">
                       <button class="secondary-button" id="map-layers-show-all" type="button" aria-label="Show all map layers" disabled>Show all</button>
                       <button class="secondary-button" id="map-layers-hide-all" type="button" aria-label="Hide all map layers" disabled>Hide all</button>
@@ -450,7 +457,7 @@
                     ></p>
                     </section>
                     <p class="map-layers-empty-state">
-                      No map layers yet. Add an item from Catalog.
+                      No map layers yet. Add an item from Catalog or create an annotation layer.
                     </p>
                     <div
                       class="raster-layer-stack"

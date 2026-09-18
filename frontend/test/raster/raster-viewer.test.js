@@ -1347,7 +1347,17 @@ test('cursor sampling follows every visible raster regardless of published bound
     await flushPromises();
     assert.deepEqual(cursorRequests.map(({ item }) => item.id), [top.id, outside.id]);
 
+    h.viewer.setPointerInspectionEnabled(false);
+    h.leafletMap.emit('mousemove', { latlng: { lng: 1, lat: 1 } });
+    assert.equal(timers.size, 0, 'editing mode must not schedule pixel reads');
+    assert.equal(cursorValuesView.enabled, true, 'editing preserves the picker preference');
+    h.viewer.setPointerInspectionEnabled(true);
+    h.leafletMap.emit('mousemove', { latlng: { lng: 1, lat: 1 } });
+    assert.equal(timers.size, 1, 'inspection resumes after editing');
+    h.viewer.setPointerInspectionEnabled(false);
+    assert.equal(timers.size, 0, 'entering editing cancels an outstanding dwell');
     cursorValuesView.handlers.onHide();
+    h.viewer.setPointerInspectionEnabled(true);
     assert.equal(cursorValuesView.enabled, false);
     h.leafletMap.emit('mousemove', { latlng: { lng: 1, lat: 1 } });
     assert.equal(timers.size, 0);

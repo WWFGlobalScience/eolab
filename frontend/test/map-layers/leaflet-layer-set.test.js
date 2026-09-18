@@ -233,3 +233,27 @@ test("Leaflet layer set keeps the composite after the bounded retry fails", () =
     assert.equal(clears, 0);
     assert.equal(map.attached.size, 0);
 });
+
+test("local layers interleave with source grids and never enter a server composite", () => {
+    const map = {attached: new Set(), removeLayer(layer) { this.attached.delete(layer); }};
+    const composites = [];
+    const layers = new LeafletLayerSet(map, {clear() {}, update(rendering) { composites.push(rendering); }});
+    const raster = createLayer(), local = createLayer();
+    layers.add("raster", raster, {visible: true, opacity: 1});
+    layers.add("local", local, {visible: true, opacity: 0.5});
+    const descriptors = [
+        {key: "local", visible: true, opacity: 0.5, descriptor: null},
+        {key: "raster", visible: true, opacity: 1, descriptor: {layerName: "eolab:raster"}},
+    ];
+    layers.render(descriptors);
+    assert.deepEqual(map.attached, new Set([raster, local]));
+    assert.ok(local.zIndex > raster.zIndex);
+    layers.render([...descriptors].reverse());
+    assert.ok(raster.zIndex > local.zIndex);
+    layers.setIndividualRendering(["raster"]);
+    assert.equal(layers.isAttached("local"), true);
+    layers.setIndividualRendering(null);
+    layers.render(descriptors.map(entry => entry.key === "local" ? {...entry, visible: false} : entry));
+    assert.equal(map.attached.size, 0);
+    assert.deepEqual(composites.at(-1), [{layerName: "eolab:raster", opacity: 1}]);
+});
