@@ -8,8 +8,12 @@
 
 .annotation-layer-actions { margin-bottom: 0.75rem; }
 #annotation-save-status,
+#annotation-file-status,
 .annotation-storage-note { flex-basis: 100%; margin: 0; font-size: 0.8rem; line-height: 1.4; color: #555; }
 #annotation-save-status { min-height: 2.8em; }
+#annotation-file-status { overflow-wrap: anywhere; }
+#annotation-file-status:empty { display: none; }
+#annotation-file-status.is-error { color: #a51e19; font-weight: 600; }
 .annotation-layer-controls { grid-column: 1 / -1; min-width: 0; border-top: 1px solid #d5d5d5; padding-top: 0.6rem; }
 .annotation-layer-controls details { margin-top: 0.5rem; }
 .annotation-layer-controls summary { cursor: pointer; }

@@ -13,6 +13,14 @@ import { polygonValidationMessage } from "./geometry.js";
 /** Maximum annotation layers saved on this device for this app. @type {number} */
 export const MAX_ANNOTATION_LAYERS = 32;
 export const MAX_POLYGON_VERTICES = 2000;
+/** Maximum saved polygons in one annotation layer. @type {number} */
+export const MAX_POLYGONS_PER_LAYER = 500;
+/** Maximum UTF-8 bytes saved for all annotation layers on this device. @type {number} */
+export const MAX_ANNOTATION_DOCUMENT_BYTES = 8 * 1024 * 1024;
+/** Maximum characters in a layer or polygon name. @type {number} */
+export const MAX_ANNOTATION_NAME_LENGTH = 160;
+/** Maximum characters in a polygon note. @type {number} */
+export const MAX_ANNOTATION_NOTE_LENGTH = 10000;
 export const DEFAULT_ANNOTATION_STYLE = Object.freeze({ color: "#1686b0", outline: "#202020", weight: 1, fillOpacity: 0.25, labels: true, notes: false });
 
 /**
@@ -38,22 +46,22 @@ export function validateAnnotationStyle(style) {
  */
 export function readAnnotationLayers(document) {
     if (!document || document.version !== 1 || !Array.isArray(document.layers) || document.layers.length > MAX_ANNOTATION_LAYERS ||
-        new TextEncoder().encode(JSON.stringify(document)).byteLength > 8 * 1024 * 1024) throw new Error("Saved annotations have an unsupported format or exceed the storage limit.");
+        new TextEncoder().encode(JSON.stringify(document)).byteLength > MAX_ANNOTATION_DOCUMENT_BYTES) throw new Error("Saved annotations have an unsupported format or exceed the storage limit.");
     const layers = structuredClone(document.layers);
     const identifiers = new Set();
     for (const [index, layer] of layers.entries()) {
         if (layer.position === undefined) layer.position = index;
         if (!Number.isSafeInteger(layer.position) || layer.position < 0) throw new Error("Saved annotation layer position is invalid.");
         requireIdentifier(layer.id, identifiers);
-        requireText(layer.name, 160, false);
+        requireText(layer.name, MAX_ANNOTATION_NAME_LENGTH, false);
         requireText(layer.filter, 300, true);
         if (typeof layer.visible !== "boolean" || !Number.isFinite(layer.opacity) || layer.opacity < 0 || layer.opacity > 1 ||
-            !Array.isArray(layer.polygons) || layer.polygons.length > 500) throw new Error("Saved annotation layer is invalid.");
+            !Array.isArray(layer.polygons) || layer.polygons.length > MAX_POLYGONS_PER_LAYER) throw new Error("Saved annotation layer is invalid.");
         layer.style = validateAnnotationStyle(layer.style);
         for (const polygon of layer.polygons) {
             requireIdentifier(polygon.id, identifiers);
-            requireText(polygon.name, 160, false);
-            requireText(polygon.note, 10000, true);
+            requireText(polygon.name, MAX_ANNOTATION_NAME_LENGTH, false);
+            requireText(polygon.note, MAX_ANNOTATION_NOTE_LENGTH, true);
             if (!Array.isArray(polygon.vertices) || polygon.vertices.length > MAX_POLYGON_VERTICES || polygonValidationMessage(polygon.vertices)) {
                 throw new Error("Saved annotations contain an invalid polygon.");
             }
@@ -139,6 +147,27 @@ export class AnnotationModel {
     }
 
     /**
+     * Add a validated GeoJSON import as a new layer with fresh local IDs.
+     * Check collection capacity before changing existing data; importing never overwrites a layer.
+     * @param {import("./geojson.js").ImportedAnnotationLayer} imported Validated file contents.
+     * @return {AnnotationLayer} Newly added layer using default appearance and no filter.
+     * @throws {Error} If editing is in progress or the layer/document limit would be exceeded.
+     */
+    importLayer(imported) {
+        if (this.draft) throw new Error("Save or cancel the current polygon before importing.");
+        if (this.layers.length >= MAX_ANNOTATION_LAYERS) throw new Error(`This device already has ${MAX_ANNOTATION_LAYERS} annotation layers.`);
+        const layer = { id: this.newId(), name: imported.name, position: 0, visible: true, opacity: 1,
+            style: { ...DEFAULT_ANNOTATION_STYLE }, filter: "",
+            polygons: imported.polygons.map(polygon => ({ ...structuredClone(polygon), id: this.newId() })) };
+        const document = { version: 1, layers: [layer, ...this.layers] };
+        if (new TextEncoder().encode(JSON.stringify(document)).byteLength > MAX_ANNOTATION_DOCUMENT_BYTES) {
+            throw new Error("Import would exceed the 8 MiB annotation storage limit. Export and remove an existing layer first.");
+        }
+        this.layers.unshift(layer);
+        return layer;
+    }
+
+    /**
      * Start a new polygon or copy an existing one into an editing draft.
      * @param {string} layerId Owning layer.
      * @param {string|null} [polygonId=null] Polygon to edit, or a new drawing.
@@ -151,7 +180,7 @@ export class AnnotationModel {
         const polygon = polygonId === null ? { id: this.newId(), name: `Polygon ${layer.polygons.length + 1}`, note: "", vertices: [] }
             : layer.polygons.find(candidate => candidate.id === polygonId);
         if (!polygon) throw new Error("This polygon no longer exists.");
-        if (polygonId === null && layer.polygons.length >= 500) throw new Error("This annotation layer already has 500 polygons.");
+        if (polygonId === null && layer.polygons.length >= MAX_POLYGONS_PER_LAYER) throw new Error(`This annotation layer already has ${MAX_POLYGONS_PER_LAYER} polygons.`);
         this.draft = { layerId, polygon: structuredClone(polygon), isNew: polygonId === null };
     }
 
@@ -221,7 +250,7 @@ export class AnnotationModel {
         const layer = this.layer(layerId);
         if (draft) this.draft = draft;
         else {
-            if (layer.polygons.length >= 500) throw new Error("Remove a polygon before undoing: this layer already has 500 polygons.");
+            if (layer.polygons.length >= MAX_POLYGONS_PER_LAYER) throw new Error(`Remove a polygon before undoing: this layer already has ${MAX_POLYGONS_PER_LAYER} polygons.`);
             layer.polygons.splice(index, 0, polygon);
         }
         this.deleted = null;

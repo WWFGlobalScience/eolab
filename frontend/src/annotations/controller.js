@@ -1,4 +1,5 @@
 /** Local annotation workflow, composed with neutral map-layer services. */
+import { readAnnotationGeoJSONFile, exportAnnotationGeoJSON } from "./geojson.js";
 import { AnnotationModel, matchingAnnotationPolygons, validateAnnotationStyle } from "./model.js";
 import { AnnotationStorage } from "./storage.js";
 import { AnnotationMapEditor } from "./map-editor.js";
@@ -36,6 +37,18 @@ export class AnnotationController {
         this.status = document.querySelector("#annotation-save-status");
         this.undoButton = document.querySelector("#undo-annotation-delete");
         this.retryButton = document.querySelector("#retry-annotation-save");
+        this.importButton = document.querySelector("#import-annotation-geojson");
+        this.importInput = document.querySelector("#annotation-geojson-file");
+        this.fileStatus = document.querySelector("#annotation-file-status");
+        this.importing = false;
+        this.importButton.addEventListener("click", () => {
+            this.importInput.value = "";
+            this.importInput.click();
+        });
+        this.importInput.addEventListener("change", () => {
+            const file = this.importInput.files[0];
+            if (file) void this.importGeoJSONFile(file);
+        });
         this.createButton.disabled = true;
         this.createButton.addEventListener("click", () => this.perform(() => {
             const layer = this.model.createLayer();
@@ -90,9 +103,66 @@ export class AnnotationController {
             for (const layer of [...this.model.layers].reverse()) this.attachLayer(layer);
             this.loaded = true;
             this.createButton.disabled = false;
+            this.importButton.disabled = false;
             this.status.textContent = "Saved on this device.";
         } catch (error) {
             this.status.textContent = `Cannot open saved annotations: ${error.message}`;
+        }
+    }
+
+    /**
+     * Import a local GeoJSON file as one new layer after validating the whole file.
+     * File errors do not change the map. Persistence errors use the existing save/retry controls.
+     * @param {File} file File chosen in Map layers.
+     * @return {Promise<void>} Completion with a visible success or error message.
+     */
+    async importGeoJSONFile(file) {
+        if (this.importing || !this.loaded) return;
+        this.importing = true;
+        this.importButton.disabled = true;
+        this.fileStatus.textContent = "Reading GeoJSON…";
+        this.fileStatus.classList.remove("is-error");
+        try {
+            const imported = await readAnnotationGeoJSONFile(file);
+            const layer = this.model.importLayer(imported);
+            this.attachLayer(layer);
+            await this.save();
+            this.fileStatus.textContent = `Imported ${layer.polygons.length} ${layer.polygons.length === 1 ? "polygon" : "polygons"} into “${layer.name}”.`;
+        } catch (error) {
+            this.fileStatus.textContent = `Cannot import GeoJSON: ${error.message}`;
+            this.fileStatus.classList.add("is-error");
+        } finally {
+            this.importing = false;
+            this.importButton.disabled = false;
+            this.importInput.value = "";
+        }
+    }
+
+    /**
+     * Download a layer's committed polygons as GeoJSON without sending data to a server.
+     * @param {string} layerId Annotation layer to export, including filtered-out polygons.
+     * @return {void} Starts a browser download or displays an error.
+     */
+    exportGeoJSONFile(layerId) {
+        let url;
+        const link = this.document.createElement("a");
+        this.fileStatus.classList.remove("is-error");
+        try {
+            const layer = this.model.layer(layerId);
+            const text = JSON.stringify(exportAnnotationGeoJSON(layer));
+            url = URL.createObjectURL(new Blob([text], { type: "application/geo+json" }));
+            link.href = url;
+            link.download = `${layer.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 100) || "annotations"}.geojson`;
+            this.document.body.append(link);
+            link.click();
+            this.fileStatus.textContent = `GeoJSON download started for “${layer.name}”. All saved polygons are included; unfinished edits are excluded.`;
+        } catch (error) {
+            this.fileStatus.textContent = `Cannot export GeoJSON: ${error.message}`;
+            this.fileStatus.classList.add("is-error");
+        } finally {
+            link.remove();
+            // Allow the browser to consume the download URL before releasing it.
+            if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
     }
 
@@ -118,6 +188,7 @@ export class AnnotationController {
         const key = `local:annotation:${layer.id}`;
         const controls = new AnnotationLayerControls(this.document, layer, {
             add: () => this.beginPolygon(layer.id),
+            exportGeoJSON: () => this.exportGeoJSONFile(layer.id),
             edit: id => this.beginPolygon(layer.id, id),
             removePolygon: id => this.perform(() => this.deletePolygon(layer.id, id)),
             change: (rebuild = true) => this.perform(() => {
