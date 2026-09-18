@@ -179,7 +179,7 @@ test("model refuses imports during edits or beyond capacity without mutating exi
 function importController() {
     const controller = Object.create(AnnotationController.prototype);
     Object.assign(controller, { model: model(), loaded: true, importing: false, attached: [], saved: [],
-        importButton: { disabled: false }, importInput: { value: "file" },
+        importButton: { disabled: false }, importInput: { value: "file" }, toolsDisclosure: { open: false },
         fileStatus: { textContent: "", classList: { add() {}, remove() {} } },
         attachLayer(layer) { this.attached.push(layer); },
         async save() { this.saved.push(this.model.document()); },
@@ -194,11 +194,14 @@ test("one invalid feature rejects the entire file and errors survive until anoth
     document.features.push({ ...feature(), geometry: { type: "Point", coordinates: [1, 2] } });
     await controller.importGeoJSONFile(new File([JSON.stringify(document)], "mixed.geojson"));
     assert.match(controller.fileStatus.textContent, /Feature 2: Point/);
+    assert.equal(controller.toolsDisclosure.open, true, "file errors reveal the tools");
     assert.deepEqual(controller.model.layers, [existing]);
     assert.equal(controller.attached.length, 0);
     assert.equal(controller.saved.length, 0);
     assert.equal(controller.importButton.disabled, false);
+    controller.toolsDisclosure.open = false;
     await controller.importGeoJSONFile(new File([JSON.stringify(collection())], "good.geojson"));
+    assert.equal(controller.toolsDisclosure.open, false, "successful import respects a collapsed disclosure");
     assert.equal(controller.model.layers.length, 2);
     assert.equal(controller.attached.length, 1);
     assert.equal(controller.saved.length, 1);

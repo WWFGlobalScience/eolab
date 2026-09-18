@@ -6,7 +6,12 @@
     align-items: center;
 }
 
-.annotation-layer-actions { margin-bottom: 0.75rem; }
+.annotation-tools { margin-bottom: 0.75rem; }
+.annotation-tools > summary { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600; font-size: 0.85rem; list-style: none; }
+.annotation-tools > summary::-webkit-details-marker { display: none; }
+.annotation-tools > summary::before { content: ""; width: 0.4rem; height: 0.4rem; flex: none; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); }
+.annotation-tools[open] > summary::before { transform: rotate(45deg); }
+.annotation-layer-actions { margin-top: 0.6rem; }
 #annotation-save-status,
 #annotation-file-status,
 .annotation-storage-note { flex-basis: 100%; margin: 0; font-size: 0.8rem; line-height: 1.4; color: #555; }

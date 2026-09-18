@@ -33,6 +33,7 @@ export class AnnotationController {
         this.dirty = false;
         this.saving = false;
         this.pendingSave = false;
+        this.toolsDisclosure = document.querySelector("#annotation-tools");
         this.createButton = document.querySelector("#create-annotation-layer");
         this.status = document.querySelector("#annotation-save-status");
         this.undoButton = document.querySelector("#undo-annotation-delete");
@@ -94,7 +95,7 @@ export class AnnotationController {
     }
 
     /**
-     * Restore local layers once storage validation completes.
+     * Restore local layers once storage validation completes; expand tools if loading fails.
      * @return {Promise<void>} Completion, including a visible storage error if needed.
      */
     async load() {
@@ -107,12 +108,13 @@ export class AnnotationController {
             this.status.textContent = "Saved on this device.";
         } catch (error) {
             this.status.textContent = `Cannot open saved annotations: ${error.message}`;
+            this.toolsDisclosure.open = true;
         }
     }
 
     /**
      * Import a local GeoJSON file as one new layer after validating the whole file.
-     * File errors do not change the map. Persistence errors use the existing save/retry controls.
+     * File errors expand the tools without changing the map. Persistence errors use the existing save/retry controls.
      * @param {File} file File chosen in Map layers.
      * @return {Promise<void>} Completion with a visible success or error message.
      */
@@ -131,6 +133,7 @@ export class AnnotationController {
         } catch (error) {
             this.fileStatus.textContent = `Cannot import GeoJSON: ${error.message}`;
             this.fileStatus.classList.add("is-error");
+            this.toolsDisclosure.open = true;
         } finally {
             this.importing = false;
             this.importButton.disabled = false;
@@ -141,7 +144,7 @@ export class AnnotationController {
     /**
      * Download a layer's committed polygons as GeoJSON without sending data to a server.
      * @param {string} layerId Annotation layer to export, including filtered-out polygons.
-     * @return {void} Starts a browser download or displays an error.
+     * @return {void} Starts a browser download or expands the tools to display an error.
      */
     exportGeoJSONFile(layerId) {
         let url;
@@ -159,6 +162,7 @@ export class AnnotationController {
         } catch (error) {
             this.fileStatus.textContent = `Cannot export GeoJSON: ${error.message}`;
             this.fileStatus.classList.add("is-error");
+            this.toolsDisclosure.open = true;
         } finally {
             link.remove();
             // Allow the browser to consume the download URL before releasing it.
@@ -167,7 +171,7 @@ export class AnnotationController {
     }
 
     /**
-     * Run an editing action and keep errors visible without losing the draft.
+     * Run an editing action, showing errors in the draft editor or expanded tools without losing data.
      * @param {()=>void} action User-requested action.
      * @return {void}
      */
@@ -175,7 +179,10 @@ export class AnnotationController {
         try { action(); }
         catch (error) {
             if (this.model.draft) this.renderEditor(error.message);
-            else this.status.textContent = error.message;
+            else {
+                this.status.textContent = error.message;
+                this.toolsDisclosure.open = true;
+            }
         }
     }
 
@@ -210,7 +217,10 @@ export class AnnotationController {
             zoom: () => {
                 const bounds = rendering.getBounds();
                 if (bounds.isValid()) this.map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
-                else this.status.textContent = "Add a polygon, or clear the filter, before zooming to this layer.";
+                else {
+                    this.status.textContent = "Add a polygon, or clear the filter, before zooming to this layer.";
+                    this.toolsDisclosure.open = true;
+                }
             },
             info: () => controls.open("info"),
             exportSavedState: () => ({ kind: "annotation", style: { ...layer.style } }),
@@ -260,7 +270,7 @@ export class AnnotationController {
     }
 
     /**
-     * Delete one polygon, leave editing mode and expose a single Undo action.
+     * Delete one polygon, leave editing mode and expand tools to expose the single Undo action.
      * @param {string} layerId Owning layer.
      * @param {string} polygonId Polygon identifier.
      * @return {void}
@@ -268,6 +278,7 @@ export class AnnotationController {
     deletePolygon(layerId, polygonId) {
         this.model.deletePolygon(layerId, polygonId);
         this.updateEditor();
+        this.toolsDisclosure.open = true;
         this.refreshLayer(layerId);
         this.save();
     }
@@ -371,7 +382,7 @@ export class AnnotationController {
 
     /**
      * Serialize writes and coalesce pending changes into the latest committed document.
-     * A failed save leaves annotations in memory and visibly marked unsaved.
+     * A failed save leaves annotations in memory and expands tools to show the error and retry action.
      * @return {Promise<void>} Completion after pending writes settle.
      */
     async save() {
@@ -393,6 +404,7 @@ export class AnnotationController {
         } catch (error) {
             this.status.textContent = `Not saved: ${error.message} Keep this tab open.`;
             this.retryButton.hidden = false;
+            this.toolsDisclosure.open = true;
         } finally { this.saving = false; }
     }
 }
