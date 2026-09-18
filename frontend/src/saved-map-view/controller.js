@@ -299,7 +299,8 @@ export class SavedMapViewController {
      * @return {Promise<Readonly<Object>>} Canonical complete map document.
      */
     async #snapshotCurrentView() {
-        const records = [...this.mapLayers.retainedRecords];
+        // Private local layers never enter portable map links.
+        const records = this.mapLayers.retainedRecords.filter(record => record.entry.item !== null);
         const viewport = this.viewport.snapshot();
         const layers = await Promise.all(
             records.map(async (record) => this.#exportLayer(record))

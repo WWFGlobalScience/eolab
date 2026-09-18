@@ -27,6 +27,8 @@ import {
     MOUNTED_DATASET_TYPES,
 } from "./catalog.js";
 import { CatalogSearchSuggestions } from "./catalog-search-suggestions.js";
+import { AnnotationController } from "./annotations/controller.js";
+import "./annotations/style.css";
 import { CatalogVisualizationCoordinator } from "./catalog-visualization.js";
 import { initializeCatalogPaneControls } from "./catalog-pane-controller.js";
 import { CatalogScanControls } from "./catalog-scan-controls.js";
@@ -508,6 +510,7 @@ function renderCatalogItemInspector(
  * layers when a visualization attempt starts.
  * @param {() => void} [onCatalogWorkspaceRequested=() => {}] Reveals Catalog
  * when retained-layer details are requested.
+ * @param {() => void} [onLayoutChange=() => {}] Updates map size after editing-mode layout changes.
  * @return {Promise<Function>} Function that reloads the active catalog search.
  * @throws {TypeError} If the rendering-workspace callback is not callable.
  */
@@ -518,11 +521,13 @@ async function initializeCatalog(
     catalogPaneControls,
     mapInspection,
     onRenderingWorkspaceRequested = () => {},
-    onCatalogWorkspaceRequested = () => {}
+    onCatalogWorkspaceRequested = () => {},
+    onLayoutChange = () => {}
 ) {
     if (
         typeof onRenderingWorkspaceRequested !== "function" ||
-        typeof onCatalogWorkspaceRequested !== "function"
+        typeof onCatalogWorkspaceRequested !== "function" ||
+        typeof onLayoutChange !== "function"
     ) {
         throw new TypeError(
             "Workspace presentation callbacks must be callable"
@@ -702,6 +707,8 @@ async function initializeCatalog(
         refreshCatalogMapAction();
     }
 
+    let annotations = null;
+    let mapInteractionMode = "inspection";
     let rasterVisualization = null;
     let layerStyleEditor = null;
     let savedMapViewController = null;
@@ -727,6 +734,7 @@ async function initializeCatalog(
         ),
         onLayersChange: (layers) => {
             refreshCatalogMapAction();
+            annotations?.observeLayerOrder(layers);
             rasterVisualization?.syncVisibleLayers();
             layerStyleEditor?.refresh();
             vectorFeatureInspector?.syncVisibleLayers();
@@ -832,7 +840,9 @@ async function initializeCatalog(
             };
         },
     });
-    mapLayerController.onFilter = (key) => vectorFilterControls.open(key);
+    mapLayerController.onFilter = key => {
+        if (!annotations?.openControls(key, "filter")) vectorFilterControls.open(key);
+    };
     const vectorSamplingOverlay = new VectorSelectionOverlay(leafletMap, L);
     vectorSampling = new VectorSamplingController({
         view: [new VectorSamplingView(), new VectorSamplingView(document, {
@@ -897,7 +907,9 @@ async function initializeCatalog(
             };
         },
     });
-    mapLayerController.onStyle = (key) => layerStyleEditor.open(key);
+    mapLayerController.onStyle = key => {
+        if (!annotations?.openControls(key, "style")) layerStyleEditor.open(key);
+    };
     rasterVisualization.syncVisibleLayers();
     const catalogVisualization = new CatalogVisualizationCoordinator(
         rasterVisualization,
@@ -1021,6 +1033,7 @@ async function initializeCatalog(
      * @return {void}
      */
     function exploreMap(event) {
+        if (mapInteractionMode !== "inspection") return;
         mapInspection.beginMapClick(event.latlng);
         rasterClickSelected = false;
         selectingMapClick = true;
@@ -1053,6 +1066,18 @@ async function initializeCatalog(
             containerPoint: leafletMap.latLngToContainerPoint(latlng),
         });
     }
+    annotations = new AnnotationController({
+        leaflet: L,
+        map: leafletMap,
+        mapLayers: mapLayerController,
+        onEditingChange: editing => {
+            mapInteractionMode = editing ? "layer-editing" : "inspection";
+            document.querySelector("main").classList.toggle("is-editing-map-layer", editing);
+            rasterVisualization.setPointerInspectionEnabled(!editing);
+            onLayoutChange();
+        },
+    });
+    void annotations.load();
     leafletMap.getContainer().classList.add("leaflet-crosshair");
     leafletMap.on("click", exploreMap);
     document.querySelector("#open-analysis-tools").addEventListener(
@@ -1819,7 +1844,8 @@ async function startApplication() {
         catalogPaneControls,
         mapInspection,
         () => layoutController.showWorkspace("map-layers"),
-        () => layoutController.showWorkspace("catalog")
+        () => layoutController.showWorkspace("catalog"),
+        () => layoutController.notifyLayoutChange()
     );
     await initializeScanner(refreshCatalog);
 }

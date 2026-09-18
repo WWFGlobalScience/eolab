@@ -507,3 +507,32 @@ test("bulk visibility does not change empty stacks or pending additions", async 
     await pending;
     assert.equal(controller.visibleCount, 1);
 });
+
+test("local layers keep their identity and survive Catalog clearing and restoration", async () => {
+    const view = createView(), map = createMap();
+    const controller = new MapLayerController({ leafletMap: map, view });
+    const local = createAdapter("local");
+    local.snapshot = () => ({ datasetKind: "annotation" });
+    let zoomed = 0, inspected = 0;
+    local.zoom = () => zoomed++;
+    local.info = () => inspected++;
+    const record = controller.addLocal({key: "local:annotation:one", label: "Workshop"}, local);
+    assert.equal(record.entry.item, null);
+    view.handlers.onZoom(record.entry.key);
+    view.handlers.onInfo(record.entry.key);
+    assert.equal(zoomed, 1);
+    assert.equal(inspected, 1);
+    const catalog = createAdapter("raster");
+    await controller.show(catalogItem("raster"), catalog);
+    controller.clear({preserveLocal: true});
+    assert.deepEqual(controller.retainedRecords, [record]);
+    const staged = await controller.stage(catalogItem("restored"), catalog);
+    controller.commitStaged([staged]);
+    assert.equal(controller.retainedRecords.length, 2);
+    assert.equal(controller.getRecord(record.entry.key), record);
+    controller.setVisible(record.entry.key, false);
+    controller.setOpacity(record.entry.key, 0.4);
+    assert.equal(record.entry.visible, false);
+    assert.equal(record.entry.opacity, 0.4);
+    assert.throws(() => controller.addLocal({key: record.entry.key, label: "duplicate"}, local));
+});

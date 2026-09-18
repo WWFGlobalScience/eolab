@@ -127,6 +127,8 @@ export class MapLayerStackView {
         ) {
             this.keyboardDrag = null;
         }
+        const focusedControl = this.documentContext.activeElement;
+        const retainLocalFocus = !requestedFocus && layers.some(layer => layer.controls?.contains(focusedControl));
         const retainedFocus = requestedFocus ?? this.#readFocusedAction();
         const focusTargets = new Map();
         const rows = layers.map((layer, index) => this.#buildRow(
@@ -138,7 +140,8 @@ export class MapLayerStackView {
         ));
         this.list.replaceChildren(...rows);
         this.root.hidden = layers.length === 0;
-        if (retainedFocus !== null) {
+        if (retainLocalFocus) focusedControl.focus({ preventScroll: true });
+        else if (retainedFocus !== null) {
             let focusTarget = focusTargets.get(
                 `${retainedFocus.key}\u0000${retainedFocus.action}`
             );
@@ -190,7 +193,7 @@ export class MapLayerStackView {
      * @return {void}
      */
     #renderCounts(layers) {
-        const parts = ["raster", "vector"].flatMap((kind) => {
+        const parts = ["raster", "vector", "annotation"].flatMap((kind) => {
             const count = layers.filter((layer) => layer.datasetKind === kind).length;
             return count === 0 ? [] : [`${count} ${kind}${count === 1 ? "" : "s"}`];
         });
@@ -247,7 +250,9 @@ export class MapLayerStackView {
         activeKey,
         focusTargets
     ) {
-        const accessibleName = `${layer.label}; Catalog Item ${layer.item.collection} / ${layer.item.id}`;
+        const accessibleName = layer.item === null
+            ? `${layer.label}; local annotation layer`
+            : `${layer.label}; Catalog Item ${layer.item.collection} / ${layer.item.id}`;
         const row = this.documentContext.createElement("li");
         row.className = "raster-layer-row";
         row.dataset.layerKey = layer.key;
@@ -298,8 +303,10 @@ export class MapLayerStackView {
             "Style", `Style ${accessibleName}`, layer.key, "style",
             () => this.handlers?.onStyle(layer.key), focusTargets
         );
-        style.setAttribute("aria-haspopup", "dialog");
-        style.setAttribute("aria-controls", "layer-style-editor");
+        if (!layer.controls) {
+            style.setAttribute("aria-haspopup", "dialog");
+            style.setAttribute("aria-controls", "layer-style-editor");
+        }
         const zoom = this.#button(
             "Zoom to", `Zoom to ${accessibleName}`, layer.key, "zoom",
             () => this.handlers?.onZoom(layer.key), focusTargets
@@ -383,6 +390,7 @@ export class MapLayerStackView {
         }
         const legend = this.#buildLegend(layer.legend);
         if (legend !== null) row.append(legend);
+        if (layer.controls) row.append(layer.controls);
         if (layer.error) {
             const error = this.documentContext.createElement("p");
             error.className = "raster-layer-error";

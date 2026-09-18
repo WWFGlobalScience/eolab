@@ -2,7 +2,7 @@
  * Domain state and invariants for the retained map-layer stack.
  *
  * This module owns active selection, visibility, opacity, and top-first
- * ordering keyed by the Catalog identity contract. It performs no publication,
+ * ordering keyed by Catalog identities or explicit local layer identifiers. It performs no publication,
  * DOM, Leaflet, statistics, or styling work.
  */
 
@@ -10,8 +10,8 @@ import { getCatalogItemKey } from "../catalog-item-identity.js";
 
 /**
  * @typedef {Object} MapLayerStackEntry
- * @property {string} key Stable composite Catalog Item key.
- * @property {Object} item Catalog STAC Item.
+ * @property {string} key Stable Catalog Item key or local layer identifier.
+ * @property {Object|null} item Catalog STAC Item; null for browser-owned layers.
  * @property {string} label Readable layer label.
  * @property {number} retentionOrder Monotonic add-intent order.
  * @property {boolean} visible Whether the layer is attached to the map.
@@ -43,7 +43,34 @@ export class MapLayerStack {
      * and whether the stack changed.
      */
     add(item, label, retentionOrder = this.nextRetentionOrder) {
-        const key = getCatalogItemKey(item);
+        return this.#addEntry(getCatalogItemKey(item), item, label, retentionOrder);
+    }
+
+    /**
+     * Retain a browser-owned layer without fabricating a Catalog identity.
+     * @param {string} key Local identifier beginning with "local:".
+     * @param {string} label Readable layer name.
+     * @param {number} [retentionOrder=this.nextRetentionOrder] Add-intent order.
+     * @return {{entry:MapLayerStackEntry,added:boolean}} Retained entry.
+     * @throws {TypeError|Error} If identity, presentation or order is invalid.
+     */
+    addLocal(key, label, retentionOrder = this.nextRetentionOrder) {
+        if (typeof key !== "string" || !key.startsWith("local:") || key.length > 200) {
+            throw new TypeError("Local map layers require a local: identifier.");
+        }
+        return this.#addEntry(key, null, label, retentionOrder);
+    }
+
+    /**
+     * Insert presentation state for a Catalog or local layer.
+     * @param {string} key Stable layer identity.
+     * @param {Object|null} item Catalog Item, or null for a local layer.
+     * @param {string} label Readable name.
+     * @param {number} retentionOrder Monotonic add-intent order.
+     * @return {{entry:MapLayerStackEntry,added:boolean}} Retained entry.
+     * @throws {TypeError|Error} If presentation or order is invalid.
+     */
+    #addEntry(key, item, label, retentionOrder) {
         if (typeof label !== "string" || label.length === 0) {
             throw new TypeError("Map layer labels must be non-empty strings.");
         }

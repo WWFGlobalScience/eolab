@@ -110,13 +110,13 @@ export class CatalogVisualizationCoordinator {
     }
 
     /**
-     * Clear mixed retained layers and raster-owned interaction state.
+     * Clear Catalog layers and raster interactions, preserving local layers.
      *
      * @return {void}
      */
     clear() {
         this.rasterViewer.clear();
-        this.mapLayerController.clear();
+        this.mapLayerController.clear({ preserveLocal: true });
     }
 
     /**

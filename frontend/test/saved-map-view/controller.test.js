@@ -797,3 +797,16 @@ test("reset and one-step undo reuse complete validated restore documents", async
     "reset undo remains available until it is used or replaced",
   );
 });
+
+test("shared map links exclude private local annotation contents", async () => {
+  const view = createView();
+  const controller = new SavedMapViewController({ view,
+    viewport: {snapshot: () => ({center: {latitude: 0, longitude: 0}, zoom: 4})},
+    mapLayers: {retainedRecords: [{entry: {item: null, label: "Private workshop"},
+      adapter: {exportSavedState() {throw new Error("Local data must never be exported here");}}}]},
+    catalogVisualization: {}, catalogItems: {}, viewerVersion: "0.5.0", viewerOrigin: "https://viewer.example",
+  });
+  await controller.copyMapLink();
+  const copied = JSON.parse(await decodeSavedMapViewFragment(view.fragment, {maximumOutputBytes: 512 * 1024}));
+  assert.deepEqual(copied.layers, []);
+});
