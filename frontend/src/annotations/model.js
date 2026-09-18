@@ -2,7 +2,7 @@
 import { polygonValidationMessage } from "./geometry.js";
 
 /**
- * @typedef {{color:string,outline:string,weight:number,fillOpacity:number,labels:boolean}} AnnotationStyle
+ * @typedef {{color:string,outline:string,weight:number,fillOpacity:number,labels:boolean,notes:boolean}} AnnotationStyle
  * @typedef {{id:string,name:string,note:string,vertices:number[][]}} AnnotationPolygon
  * @typedef {{id:string,name:string,visible:boolean,opacity:number,style:AnnotationStyle,filter:string,polygons:AnnotationPolygon[]}} AnnotationLayer
  * @typedef {{version:1,layers:AnnotationLayer[]}} AnnotationDocument
@@ -10,11 +10,11 @@ import { polygonValidationMessage } from "./geometry.js";
  */
 
 export const MAX_POLYGON_VERTICES = 2000;
-export const DEFAULT_ANNOTATION_STYLE = Object.freeze({ color: "#1686b0", outline: "#202020", weight: 1, fillOpacity: 0.25, labels: true });
+export const DEFAULT_ANNOTATION_STYLE = Object.freeze({ color: "#1686b0", outline: "#202020", weight: 1, fillOpacity: 0.25, labels: true, notes: false });
 
 /**
- * Validate a stored or copied annotation appearance.
- * @param {AnnotationStyle} style Fill, outline, width, fill opacity and label settings.
+ * Validate annotation appearance; older saved styles without notes keep notes hidden.
+ * @param {Omit<AnnotationStyle,"notes"> & {notes?:boolean}} style Fill, outline, width, fill opacity and text visibility.
  * @return {AnnotationStyle} Independent validated appearance.
  * @throws {Error} If any appearance setting is invalid.
  */
@@ -22,8 +22,8 @@ export function validateAnnotationStyle(style) {
     if (!style || !/^#[\da-f]{6}$/i.test(style.color) || !/^#[\da-f]{6}$/i.test(style.outline) ||
         !Number.isFinite(style.weight) || style.weight < 0 || style.weight > 10 ||
         !Number.isFinite(style.fillOpacity) || style.fillOpacity < 0 || style.fillOpacity > 1 ||
-        typeof style.labels !== "boolean") throw new Error("Annotation style is invalid.");
-    return { color: style.color, outline: style.outline, weight: style.weight, fillOpacity: style.fillOpacity, labels: style.labels };
+        typeof style.labels !== "boolean" || (style.notes !== undefined && typeof style.notes !== "boolean")) throw new Error("Annotation style is invalid.");
+    return { color: style.color, outline: style.outline, weight: style.weight, fillOpacity: style.fillOpacity, labels: style.labels, notes: style.notes ?? false };
 }
 
 /**

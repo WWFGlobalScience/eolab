@@ -40,16 +40,26 @@ export function createAnnotationLeafletLayer(leaflet, map, annotation) {
             }
             shape.setStyle({ color: annotation.style.outline, fillColor: annotation.style.color,
                 weight: annotation.style.weight, fillOpacity: annotation.style.fillOpacity });
-            if (annotation.style.labels) {
+            const showNote = annotation.style.notes && !!polygon.note.trim();
+            if (annotation.style.labels || showNote) {
                 let label = shape.getTooltip()?.getContent();
                 if (!label) {
-                    label = map.getContainer().ownerDocument.createElement("span");
+                    const document = map.getContainer().ownerDocument;
+                    label = document.createElement("div");
+                    for (const name of ["name", "note"]) {
+                        const text = document.createElement("span");
+                        text.className = `annotation-polygon-${name}`;
+                        label.append(text);
+                    }
                     shape.bindTooltip(label, { permanent: true, direction: "center", pane, className: "annotation-polygon-label" });
                 }
-                if (label.textContent !== polygon.name) {
-                    label.textContent = polygon.name;
-                    shape.getTooltip().update();
-                }
+                const name = label.querySelector(".annotation-polygon-name");
+                const note = label.querySelector(".annotation-polygon-note");
+                name.hidden = !annotation.style.labels;
+                note.hidden = !showNote;
+                if (name.textContent !== polygon.name) name.textContent = polygon.name;
+                if (note.textContent !== polygon.note) note.textContent = polygon.note;
+                shape.getTooltip().update();
             } else shape.unbindTooltip();
         }
     };

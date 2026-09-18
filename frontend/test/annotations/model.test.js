@@ -101,6 +101,8 @@ test("storage round trip preserves layer appearance, text filter and notes", () 
     layer.opacity = 0.6;
     layer.visible = false;
     layer.style.color = "#123456";
+    layer.style.labels = false;
+    layer.style.notes = true;
     const restored = readAnnotationLayers(annotations.document());
     assert.deepEqual(restored, annotations.layers);
     assert.deepEqual(matchingAnnotationPolygons(restored[0]), [polygon]);
@@ -123,4 +125,16 @@ test("stored identities, appearance and drawing limits are validated", () => {
     annotations.draft.polygon.vertices = Array.from({length: MAX_POLYGON_VERTICES}, () => [0, 0]);
     assert.throws(() => annotations.addVertex([0, 0]), /at most/);
     assert.throws(() => annotations.beginPolygon(layer.id), /Save or cancel/);
+});
+
+test("existing saved annotation styles keep notes hidden and reject invalid note settings", () => {
+    const annotations = model();
+    annotations.createLayer();
+    const saved = annotations.document();
+    delete saved.layers[0].style.notes;
+    const restored = readAnnotationLayers(saved);
+    assert.equal(restored[0].style.labels, true);
+    assert.equal(restored[0].style.notes, false);
+    saved.layers[0].style.notes = "yes";
+    assert.throws(() => readAnnotationLayers(saved), /style/);
 });

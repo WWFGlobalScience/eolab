@@ -72,8 +72,12 @@
 }
 .annotation-vertex.is-first { background: #087fbe; border-radius: 3px; }
 .annotation-vertex:focus-visible { outline: 3px solid #111; outline-offset: 3px; }
-.annotation-polygon-label { background: #fffe; border: 0; box-shadow: none; color: #222; }
+.annotation-polygon-label { background: #fffe; border: 0; box-shadow: none; color: #222; max-width: 18rem; white-space: normal; overflow-wrap: anywhere; }
 .annotation-polygon-label::before { display: none; }
+.annotation-polygon-name { display: block; }
+.annotation-polygon-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; white-space: pre-wrap; font-size: 0.9em; }
+.annotation-polygon-name:not([hidden]) + .annotation-polygon-note { margin-top: 0.2rem; }
+.annotation-polygon-label [hidden] { display: none; }
 @media (max-width: 600px) {
     .annotation-editor-strip { top: 3.5rem; width: calc(100% - 2rem); max-height: calc(100% - 4.5rem); }
     .annotation-field { flex-wrap: wrap; }

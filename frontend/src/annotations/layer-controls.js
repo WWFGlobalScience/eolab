@@ -31,13 +31,14 @@ export class AnnotationLayerControls {
         this.appearance = this.details("Annotation style");
         this.styleInputs = {};
         for (const [key, label, type] of [["color", "Fill color", "color"], ["outline", "Outline color", "color"],
-            ["weight", "Outline width", "number"], ["fillOpacity", "Fill opacity", "number"], ["labels", "Show polygon names", "checkbox"]]) {
+            ["weight", "Outline width", "number"], ["fillOpacity", "Fill opacity", "number"], ["labels", "Show names", "checkbox"], ["notes", "Show notes", "checkbox"]]) {
             const wrapper = this.input(label, type, layer.style[key], value => {
                 layer.style[key] = type === "number" ? Number(value) : value;
                 actions.change();
             });
             const input = wrapper.querySelector("input");
             if (type === "number") { input.min = "0"; input.max = key === "weight" ? "10" : "1"; input.step = key === "weight" ? "0.5" : "0.05"; }
+            if (key === "notes") wrapper.title = "Show notes on the map. Long notes show the first six lines; the complete note stays in the polygon list.";
             this.styleInputs[key] = input;
             this.appearance.append(wrapper);
         }
