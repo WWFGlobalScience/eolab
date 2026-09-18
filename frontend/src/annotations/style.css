@@ -84,3 +84,7 @@
     #app.is-editing-map-layer #open-panel { visibility: hidden; }
     #app.is-editing-map-layer #map { left: 0; transition: none; }
 }
+
+.annotation-draft-polygon.leaflet-interactive { cursor: grab; }
+.annotation-draft-polygon.leaflet-interactive:hover { fill-opacity: 0.25; }
+.is-dragging-annotation, .is-dragging-annotation .annotation-draft-polygon { cursor: grabbing; }
