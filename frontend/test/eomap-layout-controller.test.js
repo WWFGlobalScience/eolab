@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { SavedMapViewLocalStorage } from "../src/saved-map-view/local-storage.js";
 
 import {
     CONTROL_PANEL_TRANSITION_MILLISECONDS,
@@ -254,6 +255,9 @@ test("shared viewer omits catalog and status while retaining layer and sidebar c
     const layout = new EomapLayoutController({
         documentContext: fixture.document, schedule: fixture.schedule,
         invalidateMapSize() {}, allowCatalog: false, allowOperationalStatus: false,
+        workspaceStorage: new SavedMapViewLocalStorage({
+            getItem: () => '{"catalogOpen":true,"mapLayersOpen":true}',
+        }),
     });
     layout.showWorkspace("catalog");
     fixture.catalogTab.dispatchEvent(new Event("click"));
@@ -293,6 +297,74 @@ test("workspace disclosures expose independent initial panel states", () => {
         false
     );
     assert.equal(fixture.timers.length, 0);
+    controller.destroy();
+});
+
+test("workspace panels save and restore all four combinations through existing storage", () => {
+    for (const catalogOpen of [true, false]) {
+        for (const mapLayersOpen of [true, false]) {
+            const values = new Map();
+            const storage = new SavedMapViewLocalStorage({
+                getItem: key => values.get(key) ?? null,
+                setItem: (key, value) => values.set(key, value),
+            }, "eolab.workspace-panels.v1");
+            const fixture = createLayoutFixture();
+            const controller = new EomapLayoutController({
+                documentContext: fixture.document, schedule: fixture.schedule,
+                invalidateMapSize() {}, workspaceStorage: storage,
+            });
+            assert.equal(storage.read(), null, "startup must not overwrite preferences");
+            // Exercise both controls even when the desired state is the default.
+            fixture.catalogTab.dispatchEvent(new Event("click"));
+            if (catalogOpen) fixture.catalogTab.dispatchEvent(new Event("click"));
+            controller.showWorkspace("map-layers");
+            if (!mapLayersOpen) {
+                fixture.renderingTab.focus();
+                fixture.document.dispatchEvent(new FakeKeyboardEvent("Escape"));
+            }
+            assert.deepEqual(JSON.parse(storage.read()), { catalogOpen, mapLayersOpen });
+            controller.destroy();
+
+            const restored = createLayoutFixture();
+            const reloaded = new EomapLayoutController({
+                documentContext: restored.document, schedule: restored.schedule,
+                invalidateMapSize() {}, workspaceStorage: storage,
+            });
+            assert.equal(restored.timers.length, catalogOpen && !mapLayersOpen ? 0 : 1);
+            // Resizing for content that arrives later must retain the restored state.
+            reloaded.notifyLayoutChange();
+            assert.equal(restored.catalogRegion.hidden, !catalogOpen);
+            assert.equal(restored.renderingRegion.hidden, !mapLayersOpen);
+            assert.equal(restored.catalogTab.getAttribute("aria-expanded"), String(catalogOpen));
+            assert.equal(restored.renderingTab.getAttribute("aria-expanded"), String(mapLayersOpen));
+            assert.equal(restored.document.activeElement, null);
+            reloaded.destroy();
+        }
+    }
+});
+
+test("missing, invalid, or unavailable panel storage preserves defaults", () => {
+    for (const value of [null, "{", "null", "[]", "{}", '{"catalogOpen":false}',
+        '{"catalogOpen":"false","mapLayersOpen":true}']) {
+        const fixture = createLayoutFixture();
+        const controller = new EomapLayoutController({
+            documentContext: fixture.document, schedule: fixture.schedule,
+            invalidateMapSize() {},
+            workspaceStorage: new SavedMapViewLocalStorage({ getItem: () => value }),
+        });
+        assert.equal(fixture.catalogRegion.hidden, false);
+        assert.equal(fixture.renderingRegion.hidden, true);
+        controller.destroy();
+    }
+    const fixture = createLayoutFixture();
+    const controller = new EomapLayoutController({
+        documentContext: fixture.document, schedule: fixture.schedule,
+        invalidateMapSize() {}, workspaceStorage: new SavedMapViewLocalStorage(null),
+    });
+    assert.equal(fixture.catalogRegion.hidden, false);
+    assert.equal(fixture.renderingRegion.hidden, true);
+    controller.showWorkspace("map-layers");
+    assert.equal(fixture.renderingRegion.hidden, false);
     controller.destroy();
 });
 
