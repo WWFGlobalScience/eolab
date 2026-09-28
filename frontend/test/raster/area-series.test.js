@@ -60,7 +60,7 @@ function fixture(overrides = {}, data = new Map()) {
     };
     const open=async()=>{controller.setMode("area");controller.updateSamplingForPanelVisibility(true);await tick();};
     const close=()=>{area.destroy();calculationRequests.destroy();jobs.destroy();};
-    return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,finish,open,close};
+    return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,finish,open,close,elapse:ms=>{time+=ms;}};
 }
 
 test("formulas share one job per source, retain exact scalar/unit CSV, and presentation edits do not recalculate",async()=>{
@@ -188,7 +188,10 @@ test("uncertain submissions keep the original key and cannot leak into summary r
     assert.ok(observed.every(state=>!state.unfinishedCalculation));
     await h.finish();await h.finish();
     assert.equal(h.area.complete,true);
-    assert.equal(h.area.results.size,2);h.close();
+    assert.equal(h.area.results.size,2);
+    const recoveredResult=[...h.area.results.values()].find(result=>result.job.jobId===saved.pending.planId);
+    assert.doesNotMatch(recoveredResult.performanceLines.join(" "),/Planning round trip:/,"lost submission response has no complete timing trace");
+    h.close();
 });
 
 test("reload cancels every saved series job without restarting the stack or summary",async()=>{
@@ -452,6 +455,36 @@ test("each raster's wait starts at dispatch, while whole-series time ends at the
     assert.equal(h.area.results.get("2").elapsedSeconds,0.1);
     assert.equal(h.area.results.get("1").elapsedSeconds,0.2);
     assert.equal(h.area.elapsedSeconds,0.2,"overlapping request durations are not added");
+    for(const result of h.area.results.values()) {
+        const report=result.performanceLines.join(" ");
+        assert.match(report,/Planning round trip: 0.000 s/);
+        assert.match(report,/Excludes earlier area selection, formula debounce and validation/);
+        assert.doesNotMatch(report,/result displayed|including vector selection when requested here/);
+    }
+    h.close();
+});
+
+test("series report accounts for planning, submission and result observation using executor timestamps",async()=>{
+    const h=fixture();h.controller.updateAvailableRasters([source("1")]);
+    const plan=h.api.planCalculation,submit=h.api.submitCalculation,validate=h.api.validateCalculation;
+    h.api.validateCalculation=async formulas=>{h.elapse(700);return validate(formulas);};
+    h.api.planCalculation=async intent=>{
+        h.elapse(1200);
+        return {...await plan(intent),timing:{reservationSeconds:.1,preparationSeconds:.2,nativeProcessSeconds:.3,finalizationSeconds:.1,queueSeconds:.2}};
+    };
+    h.api.submitCalculation=async input=>{h.elapse(300);return submit(input);};
+    await h.open();h.elapse(3900);await h.finish();
+    const result=h.area.results.get("1"),report=result.performanceLines.join(" ");
+    assert.equal(result.elapsedSeconds,5.5,"earlier validation is excluded");
+    assert.match(report,/Before planning: 0.000 s/);
+    assert.match(report,/Planning round trip: 1.200 s/);
+    assert.match(report,/Between planning and submission: 0.000 s/);
+    assert.match(report,/Submission round trip: 0.300 s/);
+    assert.match(report,/Submission response → result observed: 4.000 s/);
+    assert.match(report,/Total measured wait: 5.500 s/);
+    assert.match(report,/Inside server planning - admission: 0.100 s/);
+    assert.match(report,/Waiting for the native planner: 0.200 s/);
+    assert.match(report,/do not add the two groups together/);
     h.close();
 });
 

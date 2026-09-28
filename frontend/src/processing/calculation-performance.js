@@ -25,25 +25,27 @@ export function executionDescription(grid) {
 
 /** Describe final timings with precise measurement boundaries.
  * @param {Object} job Completed job.
- * @param {number|undefined} totalWaitSeconds Browser request through result DOM update, if observed.
+ * @param {number|undefined} totalWaitSeconds Browser-measured wait, if observed.
  * @param {Object|undefined} stages Browser-local stage durations for this request.
+ * @param {string} [waitDescription] Explanation of the caller's timer boundaries;
+ * defaults to the summary panel's request-through-display interval.
  * @return {string[]} Lines.
  */
-export function performanceDescription(job, totalWaitSeconds, stages) {
+export function performanceDescription(job, totalWaitSeconds, stages, waitDescription =
+    "Measured in this tab from the calculation request through the result UI update, including vector selection when requested here, debounce, planning, queueing and result delivery (notifications or polling); excludes earlier confirmation time and the browser's subsequent paint.") {
     const p = job.result?.performance;
     const lines = [...(Number.isFinite(totalWaitSeconds) && totalWaitSeconds >= 0
-        ? [`Total wait → result displayed: ${totalWaitSeconds.toFixed(3)} s.`,
-            "Measured in this tab from the calculation request through the result UI update, including vector selection when requested here, debounce, planning, queueing and result delivery (notifications or polling); excludes earlier confirmation time and the browser's subsequent paint."]
+        ? [`Total measured wait: ${totalWaitSeconds.toFixed(3)} s.`, waitDescription]
         : ["Total wait unavailable for this result. A complete request-to-display interval was not recorded in this tab."]),
     ...(job.result?.cacheHit ? ["Reused cached result; no raster pixels were read or calculated for this job."] : executionDescription(job.grid))];
     const seconds = n => `${n.toFixed(3)} s`;
     if (stages) {
         lines.push(
-            `Before planning (selection, debounce, validation or previous-work wait): ${seconds(stages.beforePlanningSeconds)}.`,
+            `Before planning: ${seconds(stages.beforePlanningSeconds)}.`,
             `Planning round trip: ${seconds(stages.planningSeconds)}${stages.planReused ? " (existing plan reused)" : ""}.`,
             `Between planning and submission: ${seconds(stages.beforeSubmissionSeconds)}.`,
             `Submission round trip: ${seconds(stages.submissionSeconds)}.`,
-            `Submission response → result displayed: ${seconds(stages.afterSubmissionSeconds)}.`,
+            `Submission response → result observed: ${seconds(stages.afterSubmissionSeconds)}.`,
             "These browser stages add up to total wait. Server stages below overlap them; do not add the two groups together.",
         );
         if (Number.isFinite(stages.vectorSelectionSeconds)) lines.push(

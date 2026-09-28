@@ -524,7 +524,7 @@ test("total wait includes debounce, planning, polling and the first result DOM u
     await h.finish();
     assert.equal(card.result.totalWaitSeconds,4.025);
     const text=node=>[node.textContent,...node.children.map(text)].join(" ");
-    assert.match(text(h.view.cards.get(card.id).detailsBody),/Total wait → result displayed: 4.025 s/);
+    assert.match(text(h.view.cards.get(card.id).detailsBody),/Total measured wait: 4.025 s/);
     h.elapse(10000);h.controller.render();await h.jobs.refresh();
     assert.equal(card.result.totalWaitSeconds,4.025);
     h.controller.request(card.id,"manual");await flush();h.elapse(1500);await h.finish();
@@ -555,7 +555,7 @@ test("browser stages add to total and distinguish planning from submission and d
     assert.equal(s.serverPlan.nativeProcessSeconds,.7);
     const text=node=>[node.textContent,...node.children.map(text)].join(" ");
     assert.match(text(h.view.cards.get(card.id).detailsBody),/Planning round trip: 1.200 s/);
-    assert.match(text(h.view.cards.get(card.id).detailsBody),/Submission response → result displayed: 4.000 s/);
+    assert.match(text(h.view.cards.get(card.id).detailsBody),/Submission response → result observed: 4.000 s/);
 });
 
 test("replacement total wait includes obsolete job cancellation without inheriting its start", async()=>{
