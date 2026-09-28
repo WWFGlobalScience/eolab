@@ -424,6 +424,12 @@ test("composition can expand a named workspace without closing siblings", () => 
     assert.equal(fixture.renderingTab.focused, false);
     assert.equal(fixture.renderingContent.scrollTop, 0);
     assert.equal(fixture.timers.length, 3);
+    fixture.renderingContent.scrollTop = 240;
+    controller.showWorkspace("map-layers");
+    assert.equal(fixture.renderingContent.scrollTop, 240);
+    assert.equal(fixture.renderingRegion.hidden, false);
+    assert.equal(fixture.catalogRegion.hidden, false);
+    assert.equal(fixture.timers.length, 3);
     assert.throws(
         () => controller.showWorkspace("statistics"),
         /Unknown EOMap workspace: statistics/

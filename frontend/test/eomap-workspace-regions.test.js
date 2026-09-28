@@ -292,10 +292,10 @@ test("Map layers has one heading and collapse control with no nested list widget
 });
 
 
-test("inspector publication can reveal Map layers through composition", () => {
+test("successful catalog additions reveal Map layers through composition", () => {
     assert.match(
         COMPOSITION_SOURCE,
-        /setCatalogMapActionFeedback\(item, successStatus\);\s*if \(revealMapLayers && catalogItemsMatch\(catalogState.selectedItem, item\)\) \{\s*onRenderingWorkspaceRequested\(\);/
+        /setCatalogMapActionFeedback\(item, successStatus\);\s*onRenderingWorkspaceRequested\(\);/
     );
     assert.match(
         COMPOSITION_SOURCE,

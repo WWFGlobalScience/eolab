@@ -553,7 +553,7 @@ function renderCatalogItemInspector(
  * catalogPaneControls Catalog-owned progressive inspector presentation.
  * @param {MapInspectionController} mapInspection Shared map-side tools.
  * @param {() => void} [onRenderingWorkspaceRequested=() => {}] Reveals Map
- * layers when a visualization attempt starts.
+ * layers after a successful catalog addition or an explicit shared-layer request.
  * @param {() => void} [onCatalogWorkspaceRequested=() => {}] Reveals Catalog
  * when retained-layer details are requested.
  * @param {() => void} [onLayoutChange=() => {}] Updates map size after editing-mode layout changes.
@@ -1741,15 +1741,13 @@ async function initializeCatalog(
      * Add or remove one explicitly requested Catalog Item independently of selection.
      *
      * Prepared rasters publish directly. Vector add attempts retain their
-     * authoritative capability assessment before publication.
+     * authoritative capability assessment before publication. Successful adds
+     * open Map layers so the user can find the added layer's controls.
      *
      * @param {Object|null} item Item requested by a row or inspector action.
-     * @param {Object} [options={}] Optional presentation behavior.
-     * @param {boolean} [options.revealMapLayers=false] Inspector actions may
-     * reveal Map layers; row actions leave the browsing layout unchanged.
      * @return {Promise<void>} Completion after this Item's action settles.
      */
-    async function toggleCatalogLayer(item, { revealMapLayers = false } = {}) {
+    async function toggleCatalogLayer(item) {
         const visualization = catalogVisualization.describe(item);
         if (visualization === null || catalogState.pendingMapActions.get(item) !== null) {
             return;
@@ -1810,9 +1808,7 @@ async function initializeCatalog(
                 `${datasetNoun[0].toUpperCase()}${datasetNoun.slice(1)} ` +
                 "added to the map.";
             setCatalogMapActionFeedback(item, successStatus);
-            if (revealMapLayers && catalogItemsMatch(catalogState.selectedItem, item)) {
-                onRenderingWorkspaceRequested();
-            }
+            onRenderingWorkspaceRequested();
         } catch (visualizationError) {
             setCatalogMapActionFeedback(item, formatCatalogVisualizationReason(
                 item, visualizationError.message
@@ -1915,7 +1911,7 @@ async function initializeCatalog(
         styleCatalogLayer(catalogState.selectedItem);
     });
     catalogLayerToggle.addEventListener("click", () => {
-        void toggleCatalogLayer(catalogState.selectedItem, { revealMapLayers: true });
+        void toggleCatalogLayer(catalogState.selectedItem);
     });
     if (!isSharedViewer) await loadCatalog(true);
     return loadCatalog.bind(null, true);

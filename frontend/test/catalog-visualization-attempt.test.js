@@ -116,7 +116,7 @@ function harness({ selectedItem = null, prepare = async (item) => item,
   const row = selectedItem === null ? null : addRow(selectedItem);
   actions.refresh();
   return {
-    run: (item = state.selectedItem, options) => actions.run(item, options),
+    run: (item = state.selectedItem) => actions.run(item),
     refresh: actions.refresh, style: actions.style, zoom: actions.zoom, addRow, row, state, calls, layerButton, styleButton, zoomButton,
     onMap, actionContainer, actionStatus, status,
     removeExternally(item) { visualization.remove(item); actions.refresh(); },
@@ -232,7 +232,8 @@ test("pending row Add needs no selection, disables only its Item, and prevents d
   assert.equal(row.state.retained, true);
   assert.equal(h.state.selectedItem, null);
   assert.equal(h.actionContainer.hidden, true);
-  assert.equal(h.calls.some(([call]) => call === "open-rendering" || call === "render-inspector"), false);
+  assert.deepEqual(h.calls.filter(([call]) => call === "open-rendering"), [["open-rendering"]]);
+  assert.equal(h.calls.some(([call]) => call === "render-inspector"), false);
 });
 
 test("selected Item mirrors pending and success states", async () => {
@@ -253,11 +254,11 @@ test("selected Item mirrors pending and success states", async () => {
   assert.equal(h.status.textContent, "This raster is on the map.");
 });
 
-test("only inspector Add opts into opening Map layers", async () => {
+test("inspector and row Add use the same panel-opening path", async () => {
   const h = harness({ selectedItem: raster("inspector") });
-  await h.run(undefined, { revealMapLayers: true });
+  await h.run();
   assert.deepEqual(h.calls.filter(([call]) => call === "open-rendering"), [["open-rendering"]]);
-  assert.match(SOURCE, /toggleCatalogLayer\(catalogState\.selectedItem, \{ revealMapLayers: true \}\)/);
+  assert.match(SOURCE, /toggleCatalogLayer\(catalogState\.selectedItem\)/);
   assert.match(SOURCE, /onMapAction: \(requestedItem\) => toggleCatalogLayer\(requestedItem\)/);
 });
 
@@ -271,6 +272,7 @@ test("row removal skips assessment and updates row and matching inspector", asyn
   assert.equal(h.onMap.hidden, true);
   assert.equal(h.row.state.retained, false);
   assert.equal(h.actionStatus.textContent, "Raster removed from the map.");
+  assert.equal(h.calls.some(([call]) => call === "open-rendering"), false);
 });
 
 test("ineligible vector assessment keeps its contextual reason and never publishes", async () => {
@@ -303,6 +305,7 @@ test("preparation and publication errors are local and retryable", async () => {
     assert.equal(row.state.pendingAction, null);
     assert.equal(other.state.feedback, null);
     assert.equal(h.actionStatus.textContent, "");
+    assert.equal(h.calls.some(([call]) => call === "open-rendering"), false);
     await h.run(item);
     assert.equal(h.calls.filter(([call]) => call === boundary).length, 2);
   }
@@ -338,19 +341,19 @@ test("concurrent raster and vector Adds use collection plus Item ID", async () =
   assert.equal(rowA.state.retained, true);
   assert.equal(rowB.state.pendingAction, null);
   assert.equal(rowB.state.feedback.message, "Vector layer added to the map.");
-  assert.equal(h.calls.some(([call]) => call === "open-rendering"), false);
+  assert.equal(h.calls.filter(([call]) => call === "open-rendering").length, 2);
 });
 
-test("a late inspector publication does not reopen Map layers after browsing elsewhere", async () => {
+test("a successful addition opens Map layers even after browsing to another item", async () => {
   const item = raster("first"), completion = deferred();
   const h = harness({ selectedItem: item, show: () => completion.promise });
-  const attempt = h.run(item, { revealMapLayers: true });
+  const attempt = h.run(item);
   await Promise.resolve();
   h.state.selectedItem = raster("second");
   completion.resolve({ layerName: "eolab:first" });
   await attempt;
   assert.equal(h.row.state.retained, true);
-  assert.equal(h.calls.some(([call]) => call === "open-rendering"), false);
+  assert.deepEqual(h.calls.filter(([call]) => call === "open-rendering"), [["open-rendering"]]);
 });
 
 test("replacement search rows inherit in-flight actions and completion by Item identity", async () => {
@@ -393,4 +396,5 @@ test("unsupported Items and canceled publication never claim to be on map", asyn
   assert.equal(canceled.state.retained, false);
   assert.equal(canceled.state.feedback, null);
   assert.equal(canceled.state.pendingAction, null);
+  assert.equal(h.calls.some(([call]) => call === "open-rendering"), false);
 });
