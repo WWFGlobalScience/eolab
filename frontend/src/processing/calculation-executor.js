@@ -31,7 +31,8 @@ function identity(value) { return JSON.stringify(value); }
  * Contains jobId/status/source metadata; its result property contains values and export URLs.
  * @property {Readonly<Object>|null} completedCalculation Calculation settings that produced completedJob.
  * @property {Object|null} completedTimings Planning/submission timestamps in browser-clock milliseconds
- * plus the server planning measurements; the summary computes elapsed durations.
+ * plus server planning measurements and browser planning-notification counters;
+ * the summary computes elapsed durations. Reused plans omit notification counters.
  * @property {ReadonlyArray<Object>} jobs Calculation history from the shared observer.
  * @property {string} historyError Shared history retrieval error.
  */
@@ -383,7 +384,8 @@ export class CalculationExecutor {
             target.plan = plan;
             this.#executionStatus.plan = plan;
             this.#plannedCalculation = target.intent;
-            this.#planTiming = { planningStartedAtMs, planningFinishedAtMs, planReused, serverPlan: plan.timing ?? null };
+            this.#planTiming = { planningStartedAtMs, planningFinishedAtMs, planReused, serverPlan: plan.timing ?? null,
+                planningObservation: planReused ? null : plan.planningObservation ?? null };
             this.#pendingCalculation = null;
             this.#executionStatus.phase = "idle";
             this.#executionStatus.message = "Calculation prepared.";

@@ -26,7 +26,8 @@ export function executionDescription(grid) {
 /** Describe final timings with precise measurement boundaries.
  * @param {Object} job Completed job.
  * @param {number|undefined} totalWaitSeconds Browser-measured wait, if observed.
- * @param {Object|undefined} stages Browser-local stage durations for this request.
+ * @param {Object|undefined} stages Browser-local durations and optional planningObservation
+ * counters identifying SSE-triggered and timer-triggered planning status reads.
  * @param {string} [waitDescription] Explanation of the caller's timer boundaries;
  * defaults to the summary panel's request-through-display interval.
  * @return {string[]} Lines.
@@ -52,6 +53,16 @@ export function performanceDescription(job, totalWaitSeconds, stages, waitDescri
             `Vector selection before calculation: ${seconds(stages.vectorSelectionSeconds)} (included in Before planning). Includes the selection request/response and source preparation; excludes optional display-outline work.`,
         );
         const plan = stages.serverPlan;
+        const observation = stages.planningObservation;
+        if (observation && !stages.planReused) {
+            const trigger = {submission: "the submission response", recovery: "the admission-recovery status read",
+                sse: "an SSE-triggered status read", timer: "a two-second fallback status read"}[observation.readyResponse];
+            lines.push(
+                `Planning notifications: ${observation.sseHints} SSE hints received; ${observation.sseRefreshes} SSE-triggered status reads; ${observation.timerRefreshes} two-second fallback status reads.`,
+                `Plan ready was first observed in ${trigger}.`,
+                "These counts cover the successful planning attempt. SSE hints are shared across your plans and jobs and include the initial connection hint; receiving one does not prove this plan changed. These counts do not measure calculation-result delivery after submission.",
+            );
+        }
         if (plan && !stages.planReused) lines.push(
             `Inside server planning - admission: ${seconds(plan.reservationSeconds)}; source/selection preparation: ${seconds(plan.preparationSeconds)}; native process (including startup and transfer): ${seconds(plan.nativeProcessSeconds)}; selection recheck and plan storage: ${seconds(plan.finalizationSeconds)}.`,
             ...processDescription("Planning", plan.process),

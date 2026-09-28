@@ -59,7 +59,9 @@ test("queued planning reacts to an SSE hint and fetches the authoritative result
     h.setState("planning"); h.notify(); await flush();
     assert.deepEqual(progress, ["queued", "planning"]);
     h.setState("ready"); h.notify();
-    assert.equal((await result).value, 42);
+    const plan = await result;
+    assert.equal(plan.value, 42);
+    assert.deepEqual(plan.planningObservation, {sseHints: 2, sseRefreshes: 2, timerRefreshes: 0, readyResponse: "sse"});
     assert.equal(h.requests.filter(request => request.method === "POST").length, 1);
     assert.equal(h.requests.filter(request => request.method === "DELETE").length, 0);
     assert.equal(h.closed, true);
@@ -73,7 +75,9 @@ test("missing plan notifications retain two-second fallback polling", async cont
     context.mock.timers.tick(1999); await flush();
     assert.equal(h.requests.length, 1);
     context.mock.timers.tick(1);
-    assert.equal((await result).value, 42);
+    const plan = await result;
+    assert.equal(plan.value, 42);
+    assert.deepEqual(plan.planningObservation, {sseHints: 0, sseRefreshes: 0, timerRefreshes: 1, readyResponse: "timer"});
     assert.equal(h.requests.length, 2);
 });
 
@@ -96,8 +100,39 @@ test("a lost admission response is recovered using the same client plan ID", asy
         return fetch(url, options);
     };
     const result = await h.api.preparePlan("raster-calculations", {}, h.abort.signal);
+    assert.deepEqual(result.planningObservation, {sseHints: 0, sseRefreshes: 0, timerRefreshes: 0, readyResponse: "recovery"});
     assert.equal(h.requests.length, 2);
     assert.ok(h.requests.every(request => request.url.endsWith(result.planId)));
+});
+
+test("an immediately ready admission is not attributed to polling or an earlier SSE hint", async () => {
+    const h = fixture();
+    h.setState("ready");
+    const pending = h.api.preparePlan("raster-calculations", {}, h.abort.signal);
+    h.notify();
+    assert.deepEqual((await pending).planningObservation,
+        {sseHints: 1, sseRefreshes: 0, timerRefreshes: 0, readyResponse: "submission"});
+});
+
+test("SSE received during a fallback read is retained for the next read without relabelling the current one", async context => {
+    context.mock.timers.enable({apis: ["setTimeout"]});
+    const h = fixture(), fetch = h.api.fetch;
+    let firstRead = true;
+    h.api.fetch = async (url, options) => {
+        const response = await fetch(url, options);
+        if (options.method === "GET" && firstRead) {
+            firstRead = false;
+            // This unrelated hint arrives after the timer has already prompted a GET.
+            h.notify();
+        }
+        return response;
+    };
+    const pending = h.api.preparePlan("raster-calculations", {}, h.abort.signal);
+    await flush();
+    h.setState("ready");
+    context.mock.timers.tick(2000);
+    assert.deepEqual((await pending).planningObservation,
+        {sseHints: 1, sseRefreshes: 0, timerRefreshes: 1, readyResponse: "timer"});
 });
 
 test("an admission that cannot be recovered is cancelled by its stable ID", async () => {

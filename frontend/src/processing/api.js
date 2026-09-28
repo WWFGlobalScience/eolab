@@ -3,6 +3,15 @@ import { normalizeRasterSamplingArea } from "../selected-area.js";
 import { normalizeCalculationArea, validatePolygonAreaReference } from "./calculation-area.js";
 import { chunkPixels } from "./calculation-session.js";
 
+/** Browser-only observation of one planning attempt, not persisted on the server.
+ * SSE hints can concern any owned plan or job, including the stream's initial hint.
+ * @typedef {Object} PlanningObservation
+ * @property {number} sseHints Number of hints received while observing this plan.
+ * @property {number} sseRefreshes Status reads prompted by an SSE hint.
+ * @property {number} timerRefreshes Status reads prompted by the two-second fallback.
+ * @property {"submission"|"recovery"|"sse"|"timer"} readyResponse What prompted the response that first reported ready.
+ */
+
 /** Browser-safe HTTP failure; transport failures remain ordinary errors. */
 export class ProcessingRequestError extends Error {
     /** @param {string} message User-facing detail. @param {number} status HTTP status.
@@ -320,17 +329,21 @@ export class ProcessingApiClient {
      * @param {Object} body Validated source, area and expressions.
      * @param {AbortSignal|undefined} signal Superseded request.
      * @param {function(string):void|undefined} onProgress Planning stage, including waiting-capacity before admission.
-     * @return {Promise<Object>} Completed operation plan, ready for explicit submission.
+     * @return {Promise<Object>} Completed operation plan, with browser-only
+     * planningObservation counters for this attempt and the response that found it ready.
      * @throws {Error} If admission, observation or planning fails, or the caller cancels.
      */
     async submitAndObservePlan(operation, body, signal, onProgress) {
         signal?.throwIfAborted();
         const id = crypto.randomUUID().replaceAll("-", "");
+        /** @type {PlanningObservation} */
+        const observation = {sseHints: 0, sseRefreshes: 0, timerRefreshes: 0, readyResponse: "submission"};
         let notified = false;
         let wake = null;
-        const changed = () => { notified = true; wake?.(); };
+        const changed = () => { observation.sseHints++; notified = true; wake?.("sse"); };
+        const cancelled = () => { wake?.("cancelled"); };
         const close = this.watchJobs(changed);
-        signal?.addEventListener("abort", changed);
+        signal?.addEventListener("abort", cancelled);
         let discardOnExit = true;
         try {
             let snapshot;
@@ -356,6 +369,7 @@ export class ProcessingApiClient {
                     discardOnExit = false; // Definitive admission rejection created no work.
                     throw error;
                 }
+                observation.readyResponse = "recovery";
                 snapshot = await this.request(`/plans/${id}`, "GET", undefined, AbortSignal.timeout(10000));
             }
             while (true) {
@@ -366,24 +380,27 @@ export class ProcessingApiClient {
                 if (snapshot.status === "ready") {
                     if (snapshot.result?.planId !== id) throw new Error("Processing returned an invalid completed plan.");
                     discardOnExit = false;
-                    return snapshot.result;
+                    return {...snapshot.result, planningObservation: observation};
                 }
                 if (["failed", "cancelled", "cancelling"].includes(snapshot.status)) {
                     throw new ProcessingRequestError(snapshot.error?.detail ?? "Planning was cancelled.", 422,
                         snapshot.error?.code ?? "plan_cancelled");
                 }
                 onProgress?.(snapshot.status);
-                if (!notified) await new Promise(resolve => {
-                    const timer = setTimeout(() => { wake = null; resolve(); }, 2000);
-                    wake = () => { clearTimeout(timer); wake = null; resolve(); };
+                const trigger = notified ? "sse" : await new Promise(resolve => {
+                    const timer = setTimeout(() => { wake = null; resolve("timer"); }, 2000);
+                    wake = reason => { clearTimeout(timer); wake = null; resolve(reason); };
                 });
                 notified = false;
                 signal?.throwIfAborted();
+                observation.readyResponse = trigger;
+                if (trigger === "sse") observation.sseRefreshes++;
+                else observation.timerRefreshes++;
                 snapshot = await this.request(`/plans/${id}`, "GET", undefined, signal);
             }
         } finally {
             close?.();
-            signal?.removeEventListener("abort", changed);
+            signal?.removeEventListener("abort", cancelled);
             if (discardOnExit) await this.request(`/plans/${id}`, "DELETE", undefined, AbortSignal.timeout(10000));
         }
     }

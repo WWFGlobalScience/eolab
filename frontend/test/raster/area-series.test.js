@@ -470,7 +470,8 @@ test("series report accounts for planning, submission and result observation usi
     h.api.validateCalculation=async formulas=>{h.elapse(700);return validate(formulas);};
     h.api.planCalculation=async intent=>{
         h.elapse(1200);
-        return {...await plan(intent),timing:{reservationSeconds:.1,preparationSeconds:.2,nativeProcessSeconds:.3,finalizationSeconds:.1,queueSeconds:.2}};
+        return {...await plan(intent),timing:{reservationSeconds:.1,preparationSeconds:.2,nativeProcessSeconds:.3,finalizationSeconds:.1,queueSeconds:.2},
+            planningObservation:{sseHints:3,sseRefreshes:2,timerRefreshes:1,readyResponse:"timer"}};
     };
     h.api.submitCalculation=async input=>{h.elapse(300);return submit(input);};
     await h.open();h.elapse(3900);await h.finish();
@@ -484,6 +485,9 @@ test("series report accounts for planning, submission and result observation usi
     assert.match(report,/Total measured wait: 5.500 s/);
     assert.match(report,/Inside server planning - admission: 0.100 s/);
     assert.match(report,/Waiting for the native planner: 0.200 s/);
+    assert.match(report,/3 SSE hints received; 2 SSE-triggered status reads; 1 two-second fallback status reads/);
+    assert.match(report,/Plan ready was first observed in a two-second fallback status read/);
+    assert.match(report,/do not measure calculation-result delivery after submission/);
     assert.match(report,/do not add the two groups together/);
     h.close();
 });

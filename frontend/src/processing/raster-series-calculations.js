@@ -285,6 +285,7 @@ export class RasterSeriesCalculations {
                     submissionSeconds: (trace.submissionFinishedAtMs - trace.submissionStartedAtMs) / 1000,
                     afterSubmissionSeconds: (receivedAt - trace.submissionFinishedAtMs) / 1000,
                     planReused: trace.planReused, serverPlan: trace.serverPlan,
+                    planningObservation: trace.planningObservation,
                 };
             }
             this.results.set(request.key, { job: state.completedJob, calculationInputs: request.calculationInputs, elapsedSeconds,
