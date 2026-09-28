@@ -31,8 +31,9 @@ function identity(value) { return JSON.stringify(value); }
  * Contains jobId/status/source metadata; its result property contains values and export URLs.
  * @property {Readonly<Object>|null} completedCalculation Calculation settings that produced completedJob.
  * @property {Object|null} completedTimings Planning/submission timestamps in browser-clock milliseconds
- * plus server planning measurements and browser planning-notification counters;
- * the summary computes elapsed durations. Reused plans omit notification counters.
+ * plus server planning measurements, planning-notification counters, cleanup and
+ * result-delivery diagnostics. Consumers compute elapsed durations using the same
+ * browser clock. Reused plans omit planning-notification counters.
  * @property {ReadonlyArray<Object>} jobs Calculation history from the shared observer.
  * @property {string} historyError Shared history retrieval error.
  */
@@ -250,7 +251,10 @@ export class CalculationExecutor {
     async #submitWhenCapacityAvailable() {
         const saved = this.#savedSubmission;
         for (let attempt = 0; ; attempt++) {
-            try { return await this.api.submitCalculation(saved.pending); }
+            try {
+                if (this.trace) this.trace.submissionAttempts = attempt + 1;
+                return await this.api.submitCalculation(saved.pending);
+            }
             catch (error) {
                 if (error instanceof ProcessingRequestError && error.isCapacityRejection) {
                     const capacityWaitCancellation = this.#capacityWait = new AbortController();
@@ -258,9 +262,13 @@ export class CalculationExecutor {
                     this.#executionStatus.phase = "waiting";
                     this.#executionStatus.message = "Waiting for server capacity; retrying automatically…";
                     this.#notifyListeners();
+                    const waitStarted = this.now();
                     try { await waitBeforeCapacityRetry(error, attempt, capacityWaitCancellation.signal); continue; }
                     catch (cancelled) { if (cancelled.name !== "AbortError") throw cancelled; }
-                    finally { this.#capacityWait = null; }
+                    finally {
+                        if (this.trace) this.trace.capacityWaitSeconds = (this.trace.capacityWaitSeconds ?? 0) + (this.now() - waitStarted) / 1000;
+                        this.#capacityWait = null;
+                    }
                 } else if (!(error instanceof ProcessingRequestError) || error.status < 400 || error.status >= 500 || error.status === 408) {
                     throw error; // The request might already have created a job.
                 }
@@ -316,6 +324,11 @@ export class CalculationExecutor {
                     throw error;
                 }
                 if (!job) return;
+                if (this.trace) {
+                    this.trace.planId = this.#savedSubmission.pending.planId;
+                    this.trace.jobId = job.jobId;
+                }
+                if (job.status === "ready") this.api.diagnostics?.record("ready-received", {jobId: job.jobId, trigger: "submission"});
                 this.#savedSubmission.jobId = job.jobId;
                 this.#savedSubmission.releasePlanId = this.#savedSubmission.pending.planId;
                 this.#savedSubmission.pending = null;
@@ -324,7 +337,9 @@ export class CalculationExecutor {
                 this.jobs.accept(job);
             }
             if (this.#savedSubmission?.releasePlanId) {
+                if (this.trace) this.trace.cleanupStartedAtMs = this.now();
                 await this.api.discardPlan(this.#savedSubmission.releasePlanId);
+                if (this.trace) this.trace.cleanupFinishedAtMs = this.now();
                 this.#savedSubmission.releasePlanId = null;
                 this.storage.write(this.#savedSubmission);
             }
@@ -339,6 +354,11 @@ export class CalculationExecutor {
                     return;
                 }
                 if (job.status === "ready" && !this.#savedSubmission.cancelRequested) {
+                    if (this.trace) {
+                        this.trace.executorReadyAtMs = this.now();
+                        this.trace.deliveryDiagnostics = this.api.diagnostics?.snapshot(this.trace.submissionStartedAtMs,
+                            this.trace.planId, job.jobId);
+                    }
                     this.#executionStatus.completedJob = job; this.#executionStatus.completedCalculation = this.#savedSubmission.intent;
                     this.#executionStatus.completedTimings = this.trace ?? null;
                     this.#executionStatus.message = "Calculation complete.";

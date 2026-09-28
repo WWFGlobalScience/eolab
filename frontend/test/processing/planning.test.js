@@ -9,11 +9,11 @@ test("planning and job observers share one event connection until the last subsc
     const streams = [];
     class Events {
         /** Capture the connection used by the client. */
-        constructor() { streams.push(this); this.closed = false; }
+        constructor() { streams.push(this); this.closed = false; this.listeners = new Map(); }
         /** @param {string} type Event type. @param {Function} listener Listener. @return {void} */
-        addEventListener(type, listener) { this.listener = listener; }
-        /** @return {void} */
-        removeEventListener() { this.listener = null; }
+        addEventListener(type, listener) { this.listeners.set(type, listener); }
+        /** @param {string} type Event type. @return {void} */
+        removeEventListener(type) { this.listeners.delete(type); }
         /** @return {void} */
         close() { this.closed = true; }
     }
@@ -22,10 +22,10 @@ test("planning and job observers share one event connection until the last subsc
     const stopPlanning = api.watchJobs(() => planning++);
     const stopJobs = api.watchJobs(() => jobs++);
     assert.equal(streams.length, 1);
-    streams[0].listener({data:"{}"});
+    streams[0].listeners.get("changed")({data:"{}"});
     assert.equal(planning, 1); assert.equal(jobs, 1);
     stopPlanning(); stopPlanning();
-    streams[0].listener({data:"{}"});
+    streams[0].listeners.get("changed")({data:"{}"});
     assert.equal(planning, 1); assert.equal(jobs, 2);
     assert.equal(streams[0].closed, false);
     stopJobs(); assert.equal(streams[0].closed, true);

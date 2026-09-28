@@ -587,6 +587,7 @@ export class SummaryStatisticsController {
                         afterSubmissionSeconds: (displayed - trace.submissionFinishedAtMs) / 1000,
                         planReused: trace.planReused, serverPlan: trace.serverPlan,
                         planningObservation: trace.planningObservation,
+                        delivery: {...trace, controllerReceivedAtMs: displayed},
                         vectorSelectionSeconds: result.vectorSelectionSeconds,
                     };
                 }

@@ -127,6 +127,9 @@ def submit_calculation(client: TestClient, plan: dict, key: str | None = None) -
         headers=HEADERS,
     )
     assert response.status_code == 202, response.text
+    timings = response.headers["server-timing"]
+    assert "admissionChecks;dur=" in timings
+    assert "processing;dur=" in timings
     return response.json()
 
 

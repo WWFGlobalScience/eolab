@@ -286,6 +286,7 @@ export class RasterSeriesCalculations {
                     afterSubmissionSeconds: (receivedAt - trace.submissionFinishedAtMs) / 1000,
                     planReused: trace.planReused, serverPlan: trace.serverPlan,
                     planningObservation: trace.planningObservation,
+                    delivery: {...trace, controllerReceivedAtMs: receivedAt},
                 };
             }
             this.results.set(request.key, { job: state.completedJob, calculationInputs: request.calculationInputs, elapsedSeconds,

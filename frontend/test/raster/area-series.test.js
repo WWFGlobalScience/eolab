@@ -7,6 +7,7 @@ import { CalculationSessionStorage } from "../../src/processing/calculation-sess
 import { CATALOG_SELECTION } from "../../test-support/raster/fixtures.js";
 import { ProcessingJobs } from "../../src/processing/jobs.js";
 import { ProcessingApiClient, ProcessingRequestError } from "../../src/processing/api.js";
+import { ProcessingDiagnostics } from "../../src/processing/diagnostics.js";
 
 /** @param {number} west Longitude. @return {Object} Valid sampling box. */
 const box = west => ({kind:"selectedArea",selectedBounds:{west,south:0,east:west+1,north:1}});
@@ -27,6 +28,7 @@ function fixture(overrides = {}, data = new Map()) {
     const clock={setTimeout(fn,delay){const id=++serial;timers.set(id,{fn,delay});return id;},clearTimeout(id){timers.delete(id);}};
     const grid={nativeBlocks:1,decodedBytes:100,width:10,height:10,crs:"EPSG:4326"};
     const api={
+        diagnostics:new ProcessingDiagnostics(()=>time),
         validateCalculation:async formulas=>{requests.push(["validate",formulas]);return {valid:true};},
         planCalculation:async intent=>{const planId=String(++serial).padStart(32,"0");requests.push(["plan",intent]);plans.set(planId,intent);return {planId,grid,expiresAt:"2099-01-01T00:00:00Z"};},
         discardPlan:async id=>{requests.push(["discard",id]);},
@@ -466,7 +468,7 @@ test("each raster's wait starts at dispatch, while whole-series time ends at the
 
 test("series report accounts for planning, submission and result observation using executor timestamps",async()=>{
     const h=fixture();h.controller.updateAvailableRasters([source("1")]);
-    const plan=h.api.planCalculation,submit=h.api.submitCalculation,validate=h.api.validateCalculation;
+    const plan=h.api.planCalculation,submit=h.api.submitCalculation,validate=h.api.validateCalculation,discard=h.api.discardPlan;
     h.api.validateCalculation=async formulas=>{h.elapse(700);return validate(formulas);};
     h.api.planCalculation=async intent=>{
         h.elapse(1200);
@@ -474,7 +476,8 @@ test("series report accounts for planning, submission and result observation usi
             planningObservation:{sseHints:3,sseRefreshes:2,timerRefreshes:1,readyResponse:"timer"}};
     };
     h.api.submitCalculation=async input=>{h.elapse(300);return submit(input);};
-    await h.open();h.elapse(3900);await h.finish();
+    h.api.discardPlan=async id=>{h.elapse(400);return discard(id);};
+    await h.open();h.elapse(3500);await h.finish();
     const result=h.area.results.get("1"),report=result.performanceLines.join(" ");
     assert.equal(result.elapsedSeconds,5.5,"earlier validation is excluded");
     assert.match(report,/Before planning: 0.000 s/);
@@ -488,6 +491,10 @@ test("series report accounts for planning, submission and result observation usi
     assert.match(report,/3 SSE hints received; 2 SSE-triggered status reads; 1 two-second fallback status reads/);
     assert.match(report,/Plan ready was first observed in a two-second fallback status read/);
     assert.match(report,/do not measure calculation-result delivery after submission/);
+    assert.match(report,/Plan cleanup request: 0.400 s/);
+    assert.match(report,/Ready job first received at \+4.300 s from explicit refresh/);
+    assert.match(report,/Executor ready → result consumer: 0.000 s/);
+    assert.ok(report.includes(`job ${result.job.jobId}`));
     assert.match(report,/do not add the two groups together/);
     h.close();
 });
