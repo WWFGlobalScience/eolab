@@ -2092,6 +2092,9 @@ async function startApplication() {
         invalidateMapSize: () => leafletMap.invalidateSize(),
         allowCatalog: !isSharedViewer,
         allowOperationalStatus: !isSharedViewer,
+        workspaceStorage: isSharedViewer || editableMapSlug !== null
+            ? null
+            : new SavedMapViewLocalStorage(undefined, "eolab.workspace-panels.v1"),
     });
     if (isSharedViewer) layoutController.showWorkspace("map-layers");
     const mapInspection = new MapInspectionController();

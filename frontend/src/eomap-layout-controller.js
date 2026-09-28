@@ -70,6 +70,8 @@ function requireLayoutElement(documentContext, selector) {
  * Transition scheduler; defaults to the browser timer.
  * @property {boolean} [allowCatalog=true] Expose the catalog workspace.
  * @property {boolean} [allowOperationalStatus=true] Expose operational diagnostics.
+ * @property {{read: () => string|null, write: (value: string) => boolean}|null}
+ * [workspaceStorage=null] Optional failure-tolerant storage for panel states.
  */
 
 /** Own the EOMap workspace-sidebar disclosure presentation. */
@@ -88,6 +90,7 @@ export class EomapLayoutController {
         schedule = globalThis.setTimeout.bind(globalThis),
         allowCatalog = true,
         allowOperationalStatus = true,
+        workspaceStorage = null,
     }) {
         if (typeof invalidateMapSize !== "function") {
             throw new TypeError("Map-size invalidation must be callable");
@@ -100,6 +103,7 @@ export class EomapLayoutController {
         this.schedule = schedule;
         this.allowCatalog = allowCatalog;
         this.allowOperationalStatus = allowOperationalStatus;
+        this.workspaceStorage = workspaceStorage;
         this.appElement = requireLayoutElement(documentContext, "#app");
         this.controlPanelElement = requireLayoutElement(
             documentContext,
@@ -153,11 +157,36 @@ export class EomapLayoutController {
             (configuration, index) =>
                 this.#createWorkspaceDisclosure(configuration, index)
         );
+        this.#restoreWorkspacePanels();
         if (!allowCatalog) this.workspaceDisclosures[0].isExpanded = false;
         if (!allowOperationalStatus) this.operationalStatusIsExpanded = false;
         this.#synchronizeOperationalStatusPresentation();
         this.#synchronizeWorkspacePresentation();
         this.#synchronizeControlPanelPresentation();
+    }
+
+    /**
+     * Restore both panel states before displaying the sidebar.
+     *
+     * Missing or invalid saved values leave the markup defaults unchanged.
+     * This runs only at startup; subsequent layer loading cannot reset panels.
+     *
+     * @return {void}
+     */
+    #restoreWorkspacePanels() {
+        let saved;
+        try {
+            saved = JSON.parse(this.workspaceStorage?.read() ?? "null");
+        } catch {
+            return;
+        }
+        if (typeof saved?.catalogOpen !== "boolean" ||
+            typeof saved?.mapLayersOpen !== "boolean") return;
+        const changed = this.workspaceDisclosures[0].isExpanded !== saved.catalogOpen ||
+            this.workspaceDisclosures[1].isExpanded !== saved.mapLayersOpen;
+        this.workspaceDisclosures[0].isExpanded = saved.catalogOpen;
+        this.workspaceDisclosures[1].isExpanded = saved.mapLayersOpen;
+        if (changed) this.#scheduleMapInvalidation();
     }
 
     /**
@@ -302,7 +331,8 @@ export class EomapLayoutController {
      * Set one workspace's independent disclosure state.
      *
      * Other workspaces retain their current state. A changed disclosure
-     * schedules map remeasurement because available sidebar allocation changed.
+     * saves both panel states and schedules map remeasurement because the
+     * available sidebar allocation changed.
      *
      * @param {number} index Zero-based workspace-disclosure position.
      * @param {boolean} isExpanded Whether its semantic panel is visible.
@@ -327,6 +357,10 @@ export class EomapLayoutController {
         this.#synchronizeWorkspacePresentation();
         if (stateChanged) {
             this.#scheduleMapInvalidation();
+            this.workspaceStorage?.write(JSON.stringify({
+                catalogOpen: this.workspaceDisclosures[0].isExpanded,
+                mapLayersOpen: this.workspaceDisclosures[1].isExpanded,
+            }));
         }
         if (moveFocus) {
             workspaceDisclosure.toggle.focus();
