@@ -966,6 +966,8 @@ h5 {
 .on-map-legend-entries { column-gap: 16px; }
 .on-map-legend-layer { break-inside: avoid; padding-bottom: 10px; overflow-wrap: anywhere; }
 .on-map-legend-layer > strong { display: block; margin-top: 4px; }
+.on-map-legend-layer--fixed { display: flex; align-items: center; gap: 4px; padding-bottom: 4px; }
+.on-map-legend-layer--fixed > strong { display: inline; margin-top: 0; }
 .on-map-legend .map-layer-legend-field { white-space: normal; overflow: visible; }
 .on-map-legend .map-layer-legend-value-label { font-size: 10px; }
 .on-map-legend .map-layer-legend-list { gap: 2px; }

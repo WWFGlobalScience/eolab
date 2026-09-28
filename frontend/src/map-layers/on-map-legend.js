@@ -1,4 +1,4 @@
-import { buildLegendContents } from "./legend-view.js";
+import { buildLegendContents, buildLegendSymbol } from "./legend-view.js";
 
 /** Present the retained layers' symbol keys on the map without owning their styles. */
 export class OnMapLegend {
@@ -112,7 +112,16 @@ export class OnMapLegend {
             section.className = "on-map-legend-layer";
             const title = this.document.createElement("strong");
             title.textContent = layer.label;
-            section.append(title, buildLegendContents(this.document, layer.legend, layer.opacity, true));
+            if (layer.legend.kind === "fixed" && layer.legend.symbol) {
+                section.classList.add("on-map-legend-layer--fixed");
+                const swatch = this.document.createElement("span");
+                swatch.className = "map-layer-legend-swatch";
+                swatch.setAttribute("aria-hidden", "true");
+                swatch.append(buildLegendSymbol(this.document, layer.legend.symbol, layer.opacity));
+                section.append(swatch, title);
+            } else {
+                section.append(title, buildLegendContents(this.document, layer.legend, layer.opacity, true));
+            }
             legends.push(section);
         }
         this.choices.replaceChildren(...choices);

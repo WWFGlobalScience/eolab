@@ -1193,5 +1193,26 @@ test("both legend presentations share all colors, selection, ordering and disclo
   legend.restore({ visible: false, collapsed: false });
   assert.deepEqual(legend.snapshot(), { visible: false, collapsed: false });
   assert.equal(changes, 3);
+  const symbol = { shape: "polygon", fill: "#aabbcc", fillOpacity: 0.6,
+    stroke: "#123456", strokeOpacity: 0.8, strokeWidth: 2 };
+  const fixed = { key: "pa", label: "PA Category II", visible: true, opacity: 0.5,
+    legend: { kind: "fixed", label: "Polygon", symbol } };
+  legend.update([fixed]);
+  const fixedRow = legend.contents.children[0];
+  assert.ok(fixedRow.classList.contains("on-map-legend-layer--fixed"));
+  assert.equal(fixedRow.children.length, 2, "the symbol and layer name share one row");
+  assert.equal(fixedRow.children[1].textContent, "PA Category II");
+  assert.equal(elementsByClass(fixedRow, "map-layer-legend-field").length, 0);
+  assert.equal(elementsByClass(fixedRow, "map-layer-legend-list").length, 0);
+  const shape = elementsByClass(fixedRow, "map-layer-legend-swatch")[0].children[0].children[0];
+  assert.equal(shape.getAttribute("fill"), "#aabbcc");
+  assert.equal(shape.getAttribute("stroke"), "#123456");
+  assert.equal(shape.getAttribute("fill-opacity"), "0.3");
+  legend.update([{ ...fixed, legend: { kind: "categories", label: "Protection class",
+    entries: [{ label: "II", symbol }, { label: "III", symbol: { ...symbol, fill: "#ddeeff" } }] } }]);
+  const classifiedRow = legend.contents.children[0];
+  assert.ok(!classifiedRow.classList.contains("on-map-legend-layer--fixed"));
+  assert.equal(elementsByClass(classifiedRow, "map-layer-legend-field")[0].textContent, "Protection class");
+  assert.equal(elementsByClass(classifiedRow, "map-layer-legend-swatch").length, 2);
   legend.remove(); assert.equal(removed, true);
 });
