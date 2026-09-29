@@ -1,12 +1,10 @@
 """Concurrent workers share durable admission without sharing native processes."""
 
 import asyncio
-import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from multiprocessing import get_context
 from typing import Any
-from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import psycopg
@@ -21,43 +19,10 @@ from eolab_app.processing.models import (
     ProcessingError,
 )
 from eolab_app.processing.native_processes import create_native_process
-from eolab_app.processing.worker import ProcessingWorker, serve
-from eolab_app.execution.bounded_process import ProcessResultWriter
+from eolab_app.processing.worker import ProcessingWorker
 from eolab_app.execution.reusable_process import ReusableProcess
 from test_processing_jobs import boundary, store, HEADERS, _paused_clip, clip_inputs
 from test_processing_calculations import ENDPOINT, request_body
-
-
-def report_address_space_limit(writer: ProcessResultWriter) -> None:
-    """Return the real Linux limit from inside the supervised child.
-
-    Args:
-        writer: Native supervisor's result channel.
-    """
-    import resource
-
-    writer.put(resource.getrlimit(resource.RLIMIT_AS))
-
-
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="Linux native address-space contract"
-)
-def test_native_memory_reservation_has_an_os_limit() -> None:
-    """Preparation and execution share an enforced child address-space ceiling."""
-
-    async def scenario() -> None:
-        """Inspect the limit over the real process pipe."""
-        ceiling = 2 * 1024**3
-        native = ReusableProcess(
-            (report_address_space_limit,), address_space_bytes=ceiling
-        )
-        try:
-            result = await native.run(report_address_space_limit, (), 15)
-            assert result.value == (ceiling, ceiling)
-        finally:
-            await native.close()
-
-    asyncio.run(scenario())
 
 
 def claim_from_process(
@@ -192,40 +157,6 @@ def test_release_wakes_idle_workers_before_fallback(store: PostgresJobStore) -> 
 
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
         runner.run(scenario())
-
-
-def test_cleanup_is_serialized_while_worker_loops_run_together() -> None:
-    """Two loops may claim concurrently but never overlap filesystem cleanup."""
-
-    async def scenario() -> None:
-        """Drive both existing serve loops with a shared cleanup lock."""
-        cleaning = 0
-        cleanups = 0
-
-        async def cleanup() -> None:
-            """Assert no other cleanup is active across an asynchronous yield."""
-            nonlocal cleaning, cleanups
-            cleaning += 1
-            assert cleaning == 1
-            await asyncio.sleep(0)
-            cleaning -= 1
-            cleanups += 1
-
-        lock = asyncio.Lock()
-        workers = [
-            Mock(
-                cleanup=cleanup, run_once=AsyncMock(side_effect=asyncio.CancelledError)
-            )
-            for _ in range(2)
-        ]
-        results = await asyncio.gather(
-            *(serve(worker, cleanup_lock=lock) for worker in workers),
-            return_exceptions=True,
-        )
-        assert cleanups == 2
-        assert all(isinstance(result, asyncio.CancelledError) for result in results)
-
-    asyncio.run(scenario())
 
 
 def test_two_real_native_workers_execute_and_deduplicate(

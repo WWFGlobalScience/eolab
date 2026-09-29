@@ -21,7 +21,7 @@ from eolab_app.processing.clip_models import ClipArea, ClipSpec, RasterClipLimit
 from eolab_app.processing.raster_clip import clip_process_target
 from eolab_app.processing.native_processes import create_native_process
 from eolab_app.processing.service import public_job
-from eolab_app.processing.worker import ProcessingWorker
+from eolab_app.processing.worker import ProcessingWorker, serve
 from eolab_app.raster.source_identity import RasterSourceIdentity
 from test_raster_clips import SOURCE, write_source
 from test_processing_timings import configure_prepared_job_store
@@ -174,5 +174,39 @@ def test_warm_clip_plan_and_execution_preserve_pixels(tmp_path: Path):
             path.rename(tmp_path / "closed-source.tif")
         finally:
             await lane.close()
+
+    asyncio.run(scenario())
+
+
+def test_cleanup_is_serialized_while_worker_loops_run_together() -> None:
+    """Two loops may claim concurrently but never overlap filesystem cleanup."""
+
+    async def scenario() -> None:
+        """Drive both existing serve loops with a shared cleanup lock."""
+        cleaning = 0
+        cleanups = 0
+
+        async def cleanup() -> None:
+            """Assert no other cleanup is active across an asynchronous yield."""
+            nonlocal cleaning, cleanups
+            cleaning += 1
+            assert cleaning == 1
+            await asyncio.sleep(0)
+            cleaning -= 1
+            cleanups += 1
+
+        lock = asyncio.Lock()
+        workers = [
+            Mock(
+                cleanup=cleanup, run_once=AsyncMock(side_effect=asyncio.CancelledError)
+            )
+            for _ in range(2)
+        ]
+        results = await asyncio.gather(
+            *(serve(worker, cleanup_lock=lock) for worker in workers),
+            return_exceptions=True,
+        )
+        assert cleanups == 2
+        assert all(isinstance(result, asyncio.CancelledError) for result in results)
 
     asyncio.run(scenario())
