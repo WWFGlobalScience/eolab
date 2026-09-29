@@ -380,7 +380,7 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
     assert len({job["id"] for job in jobs}) == 1
     other_store = PostgresJobStore(store.limits, store.conninfo)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        claims = list(pool.map(lambda adapter: adapter.claim(), (store, other_store)))
+        claims = list(pool.map(lambda adapter: adapter.claim_next_job(), (store, other_store)))
     assert sum(claim is not None for claim in claims) == 1
     claim = next(claim for claim in claims if claim)
     assert not store.heartbeat(claim["id"], "stale-token", {})
@@ -390,7 +390,7 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
     assert store.finish(claim["id"], claim["attempt_id"], None)
     assert store.get(claim["id"], "owner")["status"] == "cancelled"
     queued = store.submit("owner", "next-request", spec, "fixture-input-hash")
-    lost = other_store.claim()
+    lost = other_store.claim_next_job()
     with psycopg.connect(store.conninfo) as connection:
         connection.execute(
             "UPDATE processing.jobs SET lease_until=now()-interval '1 minute' WHERE id=%s",
@@ -398,13 +398,13 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
         )
     # Even after lease loss, no replacement child starts before the old hard
     # deadline; this protects against overlapping deployments/DB outages.
-    assert store.claim() is None
+    assert store.claim_next_job() is None
     with psycopg.connect(store.conninfo) as connection:
         connection.execute(
             "UPDATE processing.jobs SET deadline_at=now()-interval '1 minute' WHERE id=%s",
             (lost["id"],),
         )
-    assert store.claim() is None
+    assert store.claim_next_job() is None
     assert store.get(lost["id"], "owner")["status"] == "interrupted"
 
 
@@ -436,7 +436,7 @@ def test_job_store_admits_operation_data_without_raster_fields(
     with pytest.raises(ProcessingError) as refused:
         store.submit("owner", "another-request", prepared, "fixture-input-hash")
     assert refused.value.code == "storage_full"
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     assert claimed["spec"] == prepared.specification
     assert store.heartbeat(
         claimed["id"], claimed["attempt_id"], {"phase": "summarizing"}
@@ -645,6 +645,8 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
     monkeypatch.setenv("PROCESSING_DATA_PATH", str(tmp_path / "outputs"))
     monkeypatch.setenv("PROCESSING_MAX_WAITING_JOBS", "61")
     monkeypatch.setenv("PROCESSING_MAX_OWNER_WAITING_JOBS", "17")
+    monkeypatch.setenv("PROCESSING_WORKER_COUNT", "2")
+    monkeypatch.setenv("PROCESSING_MAX_EXECUTION_MEMORY_BYTES", str(4 * 1024**3))
     monkeypatch.delenv("GEOSERVER_ADMIN_PASSWORD", raising=False)
     monkeypatch.delenv("GEOSERVER_INTERNAL_URL", raising=False)
     monkeypatch.setattr(composition, "PostgresJobStore", lambda limits: store)
@@ -665,19 +667,40 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
         """
         pytest.fail("Worker composition entered an unrelated web/AOI/rendering feature")
 
-    async def consume(worker: ProcessingWorker, wakeup: Any) -> None:
+    composed_workers = []
+    cleanup_locks = []
+    reset = store.interrupt_unfinished_jobs_on_restart
+    resets = 0
+
+    def reset_once() -> int:
+        """Ensure startup reset runs once, before either loop starts."""
+        nonlocal resets
+        resets += 1
+        assert resets == 1
+        assert not composed_workers
+        return reset()
+
+    monkeypatch.setattr(store, "interrupt_unfinished_jobs_on_restart", reset_once)
+
+    async def consume(
+        worker: ProcessingWorker, wakeup: Any, cleanup_lock: asyncio.Lock
+    ) -> None:
         """Check the composed worker without starting an endless test loop.
 
         Args:
             worker: Composed, migrated processing owner.
             wakeup: Processing-owned notification adapter, constructed without I/O.
+            cleanup_lock: One lock shared by all loops in this container.
         """
         assert isinstance(worker, ProcessingWorker)
+        composed_workers.append(worker)
+        cleanup_locks.append(cleanup_lock)
         assert worker.limits.max_waiting_jobs == 61
         assert worker.limits.max_owner_waiting_jobs == 17
         assert isinstance(wakeup, composition.PostgresJobWakeup)
         assert store.get(pending["id"], "owner")["status"] == "interrupted"
-        await worker.cleanup()
+        async with cleanup_lock:
+            await worker.cleanup()
         assert store.get(pending["id"], "owner")["reserved_bytes"] == 0
         assert not await worker.run_once()
 
@@ -685,6 +708,9 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
     monkeypatch.setattr(composition, "GeoServerRasterPublisher", unexpected)
     monkeypatch.setattr(composition, "serve_processing", consume)
     asyncio.run(composition.run_processing_worker())
+    assert len(composed_workers) == 2
+    assert composed_workers[0].native is not composed_workers[1].native
+    assert cleanup_locks[0] is cleanup_locks[1]
 
 
 def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeypatch):
@@ -707,7 +733,7 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
             for listener in listeners:
                 await listener.arm()
                 assert listener.reader is not None
-            assert await asyncio.to_thread(store.claim) is None
+            assert await asyncio.to_thread(store.claim_next_job) is None
             transaction = store._transaction
 
             @contextmanager
@@ -732,7 +758,7 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
                         store.submit, "owner", "rolled-back", spec, "fixture-input-hash"
                     )
             assert not await listeners[0].wait(0.05)
-            assert await asyncio.to_thread(store.claim) is None
+            assert await asyncio.to_thread(store.claim_next_job) is None
             queued = await asyncio.to_thread(
                 store.submit, "owner", "committed", spec, "fixture-input-hash"
             )
@@ -744,7 +770,7 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
             )
             assert duplicate["id"] == queued["id"]
             claims = await asyncio.gather(
-                *(asyncio.to_thread(store.claim) for _ in listeners)
+                *(asyncio.to_thread(store.claim_next_job) for _ in listeners)
             )
             assert sum(claim is not None for claim in claims) == 1
             assert next(claim for claim in claims if claim)["id"] == queued["id"]
@@ -768,7 +794,7 @@ def test_worker_restart_interrupts_unfinished_jobs(
     """
     prepared = PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096)
     completed = store.submit("owner", "completed-request", prepared, "a" * 64)
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     assert claimed["id"] == completed["id"]
     cached = {"b" * 64: {"value": "1"}}
     assert store.finish(
@@ -780,7 +806,7 @@ def test_worker_restart_interrupts_unfinished_jobs(
     ready = store.get(completed["id"], "owner")
     pending = store.submit("other-owner", "unfinished-request", prepared, "a" * 64)
     if status != "queued":
-        pending = store.claim()
+        pending = store.claim_next_job()
         if status == "cancelling":
             store.cancel(pending["id"], "other-owner")
 
@@ -813,4 +839,4 @@ def test_worker_restart_interrupts_unfinished_jobs(
     assert store.get_cached_calculation_results(list(cached)) == cached
     assert store.interrupt_unfinished_jobs_on_restart() == 0
     fresh = store.submit("owner", "fresh-request", prepared, "a" * 64)
-    assert store.claim()["id"] == fresh["id"]
+    assert store.claim_next_job()["id"] == fresh["id"]

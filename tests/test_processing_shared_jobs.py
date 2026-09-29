@@ -52,8 +52,8 @@ def test_concurrent_subscribers_share_one_claim_and_reservation(
         assert connection.execute(
             "SELECT count(*),sum(reserved_bytes) FROM processing.jobs"
         ).fetchone() == (1, 1024)
-    claimed = store.claim()
-    assert store.claim() is None
+    claimed = store.claim_next_job()
+    assert store.claim_next_job() is None
     assert store.finish(
         claimed["id"], claimed["attempt_id"], Artifact(1, "0" * 64, "test.csv")
     )
@@ -61,7 +61,7 @@ def test_concurrent_subscribers_share_one_claim_and_reservation(
         store.get(job["id"], str(index))["status"] == "ready"
         for index, job in enumerate(jobs)
     )
-    assert store.claim() is None
+    assert store.claim_next_job() is None
     print(f"12 concurrent subscribers, 1 claim: {time.perf_counter() - started:.3f}s")
 
 
@@ -78,7 +78,7 @@ def test_only_last_cancellation_stops_shared_work(
     plan = PreparedJobPlan({}, {}, 1024, work_key="same")
     first = store.submit("first", "one", plan, "hash")
     second = store.submit("second", "two", plan, "hash")
-    claimed = store.claim() if running else None
+    claimed = store.claim_next_job() if running else None
     assert store.cancel(first["id"], "first")["status"] == "cancelled"
     assert store.get(second["id"], "second")["status"] == (
         "running" if running else "queued"
@@ -95,7 +95,7 @@ def test_only_last_cancellation_stops_shared_work(
         assert store.get(first["id"], "first")["status"] == "cancelled"
         assert not store.heartbeat(claimed["id"], claimed["attempt_id"], {})
         assert store.finish(claimed["id"], claimed["attempt_id"], None)
-    assert store.claim() is None
+    assert store.claim_next_job() is None
     replacement = store.submit("third", "three", plan, "hash")
     assert replacement["job_id"] != first["job_id"]
 
@@ -302,7 +302,7 @@ def test_upgrade_preserves_existing_owner_handles(store: PostgresJobStore) -> No
     """
     plan = PreparedJobPlan({}, {}, 1024)
     one = store.submit("first", "one", plan, "hash")
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     store.finish(
         claimed["id"], claimed["attempt_id"], Artifact(1, "0" * 64, "test.csv")
     )
@@ -343,7 +343,7 @@ def test_shared_progress_notifies_each_subscriber(store: PostgresJobStore) -> No
         )
         await listener.ensure_connected()
         try:
-            claimed = await asyncio.to_thread(store.claim)
+            claimed = await asyncio.to_thread(store.claim_next_job)
             assert {await asyncio.wait_for(messages.get(), 2) for _ in range(2)} == {
                 "first",
                 "second",
@@ -378,7 +378,7 @@ def test_shared_failure_and_restart_allow_fresh_work(
     plan = PreparedJobPlan({}, {}, 1024, work_key="same")
     one = store.submit("first", "one", plan, "hash")
     two = store.submit("second", "two", plan, "hash")
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     if ending == "failure":
         assert store.finish(
             claimed["id"],
@@ -396,7 +396,7 @@ def test_shared_failure_and_restart_allow_fresh_work(
     assert not store.finish(
         claimed["id"], claimed["attempt_id"], Artifact(1, "late", "late.csv")
     )
-    assert store.claim()["id"] == retry["job_id"]
+    assert store.claim_next_job()["id"] == retry["job_id"]
 
 
 def test_cancellation_racing_a_new_subscriber_keeps_new_work_live(
@@ -415,5 +415,5 @@ def test_cancellation_racing_a_new_subscriber_keeps_new_work_live(
         assert cancelled.result()["status"] == "cancelled"
         two = joined.result()
     assert store.get(two["id"], "second")["status"] == "queued"
-    assert store.claim()["id"] == two["job_id"]
-    assert store.claim() is None
+    assert store.claim_next_job()["id"] == two["job_id"]
+    assert store.claim_next_job() is None

@@ -9,7 +9,10 @@ import sys
 
 import pytest
 
-from eolab_app.execution.bounded_process import ProcessDeadlineError
+from eolab_app.execution.bounded_process import (
+    ProcessDeadlineError,
+    ProcessResultWriter,
+)
 from eolab_app.execution.reusable_process import ReusableProcess
 
 
@@ -222,5 +225,37 @@ def test_peak_memory_recycles_process():
             assert not second.timing.reusedProcess
         finally:
             await lane.close()
+
+    asyncio.run(scenario())
+
+
+def report_address_space_limit(writer: ProcessResultWriter) -> None:
+    """Return the real Linux limit from inside the supervised child.
+
+    Args:
+        writer: Native supervisor's result channel.
+    """
+    import resource
+
+    writer.put(resource.getrlimit(resource.RLIMIT_AS))
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="Linux native address-space contract"
+)
+def test_native_memory_reservation_has_an_os_limit() -> None:
+    """Preparation and execution share an enforced child address-space ceiling."""
+
+    async def scenario() -> None:
+        """Inspect the limit over the real process pipe."""
+        ceiling = 2 * 1024**3
+        native = ReusableProcess(
+            (report_address_space_limit,), address_space_bytes=ceiling
+        )
+        try:
+            result = await native.run(report_address_space_limit, (), 15)
+            assert result.value == (ceiling, ceiling)
+        finally:
+            await native.close()
 
     asyncio.run(scenario())

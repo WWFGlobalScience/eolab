@@ -107,6 +107,7 @@ def _worker(
     targets: tuple[Callable, ...],
     max_jobs: int,
     recycle_bytes: int,
+    address_space_bytes: int | None,
 ) -> None:
     """Load targets once, then run one fully acknowledged request at a time.
 
@@ -115,8 +116,20 @@ def _worker(
         targets: Fixed preloaded entry points; requests select an index only.
         max_jobs: Maximum completed operations before replacement.
         recycle_bytes: Linux peak-RSS threshold for between-job replacement.
+        address_space_bytes: Optional Linux address-space ceiling including native
+            libraries and preparation; other platforms retain container limits.
     """
     try:
+        if address_space_bytes is not None and sys.platform == "linux":
+            import resource
+
+            _, hard = resource.getrlimit(resource.RLIMIT_AS)
+            ceiling = (
+                address_space_bytes
+                if hard == resource.RLIM_INFINITY
+                else min(address_space_bytes, hard)
+            )
+            resource.setrlimit(resource.RLIMIT_AS, (ceiling, ceiling))
         connection.send("ready")
         for number in range(1, max_jobs + 1):
             sequence, index, arguments, deadline = connection.recv()
@@ -178,6 +191,7 @@ class ReusableProcess:
         max_jobs: int = 100,
         recycle_bytes: int = 512 * 1024**2,
         startup_seconds: float = 15,
+        address_space_bytes: int | None = None,
     ) -> None:
         """Configure a neutral process lane; creation waits for warm/run.
 
@@ -186,6 +200,11 @@ class ReusableProcess:
             max_jobs: Periodic recycling bound.
             recycle_bytes: Linux peak-RSS recycling threshold, not an admission limit.
             startup_seconds: Maximum time to initialize a replacement process.
+            address_space_bytes: Optional positive Linux address-space cap for
+                every operation; None retains the existing OS limit.
+
+        Raises:
+            ValueError: If targets or process limits are invalid.
         """
         if not targets or max_jobs < 1 or recycle_bytes < 1 or startup_seconds <= 0:
             raise ValueError("Reusable process limits and targets must be positive")
@@ -193,6 +212,9 @@ class ReusableProcess:
         self.max_jobs = max_jobs
         self.recycle_bytes = recycle_bytes
         self.startup_seconds = startup_seconds
+        if address_space_bytes is not None and address_space_bytes < 1:
+            raise ValueError("Process address-space limit must be positive")
+        self.address_space_bytes = address_space_bytes
         self.child: _Child | None = None
         self.active: asyncio.Task | None = None
         self.closed = False
@@ -242,7 +264,13 @@ class ReusableProcess:
         parent, child_pipe = context.Pipe(duplex=True)
         process = context.Process(
             target=_worker,
-            args=(child_pipe, self.targets, self.max_jobs, self.recycle_bytes),
+            args=(
+                child_pipe,
+                self.targets,
+                self.max_jobs,
+                self.recycle_bytes,
+                self.address_space_bytes,
+            ),
             daemon=True,
         )
         child = _Child(process, parent)

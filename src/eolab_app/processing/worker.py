@@ -277,14 +277,15 @@ class ProcessingWorker:
             updated["updated_at"] = row["updated_at"]
             row.update(updated)
 
-    async def _execute(self, row: dict[str, Any]) -> Artifact:
+    async def _execute(self, row: dict[str, Any]) -> Artifact | None:
         """Authorize the inputs, reuse or calculate values, and publish result files.
 
         Args:
             row: Job claimed with a unique execution fencing token.
 
         Returns:
-            Result-file metadata after publication, marked when values were cached.
+            Result-file metadata, or None after preparation returns the job to
+            the existing queue until its disk reservation fits.
 
         Raises:
             ProcessingError: If the source, resources, or native operation fail.
@@ -295,6 +296,8 @@ class ProcessingWorker:
             await self._prepare_calculation(row)
         elif operation == "raster.clip.v1" and "request" in row["spec"]:
             await self._prepare_clip(row)
+        if row["status"] == "queued":
+            return None
         if operation == "raster.clip.v1":
             spec = ClipSpec.model_validate(row["spec"])
             source = spec.source
@@ -409,7 +412,7 @@ class ProcessingWorker:
             ProcessingError: If durable storage is unavailable.
             asyncio.CancelledError: After stopping native work on worker shutdown.
         """
-        row = await asyncio.to_thread(self.jobs.claim)
+        row = await asyncio.to_thread(self.jobs.claim_next_job)
         if row is None:
             return False
         identifier, attempt = row["id"], row["attempt_id"]
@@ -438,6 +441,10 @@ class ProcessingWorker:
                         return True
                     await asyncio.wait((task,), timeout=2)
                 artifact = task.result()
+                if artifact is None:
+                    # Preparation has stopped and durable storage owns the wait.
+                    finished = True
+                    return True
                 reusable_results = None
                 if (
                     row["spec"]["operation"] == "raster.aggregate.v1"
@@ -526,12 +533,18 @@ class ProcessingWorker:
         )
 
 
-async def serve(worker: ProcessingWorker, wakeup: JobWakeup | None = None) -> None:
+async def serve(
+    worker: ProcessingWorker,
+    wakeup: JobWakeup | None = None,
+    cleanup_lock: asyncio.Lock | None = None,
+) -> None:
     """Consume the queue using dependencies supplied by application composition.
 
     Args:
         worker: Composed worker with migrated storage and confined artifact paths.
         wakeup: Optional queue-change hints; durable claims remain authoritative.
+        cleanup_lock: Shared by loops in the worker container so filesystem
+            cleanup and its database acknowledgement cannot overlap.
 
     Raises:
         asyncio.CancelledError: After stopping active native work on shutdown.
@@ -541,7 +554,11 @@ async def serve(worker: ProcessingWorker, wakeup: JobWakeup | None = None) -> No
             try:
                 if wakeup is not None:
                     await wakeup.arm()
-                await worker.cleanup()
+                if cleanup_lock is None:
+                    await worker.cleanup()
+                else:
+                    async with cleanup_lock:
+                        await worker.cleanup()
                 if not await worker.run_once():
                     if wakeup is None:
                         await asyncio.sleep(2)

@@ -124,7 +124,7 @@ def test_cache_expiry_capacity_and_cancelled_attempt(boundary: Any, store: Any) 
 
     # Even already calculated values cannot be cached if cancellation won publication.
     submitted = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     assert claimed["id"] == submitted["jobId"]
     artifact = asyncio.run(worker._execute(claimed))
     store.cancel(claimed["id"], claimed["owner"])
@@ -144,7 +144,7 @@ def test_oversized_cache_entry_is_skipped(boundary: Any, store: Any) -> None:
     """
     client, worker, _, _, _ = boundary
     submitted = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     artifact = asyncio.run(worker._execute(claimed))
     key = "f" * 64
     assert store.finish(
@@ -216,7 +216,7 @@ def test_cached_area_skips_geometry_work_even_after_entry_expires(
 
     monkeypatch.setattr(worker_module, "run_process", forbid_native_work)
     submitted = submit_calculation(client, calculation_inputs(client, **area))
-    claimed = store.claim()
+    claimed = store.claim_next_job()
     asyncio.run(worker._prepare_calculation(claimed))
     assert claimed["preparation"]["cacheHit"] is True
     assert claimed["preparation"]["process"] is None

@@ -67,7 +67,7 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
         "error": None,
     }
     configure_prepared_job_store(store, row)
-    store.claim.return_value = row
+    store.claim_next_job.return_value = row
     store.heartbeat.return_value = True
     store.finish.return_value = True
     worker = ProcessingWorker(authorizer, store, artifacts, limits)

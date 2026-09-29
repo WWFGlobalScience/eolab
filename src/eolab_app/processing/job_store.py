@@ -436,7 +436,7 @@ class PostgresJobStore:
         prepared: PreparedJobPlan,
         details: dict[str, Any],
     ) -> dict[str, Any]:
-        """Reserve execution storage and publish prepared inputs for a running job.
+        """Save preparation and reserve disk, or queue the prepared job until it fits.
 
         Args:
             identifier: Running job ID.
@@ -445,11 +445,12 @@ class PostgresJobStore:
             details: Bounded public preparation measurements retained until cleanup.
 
         Returns:
-            Updated job ready for execution, with prepared details visible to its owner.
+            Updated job with prepared details. Temporary disk contention returns
+            it to queued without an attempt; preparation created no attempt files.
 
         Raises:
             ProcessingError: If ownership was lost, cancellation won, or the new
-                input and disk reservations exceed deployment limits.
+                inputs exceed capacity or this job alone exceeds the disk budget.
         """
         with self._transaction(locked=True) as cursor:
             cursor.execute(
@@ -481,21 +482,35 @@ class PostgresJobStore:
                     "Prepared job exceeds available input storage.",
                     429,
                 )
-            if used["bytes"] + prepared.reserved_bytes > self.limits.max_stored_bytes:
+            if prepared.reserved_bytes > self.limits.max_stored_bytes:
                 raise ProcessingError(
                     "storage_full",
-                    "Not enough temporary storage for this job.",
-                    429,
+                    "This calculation needs more temporary storage than the configured limit.",
+                    422,
                 )
+            waiting = (
+                used["bytes"] + prepared.reserved_bytes > self.limits.max_stored_bytes
+            )
             cursor.execute(
                 "UPDATE processing.jobs SET spec=%s,summary=%s,reserved_bytes=%s,preparation=%s,"
+                "required_disk_bytes=%s,status=%s,"
+                "attempt_id=CASE WHEN %s THEN NULL ELSE attempt_id END,"
+                "lease_until=CASE WHEN %s THEN NULL ELSE lease_until END,"
+                "deadline_at=CASE WHEN %s THEN NULL ELSE deadline_at END,"
+                "execution_memory_bytes=CASE WHEN %s THEN 0 ELSE execution_memory_bytes END,"
                 "progress=%s,updated_at=clock_timestamp() WHERE id=%s RETURNING *",
                 (
                     Jsonb(prepared.specification),
                     Jsonb(prepared.summary),
-                    prepared.reserved_bytes,
+                    0 if waiting else prepared.reserved_bytes,
                     Jsonb(details),
-                    Jsonb({"phase": "calculating"}),
+                    prepared.reserved_bytes,
+                    "queued" if waiting else "running",
+                    waiting,
+                    waiting,
+                    waiting,
+                    waiting,
+                    Jsonb({} if waiting else {"phase": "calculating"}),
                     identifier,
                 ),
             )
@@ -603,20 +618,20 @@ class PostgresJobStore:
             )
             return cursor.fetchone()
 
-    def claim(self) -> dict[str, Any] | None:
-        """Give the least recently served session one job in the single execution lane.
+    def claim_next_job(self) -> dict[str, Any] | None:
+        """Claim a fitting queued job and reserve its execution capacity atomically.
 
         Sessions with no previous start go first. Ties use their oldest waiting
-        job, and each session's jobs remain FIFO. A large stack therefore cannot
+        fitting job, and each session's fitting jobs remain FIFO. A large stack cannot
         take another turn ahead of a session that has been waiting since its
         previous turn. Running jobs are never preempted. Cancellation and failure
         still count as a turn once execution starts.
         Shared work serves all subscribed sessions in one turn. The returned
         owner identifies the session whose turn selected it, not exclusive ownership.
 
-        While the worker is running, a lost DB connection cannot start a second
-        native child before the current attempt's hard deadline plus exit grace.
-        Worker startup separately interrupts work left by the stopped worker.
+        Running and cancelling jobs keep slots and memory until native work exits
+        or its hard deadline plus exit grace passes. A lost heartbeat alone never
+        frees capacity. Prepared jobs waiting for disk reuse their saved inputs.
 
         Returns:
             Claimed job, or None when execution is busy or no job waits.
@@ -638,31 +653,43 @@ class PostgresJobStore:
                 ),
             )
             cursor.execute(
-                "SELECT id FROM processing.jobs WHERE status IN ('running','cancelling') LIMIT 1"
+                "SELECT count(*) FILTER (WHERE status IN ('running','cancelling')) AS active,"
+                "coalesce(sum(execution_memory_bytes) FILTER (WHERE status IN ('running','cancelling')),0) AS memory,"
+                "coalesce(sum(reserved_bytes),0) AS disk FROM processing.jobs"
             )
-            if cursor.fetchone():
+            capacity = cursor.fetchone()
+            if (
+                capacity["active"] >= self.limits.worker_count
+                or capacity["memory"] + self.limits.process_memory_bytes
+                > self.limits.max_execution_memory_bytes
+            ):
                 return None
             cursor.execute(
                 "SELECT waiting.id,waiting.owner FROM ("
                 "SELECT DISTINCT ON (s.owner) j.id,s.owner,j.created_at FROM processing.jobs j "
                 "JOIN processing.job_subscribers s ON s.job_id=j.id "
                 "WHERE j.status='queued' AND s.status IS NULL "
+                "AND j.required_disk_bytes-j.reserved_bytes<=%s "
                 "ORDER BY s.owner,j.created_at,j.id) waiting "
                 "LEFT JOIN LATERAL (SELECT j.started_at FROM processing.jobs j "
                 "JOIN processing.job_subscribers s ON s.job_id=j.id "
                 "WHERE s.owner=waiting.owner AND j.started_at IS NOT NULL "
                 "ORDER BY j.started_at DESC LIMIT 1) served ON true "
-                "ORDER BY served.started_at NULLS FIRST,waiting.created_at,waiting.id LIMIT 1"
+                "ORDER BY served.started_at NULLS FIRST,waiting.created_at,waiting.id LIMIT 1",
+                (self.limits.max_stored_bytes - capacity["disk"],),
             )
             row = cursor.fetchone()
             if not row:
                 return None
             cursor.execute(
-                "UPDATE processing.jobs SET status='running',attempt_id=%s,lease_until=now()+%s*interval '1 second',deadline_at=now()+%s*interval '1 second',started_at=clock_timestamp(),updated_at=now() WHERE id=%s RETURNING *",
+                "UPDATE processing.jobs SET status='running',attempt_id=%s,lease_until=now()+%s*interval '1 second',deadline_at=now()+%s*interval '1 second',"
+                "execution_memory_bytes=%s,reserved_bytes=greatest(reserved_bytes,required_disk_bytes),"
+                "started_at=clock_timestamp(),updated_at=now() WHERE id=%s RETURNING *",
                 (
                     uuid4().hex,
                     self.limits.lease_seconds,
                     self.limits.runtime_seconds + 15,
+                    self.limits.process_memory_bytes,
                     row["id"],
                 ),
             )

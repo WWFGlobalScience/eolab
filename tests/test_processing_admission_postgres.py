@@ -72,7 +72,7 @@ def test_twelve_sessions_and_full_stack_wait_then_take_turns(
     """
     caplog.set_level("INFO", logger="eolab_app.processing.job_store")
     blocker = admit(store, "blocker", make_plan(store, "blocker"))
-    active = store.claim()
+    active = store.claim_next_job()
     assert active["id"] == blocker["id"]
     owners = ["stack", *(f"session-{index}" for index in range(12))]
     plans = {owner: make_plan(store, owner) for owner in owners}
@@ -84,7 +84,7 @@ def test_twelve_sessions_and_full_stack_wait_then_take_turns(
         )
     admission_seconds = time.perf_counter() - started
     assert len(jobs) == 80 and all(job["status"] == "queued" for job in jobs)
-    assert store.claim() is None
+    assert store.claim_next_job() is None
     assert "waiting=80/128" in caplog.text
     assert "waiting_sessions=13" in caplog.text
 
@@ -100,7 +100,7 @@ def test_twelve_sessions_and_full_stack_wait_then_take_turns(
     }
     order = []
     drain_started = time.perf_counter()
-    while (job := worker_store.claim()) is not None:
+    while (job := worker_store.claim_next_job()) is not None:
         owner = job["owner"]
         assert job["id"] == expected[owner].pop(0)["id"]
         assert job["started_at"] >= job["created_at"]
@@ -161,7 +161,7 @@ def test_running_job_does_not_use_waiting_allowance_and_new_session_goes_next(
     store.limits = replace(store.limits, max_owner_waiting_jobs=2)
     plan = make_plan(store, "stack")
     admit(store, "stack", plan)
-    active = store.claim()
+    active = store.claim_next_job()
     admit(store, "stack", plan)
     admit(store, "stack", plan)
     with pytest.raises(ProcessingError, match="waiting-job limit"):
@@ -169,7 +169,7 @@ def test_running_job_does_not_use_waiting_allowance_and_new_session_goes_next(
     newcomer = admit(store, "newcomer", make_plan(store, "newcomer"))
     finish(store, active)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        claims = list(workers.map(lambda _: store.claim(), range(2)))
+        claims = list(workers.map(lambda _: store.claim_next_job(), range(2)))
     assert sum(job is not None for job in claims) == 1
     claimed = next(job for job in claims if job)
     assert claimed["id"] == newcomer["id"]
@@ -246,7 +246,7 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
             "SELECT input_bytes,reserved_bytes FROM processing.jobs WHERE id=%s",
             (first["id"],),
         ).fetchone() == (0, 0)
-    assert store.claim()["id"] == other["id"]
+    assert store.claim_next_job()["id"] == other["id"]
     assert (
         store.submit("one", key, plan[1], "fixture-input-hash")["status"] == "cancelled"
     )
@@ -286,7 +286,7 @@ def test_migration_accounts_for_previously_accepted_jobs(
     """
     plan = make_plan(store, "owner")
     first = admit(store, "owner", plan)
-    active = store.claim()
+    active = store.claim_next_job()
     waiting = admit(store, "owner", plan)
     with psycopg.connect(store.conninfo) as connection:
         connection.execute("DROP VIEW processing.subscribed_jobs")
@@ -300,7 +300,7 @@ def test_migration_accounts_for_previously_accepted_jobs(
         ).fetchall()
     assert rows[0][1] == first["input_bytes"] and rows[0][2] is not None
     assert rows[1][0] == waiting["id"] and rows[1][2] is None
-    assert store.claim() is None
+    assert store.claim_next_job() is None
     assert store.heartbeat(first["id"], active["attempt_id"], {})
 
 

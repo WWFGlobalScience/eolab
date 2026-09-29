@@ -140,7 +140,7 @@ class JobStore(Protocol):
             details: Public preparation metadata retained on the job.
 
         Returns:
-            Updated durable job with calculating progress.
+            Prepared running job, or queued job awaiting shared disk capacity.
 
         Raises:
             ProcessingError: If the attempt cannot proceed or storage is exhausted.
@@ -219,18 +219,18 @@ class JobStore(Protocol):
         """
         ...
 
-    def claim(self) -> dict[str, Any] | None:
-        """Start the oldest job of the least recently served waiting session.
+    def claim_next_job(self) -> dict[str, Any] | None:
+        """Reserve capacity for a fitting job of the least recently served session.
 
-        New sessions go first; ties use job admission order. Execution remains
-        one global attempt, without preemption of a running job.
+        New sessions go first; ties use job admission order. Running jobs are
+        never preempted. Slots, native memory and disk are checked atomically.
 
         Crash recovery waits through the previous hard deadline plus exit grace.
         A lost DB connection cannot cause a second native child to start while
         the old child could still be running under its supervisor deadline.
 
         Returns:
-            Claimed job or None while another attempt reserves the slot.
+            Claimed job or None when no queued job fits current capacity.
         """
         ...
 

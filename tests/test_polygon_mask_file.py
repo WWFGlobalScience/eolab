@@ -165,6 +165,7 @@ def test_storage_admission_and_old_job_guard(
         asyncio.run(
             worker._execute(
                 {
+                    "status": "running",
                     "spec": plan.model_dump(mode="json", by_alias=True),
                     "reserved_bytes": limits.result_reservation_bytes,
                 }

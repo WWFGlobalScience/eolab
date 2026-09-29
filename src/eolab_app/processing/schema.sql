@@ -108,6 +108,8 @@ INSERT INTO processing.schema_version VALUES (10) ON CONFLICT DO NOTHING;
 
 -- A computation owns execution and files; subscribers own public handles.
 ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS work_key text;
+ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS execution_memory_bytes bigint NOT NULL DEFAULT 0;
+ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS required_disk_bytes bigint NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_work ON processing.jobs(work_key)
     WHERE work_key IS NOT NULL AND status IN ('queued','running');
 CREATE TABLE IF NOT EXISTS processing.job_subscribers (
@@ -174,3 +176,17 @@ DROP TRIGGER IF EXISTS processing_subscriber_change ON processing.job_subscriber
 CREATE TRIGGER processing_subscriber_change AFTER INSERT OR UPDATE ON processing.job_subscribers
 FOR EACH ROW EXECUTE FUNCTION processing.notify_subscriber_change();
 INSERT INTO processing.schema_version VALUES (11) ON CONFLICT DO NOTHING;
+
+-- Wake claimers after execution stops or cleanup releases retained disk space.
+CREATE OR REPLACE FUNCTION processing.notify_execution_capacity() RETURNS trigger
+LANGUAGE plpgsql AS $$ BEGIN
+    IF (OLD.status IN ('running','cancelling') AND NEW.status NOT IN ('running','cancelling'))
+       OR NEW.reserved_bytes < OLD.reserved_bytes THEN
+        PERFORM pg_notify('eolab_processing_jobs', '');
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS processing_capacity_change ON processing.jobs;
+CREATE TRIGGER processing_capacity_change AFTER UPDATE OF status,reserved_bytes ON processing.jobs
+FOR EACH ROW EXECUTE FUNCTION processing.notify_execution_capacity();
+INSERT INTO processing.schema_version VALUES (12) ON CONFLICT DO NOTHING;
