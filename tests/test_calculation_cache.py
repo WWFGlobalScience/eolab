@@ -250,6 +250,7 @@ def test_worker_reuses_results_after_authorization(
     now = datetime.now(timezone.utc)
     row = {
         "id": "a" * 32,
+        "status": "running",
         "attempt_id": "b" * 32,
         "spec": prepared.specification,
         "reserved_bytes": prepared.reserved_bytes,
