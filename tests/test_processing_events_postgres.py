@@ -83,7 +83,7 @@ def test_job_changes_notify_only_commits_and_changed_public_state(
                 store.submit, owner, "committed", spec, "fixture-input-hash"
             )
             await quiet()
-            claimed = await asyncio.to_thread(store.claim)
+            claimed = await asyncio.to_thread(store.claim_next_job)
             await notified()
             assert claimed["id"] == job["id"]
             progress = {"phase": "reading"}

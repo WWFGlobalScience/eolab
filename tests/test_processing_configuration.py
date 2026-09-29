@@ -8,6 +8,12 @@ from eolab_app.processing.clip_models import RasterClipLimits
 from eolab_app.settings import load_processing_limits
 
 OVERRIDES = {
+    "PROCESSING_WORKER_COUNT": ("worker_count", 2),
+    "PROCESSING_PROCESS_MEMORY_BYTES": ("process_memory_bytes", 1024**3),
+    "PROCESSING_MAX_EXECUTION_MEMORY_BYTES": (
+        "max_execution_memory_bytes",
+        4 * 1024**3,
+    ),
     "PROCESSING_MAX_WAITING_JOBS": ("max_waiting_jobs", 64),
     "PROCESSING_MAX_OWNER_WAITING_JOBS": ("max_owner_waiting_jobs", 16),
     "PROCESSING_MAX_JOB_RECORDS": ("max_job_records", 512),
@@ -49,6 +55,10 @@ def test_defaults_and_all_environment_overrides(
 @pytest.mark.parametrize(
     "name,value",
     [
+        ("PROCESSING_WORKER_COUNT", "0"),
+        ("PROCESSING_WORKER_COUNT", "33"),
+        ("PROCESSING_PROCESS_MEMORY_BYTES", "1"),
+        ("PROCESSING_MAX_EXECUTION_MEMORY_BYTES", str(1024**3)),
         ("PROCESSING_MAX_WAITING_JOBS", ""),
         ("PROCESSING_MAX_OWNER_WAITING_JOBS", "0"),
         ("PROCESSING_MAX_JOB_RECORDS", "1.5"),

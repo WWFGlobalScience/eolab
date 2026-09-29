@@ -87,7 +87,7 @@ def test_warm_service_and_worker_reopen_sources_and_preserve_timing(tmp_path: Pa
                     error=None,
                 )
                 configure_prepared_job_store(store, row)
-                store.claim.return_value = row
+                store.claim_next_job.return_value = row
                 assert await worker.run_once()
                 artifact = store.finish.call_args.args[2]
                 response = AggregateJobResponse.model_validate(

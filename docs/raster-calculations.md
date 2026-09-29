@@ -241,7 +241,7 @@ request-to-display time under a busy server or slow connection.
 | Resource | Limit |
 | --- | --- |
 | Native decoded source work | 4 GiB, at most 65,536 blocks, with conservative preallocation guard |
-| Estimated native/expression working memory | 512 MiB within the existing 2 GiB worker |
+| Estimated native/expression working memory | 512 MiB within each native process's configured memory ceiling (default 2 GiB) |
 | Retained feature / projected-coordinate buffer | 500,000 positions |
 | Area polygon-cell work / execution transformations | 2,000,000 fallback cells / 4,000,000 positions; supported rectilinear grids use no pixel polygons |
 | Area geometry memory estimate | Additional 128 MiB within the same 512 MiB admission ceiling |

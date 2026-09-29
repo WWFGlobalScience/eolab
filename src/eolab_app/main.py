@@ -462,12 +462,12 @@ def create_app(
 
 
 async def run_processing_worker() -> None:
-    """Compose the dedicated worker through the existing settings boundary.
+    """Start configured worker loops, each with its own native calculation process.
 
     No web application or GeoServer client is constructed.
-    After migrating its schema, the worker interrupts all unfinished jobs from
-    the previous run. Deployments must stop the old worker and its native
-    processes before starting this one. Completed results remain available.
+    Migrate and interrupt unfinished jobs once before starting any loops. The
+    container must replace the previous worker container, not overlap it.
+    Completed results remain available. Child recycling never repeats the reset.
 
     Raises:
         ValueError: If source and artifact configuration is unsafe.
@@ -475,13 +475,12 @@ async def run_processing_worker() -> None:
     """
     settings = load_processing_worker_settings()
     limits = load_processing_limits()
-    artifacts = LocalJobArtifacts(settings.processing_data_path, (Path.cwd(), settings.scan_mount_path))
+    artifacts = LocalJobArtifacts(
+        settings.processing_data_path, (Path.cwd(), settings.scan_mount_path)
+    )
     artifacts.initialize()
     jobs = PostgresJobStore(limits)
     async with httpx2.AsyncClient(timeout=10) as client, AsyncExitStack() as lifecycle:
-        execution_native = create_native_process(limits)
-        lifecycle.push_async_callback(execution_native.close)
-        execution_native.warm()
         authorizer = CatalogRasterSourceAuthorizer(
             StacRasterCatalog(client, settings.catalog_internal_url),
             MountedRasterResolver(settings.scan_mount_path),
@@ -489,9 +488,6 @@ async def run_processing_worker() -> None:
         areas = VectorSamplingService(
             StacVectorCatalog(client, settings.catalog_internal_url),
             MountedVectorResolver(settings.scan_mount_path),
-        )
-        worker = ProcessingWorker(
-            authorizer, jobs, artifacts, limits, native=execution_native, areas=areas
         )
         task = asyncio.current_task()
         for event in (signal.SIGTERM, signal.SIGINT):
@@ -503,9 +499,32 @@ async def run_processing_worker() -> None:
                 await asyncio.to_thread(jobs.interrupt_unfinished_jobs_on_restart)
                 break
             except ProcessingError:
-                logging.getLogger(__name__).warning("Processing startup is unavailable; retrying in five seconds")
+                logging.getLogger(__name__).warning(
+                    "Processing startup is unavailable; retrying in five seconds"
+                )
                 await asyncio.sleep(5)
-        await serve_processing(worker, PostgresJobWakeup())
+        cleanup_lock = asyncio.Lock()
+        async with asyncio.TaskGroup() as workers:
+            for _ in range(
+                min(
+                    limits.worker_count,
+                    limits.max_execution_memory_bytes // limits.process_memory_bytes,
+                )
+            ):
+                execution_native = create_native_process(limits)
+                lifecycle.push_async_callback(execution_native.close)
+                execution_native.warm()
+                worker = ProcessingWorker(
+                    authorizer,
+                    jobs,
+                    artifacts,
+                    limits,
+                    native=execution_native,
+                    areas=areas,
+                )
+                workers.create_task(
+                    serve_processing(worker, PostgresJobWakeup(), cleanup_lock)
+                )
 
 
 if __name__ == "__main__":

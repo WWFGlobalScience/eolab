@@ -17,8 +17,7 @@ def load_processing_limits() -> RasterClipLimits:
     """Load the same queue, execution and storage budgets for the app and worker.
 
     Returns:
-        Processing limits with validated environment overrides. Native execution
-        remains limited to one running job across the deployment.
+        Processing limits with validated worker count and resource budgets.
 
     Raises:
         ValueError: If an override is blank, is not an integer, or is outside
@@ -26,6 +25,12 @@ def load_processing_limits() -> RasterClipLimits:
     """
     defaults = RasterClipLimits()
     settings = {
+        "PROCESSING_WORKER_COUNT": ("worker_count", 1),
+        "PROCESSING_PROCESS_MEMORY_BYTES": ("process_memory_bytes", 512 * 1024**2),
+        "PROCESSING_MAX_EXECUTION_MEMORY_BYTES": (
+            "max_execution_memory_bytes",
+            512 * 1024**2,
+        ),
         "PROCESSING_MAX_WAITING_JOBS": ("max_waiting_jobs", 1),
         "PROCESSING_MAX_OWNER_WAITING_JOBS": ("max_owner_waiting_jobs", 1),
         "PROCESSING_MAX_JOB_RECORDS": ("max_job_records", 1),
@@ -46,9 +51,18 @@ def load_processing_limits() -> RasterClipLimits:
             raise ValueError(
                 f"{environment_name} must be between {minimum} and {2**63 - 1}"
             )
-        if attribute in {"runtime_seconds", "result_ttl_seconds"} and value > 31_536_000:
+        if (
+            attribute in {"runtime_seconds", "result_ttl_seconds"}
+            and value > 31_536_000
+        ):
             raise ValueError(f"{environment_name} must not exceed one year")
         values[attribute] = value
+    if values["worker_count"] > 32:
+        raise ValueError("PROCESSING_WORKER_COUNT must not exceed 32")
+    if values["max_execution_memory_bytes"] < values["process_memory_bytes"]:
+        raise ValueError(
+            "PROCESSING_MAX_EXECUTION_MEMORY_BYTES must fit PROCESSING_PROCESS_MEMORY_BYTES"
+        )
     return RasterClipLimits(**values)
 
 

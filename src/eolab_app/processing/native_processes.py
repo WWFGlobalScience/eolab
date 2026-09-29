@@ -18,11 +18,13 @@ def create_native_process(limits: ProcessingLimits) -> ReusableProcess:
 
     Returns:
         Unstarted lane, recycled after 100 operations or 512 MiB Linux peak RSS.
-        Operation memory admission and container limits remain unchanged.
+        The configured Linux address-space ceiling applies to preparation and
+        execution. Container limits additionally bound all children together.
     """
     return ReusableProcess(
         (clip_process_target, aggregate_process_target, summary_process),
         max_jobs=100,
         recycle_bytes=512 * 1024**2,
         startup_seconds=limits.plan_timeout_seconds,
+        address_space_bytes=limits.process_memory_bytes,
     )

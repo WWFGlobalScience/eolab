@@ -76,12 +76,11 @@ Completed results remain available until expiry.
 
 | Resource | Limit |
 | --- | --- |
-| Active native clip jobs | 1 globally; stop the old worker before deploying another |
+| Active native jobs | Configurable shared capacity for clips and calculations; default 1. Stop the old worker container before deploying another. |
 | Waiting jobs | 128 globally; 32 queued per browser session; running work is counted separately |
 | Retained job records | 4,096, including finished jobs and seven-day idempotency records |
 | Retained job inputs | 128 MiB of specifications and summaries awaiting cleanup |
-| Metadata planning | 1 child globally; 15-second inclusive deadline |
-| Retained plans | 5 unfinished/ready per session, 128 records globally, 5-minute completed-plan lifetime |
+| Preparation | Runs inside the claimed job's native process and memory reservation |
 | Native output estimate, including validity | 1 GiB |
 | Decoded native source work | 4 GiB; at most 65,536 blocks; existing 64 MiB per-block ceiling |
 | Retained feature / projected-coordinate buffer | 500,000 positions |
@@ -93,8 +92,10 @@ Completed results remain available until expiry.
 
 Operators must preserve the separate Processing artifact volume and enough free
 disk space. The 20 GiB reservation budget is an admission limit, not a disk quota
-or allocated filesystem size. New jobs are refused when capacity is unavailable;
-a filesystem-full error fails the job instead of publishing a partial file.
+or allocated filesystem size. Prepared jobs wait in the existing queue when
+other jobs reserve the remaining disk budget, retaining their prepared inputs.
+A job larger than the entire budget fails with an explanation. A physical
+filesystem-full error fails the job instead of publishing a partial file.
 Active downloads delay cleanup within bounded transfer leases. See
 [deployment and operations](deployment-and-operations.md) for mounts and recovery.
 

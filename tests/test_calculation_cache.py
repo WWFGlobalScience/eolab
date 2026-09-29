@@ -256,7 +256,7 @@ def test_worker_reuses_results_after_authorization(
         "created_at": now,
         "updated_at": now,
     }
-    store.claim.return_value = row
+    store.claim_next_job.return_value = row
     calls = []
 
     async def calculate_in_test_process(
@@ -285,7 +285,7 @@ def test_worker_reuses_results_after_authorization(
     store.get_cached_calculation_results.return_value = store.finish.call_args.kwargs[
         "reusable_results"
     ]
-    store.claim.return_value = {**row, "id": "c" * 32, "attempt_id": "d" * 32}
+    store.claim_next_job.return_value = {**row, "id": "c" * 32, "attempt_id": "d" * 32}
     assert asyncio.run(worker.run_once())
     second = store.finish.call_args.args[2]
     assert second.cache_hit and second.rows == first.rows
@@ -299,7 +299,7 @@ def test_worker_reuses_results_after_authorization(
     authorizer.authorize.side_effect = ProcessingError(
         "source_unavailable", "Source unavailable", 409
     )
-    store.claim.return_value = {**row, "id": "e" * 32, "attempt_id": "f" * 32}
+    store.claim_next_job.return_value = {**row, "id": "e" * 32, "attempt_id": "f" * 32}
     assert asyncio.run(worker.run_once())
     assert store.finish.call_args.args[2] is None
     assert calls == ["calculate"]

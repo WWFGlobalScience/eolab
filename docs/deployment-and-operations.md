@@ -85,6 +85,49 @@ EOLAB_GEOSERVER_DATA_VOLUME_NAME=my-workshop-geoserver
 EOLAB_PROCESSING_DATA_VOLUME_NAME=my-workshop-processing
 ```
 
+## Concurrent raster calculations and clips
+
+One Processing container can run several worker loops. Each loop owns one
+reusable native Python process for both preparation and calculation. All loops
+claim jobs from the existing PostgreSQL queue; matching requests still share one
+calculation. Browser requests, progress, cancellation and downloads are unchanged.
+
+Set these variables in Coolify, then redeploy:
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `EOLAB_PROCESSING_WORKER_COUNT` | `1` | Maximum simultaneous native jobs, from 1 to 32 |
+| `EOLAB_PROCESSING_PROCESS_MEMORY_BYTES` | `2147483648` | Memory reserved per native process, including preparation |
+| `EOLAB_PROCESSING_MAX_EXECUTION_MEMORY_BYTES` | `2147483648` | Total budget for active native process reservations |
+| `EOLAB_PROCESSING_CONTAINER_MEMORY` | `3g` | Container RAM/swap ceiling, including the parent process and overhead |
+
+For two workers, a starting configuration is worker count `2`, total execution
+memory `4294967296` (4 GiB), and container memory `5g`. Keep the per-process limit
+at 2 GiB. This requires available host memory; it does not allocate memory in
+advance or guarantee a speedup. Benchmark the intended workload and leave memory
+for the app, database, Job service and GeoServer. The supplied container still has
+two CPUs; additional workers may compete for CPU or source-disk bandwidth.
+
+The number of native processes is the smaller of the worker count and the number
+that fit in the total memory budget. Claims reserve capacity atomically across
+database connections. A cancelling job retains its slot until native work stops;
+a missed heartbeat alone does not release it. On Linux each native process also
+has an OS address-space ceiling, which includes loaded libraries and memory maps,
+not just raster arrays. Windows does not enforce that per-process OS ceiling.
+Existing operation-specific memory and work limits still apply.
+
+Prepared jobs that temporarily cannot reserve disk return to the same queue with
+their prepared inputs retained. They do not occupy a worker or repeat preparation.
+Completed files retain their reservation until expiry or deletion and cleanup.
+Capacity-release notifications wake waiting workers; the existing periodic check
+remains a fallback if a notification is missed. Cleanup is serialized between
+loops in this container.
+
+Keep exactly one Processing container. Startup invalidates unfinished work once
+before starting the loops; replacing an individual native process does not run
+that reset. Stop the previous container before starting its replacement. Completed
+results remain available under their existing retention rules.
+
 ## Basemap choices
 
 The **Basemap** dropdown sits at the lower-right of the map, above attribution.

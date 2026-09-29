@@ -91,7 +91,10 @@ class JobListResponse(BaseModel, Generic[JobResponseType]):
 class ProcessingLimits:
     """Deployment-wide scheduling, execution and retention limits.
 
-    Waiting-job limits count only queued work, not the single running attempt.
+    Waiting-job limits count only queued work, not running attempts.
+    Each active attempt reserves process_memory_bytes before preparation.
+    max_execution_memory_bytes bounds their combined native address-space limits;
+    container memory must additionally cover idle processes and the supervisor.
     max_job_records includes finished jobs and seven-day idempotency records.
     max_job_input_bytes bounds retained job specifications and summaries until
     cleanup releases them, independently of artifact disk reservations.
@@ -103,6 +106,9 @@ class ProcessingLimits:
     """
 
     plan_timeout_seconds: float = 15
+    worker_count: int = 1
+    process_memory_bytes: int = 2 * 1024**3
+    max_execution_memory_bytes: int = 2 * 1024**3
     runtime_seconds: float = 600
     result_ttl_seconds: int = 86_400
     max_waiting_jobs: int = 128
