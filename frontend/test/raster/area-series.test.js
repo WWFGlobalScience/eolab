@@ -7,6 +7,7 @@ import { CalculationSessionStorage } from "../../src/processing/calculation-sess
 import { CATALOG_SELECTION } from "../../test-support/raster/fixtures.js";
 import { ProcessingJobs } from "../../src/processing/jobs.js";
 import { ProcessingApiClient, ProcessingRequestError } from "../../src/processing/api.js";
+import { ProcessingDiagnostics } from "../../src/processing/diagnostics.js";
 
 /** @param {number} west Longitude. @return {Object} Valid sampling box. */
 const box = west => ({kind:"selectedArea",selectedBounds:{west,south:0,east:west+1,north:1}});
@@ -27,6 +28,7 @@ function fixture(overrides = {}, data = new Map()) {
     const clock={setTimeout(fn,delay){const id=++serial;timers.set(id,{fn,delay});return id;},clearTimeout(id){timers.delete(id);}};
     const grid={nativeBlocks:1,decodedBytes:100,width:10,height:10,crs:"EPSG:4326"};
     const api={
+        diagnostics:new ProcessingDiagnostics(()=>time),
         validateCalculation:async formulas=>{requests.push(["validate",formulas]);return {valid:true};},
         planCalculation:async intent=>{const planId=String(++serial).padStart(32,"0");requests.push(["plan",intent]);plans.set(planId,intent);return {planId,grid,expiresAt:"2099-01-01T00:00:00Z"};},
         discardPlan:async id=>{requests.push(["discard",id]);},
@@ -60,7 +62,7 @@ function fixture(overrides = {}, data = new Map()) {
     };
     const open=async()=>{controller.setMode("area");controller.updateSamplingForPanelVisibility(true);await tick();};
     const close=()=>{area.destroy();calculationRequests.destroy();jobs.destroy();};
-    return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,finish,open,close};
+    return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,finish,open,close,elapse:ms=>{time+=ms;}};
 }
 
 test("formulas share one job per source, retain exact scalar/unit CSV, and presentation edits do not recalculate",async()=>{
@@ -188,7 +190,10 @@ test("uncertain submissions keep the original key and cannot leak into summary r
     assert.ok(observed.every(state=>!state.unfinishedCalculation));
     await h.finish();await h.finish();
     assert.equal(h.area.complete,true);
-    assert.equal(h.area.results.size,2);h.close();
+    assert.equal(h.area.results.size,2);
+    const recoveredResult=[...h.area.results.values()].find(result=>result.job.jobId===saved.pending.planId);
+    assert.doesNotMatch(recoveredResult.performanceLines.join(" "),/Planning round trip:/,"lost submission response has no complete timing trace");
+    h.close();
 });
 
 test("reload cancels every saved series job without restarting the stack or summary",async()=>{
@@ -452,6 +457,45 @@ test("each raster's wait starts at dispatch, while whole-series time ends at the
     assert.equal(h.area.results.get("2").elapsedSeconds,0.1);
     assert.equal(h.area.results.get("1").elapsedSeconds,0.2);
     assert.equal(h.area.elapsedSeconds,0.2,"overlapping request durations are not added");
+    for(const result of h.area.results.values()) {
+        const report=result.performanceLines.join(" ");
+        assert.match(report,/Planning round trip: 0.000 s/);
+        assert.match(report,/Excludes earlier area selection, formula debounce and validation/);
+        assert.doesNotMatch(report,/result displayed|including vector selection when requested here/);
+    }
+    h.close();
+});
+
+test("series report accounts for planning, submission and result observation using executor timestamps",async()=>{
+    const h=fixture();h.controller.updateAvailableRasters([source("1")]);
+    const plan=h.api.planCalculation,submit=h.api.submitCalculation,validate=h.api.validateCalculation,discard=h.api.discardPlan;
+    h.api.validateCalculation=async formulas=>{h.elapse(700);return validate(formulas);};
+    h.api.planCalculation=async intent=>{
+        h.elapse(1200);
+        return {...await plan(intent),timing:{reservationSeconds:.1,preparationSeconds:.2,nativeProcessSeconds:.3,finalizationSeconds:.1,queueSeconds:.2},
+            planningObservation:{sseHints:3,sseRefreshes:2,timerRefreshes:1,readyResponse:"timer"}};
+    };
+    h.api.submitCalculation=async input=>{h.elapse(300);return submit(input);};
+    h.api.discardPlan=async id=>{h.elapse(400);return discard(id);};
+    await h.open();h.elapse(3500);await h.finish();
+    const result=h.area.results.get("1"),report=result.performanceLines.join(" ");
+    assert.equal(result.elapsedSeconds,5.5,"earlier validation is excluded");
+    assert.match(report,/Before planning: 0.000 s/);
+    assert.match(report,/Planning round trip: 1.200 s/);
+    assert.match(report,/Between planning and submission: 0.000 s/);
+    assert.match(report,/Submission round trip: 0.300 s/);
+    assert.match(report,/Submission response → result observed: 4.000 s/);
+    assert.match(report,/Total measured wait: 5.500 s/);
+    assert.match(report,/Inside server planning - admission: 0.100 s/);
+    assert.match(report,/Waiting for the native planner: 0.200 s/);
+    assert.match(report,/3 SSE hints received; 2 SSE-triggered status reads; 1 two-second fallback status reads/);
+    assert.match(report,/Plan ready was first observed in a two-second fallback status read/);
+    assert.match(report,/do not measure calculation-result delivery after submission/);
+    assert.match(report,/Plan cleanup request: 0.400 s/);
+    assert.match(report,/Ready job first received at \+4.300 s from explicit refresh/);
+    assert.match(report,/Executor ready → result consumer: 0.000 s/);
+    assert.ok(report.includes(`job ${result.job.jobId}`));
+    assert.match(report,/do not add the two groups together/);
     h.close();
 });
 

@@ -232,9 +232,6 @@ export class RasterSeriesView {
                 const summary = this.document.createElement("summary");
                 summary.textContent = (area.sources.find(source => source.key === key)?.label ?? key) + " — " + result.elapsedSeconds.toFixed(3) + " s";
                 details.append(summary);
-                const timing = this.document.createElement("p");
-                timing.textContent = "Time for this raster from its planning request to received result, including server queueing; excludes earlier formula debounce and validation.";
-                details.append(timing);
                 for (const line of result.performanceLines) {
                     const p = this.document.createElement("p"); p.textContent = line; details.append(p);
                 }

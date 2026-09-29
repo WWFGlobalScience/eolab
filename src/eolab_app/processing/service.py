@@ -20,6 +20,7 @@ from eolab_app.execution.bounded_process import (
     ProcessDeadlineError,
 )
 from eolab_app.execution.reusable_process import ReusableProcess, run_process
+from eolab_app.processing.request_timings import measure_request_stage
 from eolab_app.processing.models import (
     ArtifactDownload,
     JobSubmitRequest,
@@ -852,65 +853,69 @@ class ProcessingService:
         Raises:
             ProcessingError: For expired or changed intent, conflicts, or capacity.
         """
-        existing = await asyncio.to_thread(
-            self.jobs.find_request, owner, request.requestId
-        )
-        if existing:
-            require_operation(existing, "raster.aggregate.v1")
-            if existing["plan_id"] != request.planId:
-                raise ProcessingError(
-                    "request_conflict",
-                    "That request ID already belongs to another plan.",
-                    409,
-                )
-            return public_job(existing)
-        plan = await asyncio.to_thread(self.jobs.get_plan, request.planId, owner)
-        require_operation(plan, "raster.aggregate.v1")
-        if plan["request"].get("temporaryAoiId") is not None:
-            raise ProcessingError(
-                "legacy_selection_plan",
-                "This historical AOI plan cannot be submitted again. Select a catalog vector and create a new plan.",
-                409,
+        with measure_request_stage("admissionChecks"):
+            existing = await asyncio.to_thread(
+                self.jobs.find_request, owner, request.requestId
             )
-        spec = AggregateSpec.model_validate(plan["spec"])
-        polygon_area = None
-        if plan["request"].get("polygonArea"):
-            polygon_area = await self.read_polygon_area(
-                owner,
-                PolygonAreaReference.model_validate(plan["request"]["polygonArea"]),
-            )
-        await self.authorizer.authorize(next(iter(spec.sources.values())))
-        if spec.cachedRows is not None:
-            if spec.area.catalogSelection is not None:
-                try:
-                    await self.areas.resolve_for_sampling(spec.area.catalogSelection)
-                except SelectionUnavailableError as error:
+            if existing:
+                require_operation(existing, "raster.aggregate.v1")
+                if existing["plan_id"] != request.planId:
                     raise ProcessingError(
-                        "selection_unavailable", error.detail, 409
-                    ) from error
-        else:
-            area = polygon_area or await self._aggregate_area(
-                AggregatePlanRequest.model_validate(
-                    {
-                        key: value
-                        for key, value in plan["request"].items()
-                        if key != "temporaryAoiId"
-                    }
-                )
-            )
-            if area.model_dump() != spec.area.model_dump():
+                        "request_conflict",
+                        "That request ID already belongs to another plan.",
+                        409,
+                    )
+                return public_job(existing)
+            plan = await asyncio.to_thread(self.jobs.get_plan, request.planId, owner)
+            require_operation(plan, "raster.aggregate.v1")
+            if plan["request"].get("temporaryAoiId") is not None:
                 raise ProcessingError(
-                    "area_changed",
-                    "The catalog selection changed since planning. Create a new calculation plan.",
+                    "legacy_selection_plan",
+                    "This historical AOI plan cannot be submitted again. Select a catalog vector and create a new plan.",
                     409,
                 )
-        row = await asyncio.to_thread(
-            self.jobs.submit,
-            owner,
-            request.planId,
-            request.requestId,
-            prepare_aggregate_job(spec, self.aggregate_limits),
-        )
+            spec = AggregateSpec.model_validate(plan["spec"])
+            polygon_area = None
+            if plan["request"].get("polygonArea"):
+                polygon_area = await self.read_polygon_area(
+                    owner,
+                    PolygonAreaReference.model_validate(plan["request"]["polygonArea"]),
+                )
+            await self.authorizer.authorize(next(iter(spec.sources.values())))
+            if spec.cachedRows is not None:
+                if spec.area.catalogSelection is not None:
+                    try:
+                        await self.areas.resolve_for_sampling(
+                            spec.area.catalogSelection
+                        )
+                    except SelectionUnavailableError as error:
+                        raise ProcessingError(
+                            "selection_unavailable", error.detail, 409
+                        ) from error
+            else:
+                area = polygon_area or await self._aggregate_area(
+                    AggregatePlanRequest.model_validate(
+                        {
+                            key: value
+                            for key, value in plan["request"].items()
+                            if key != "temporaryAoiId"
+                        }
+                    )
+                )
+                if area.model_dump() != spec.area.model_dump():
+                    raise ProcessingError(
+                        "area_changed",
+                        "The catalog selection changed since planning. Create a new calculation plan.",
+                        409,
+                    )
+        with measure_request_stage("queueAdmission"):
+            row = await asyncio.to_thread(
+                self.jobs.submit,
+                owner,
+                request.planId,
+                request.requestId,
+                prepare_aggregate_job(spec, self.aggregate_limits),
+            )
         return public_job(row)
 
     async def get(self, owner: str, identifier: str) -> dict[str, Any]:
@@ -923,7 +928,9 @@ class ProcessingService:
         Returns:
             Public lifecycle and ready download links.
         """
-        return public_job(await asyncio.to_thread(self.jobs.get, identifier, owner))
+        with measure_request_stage("jobRead"):
+            row = await asyncio.to_thread(self.jobs.get, identifier, owner)
+        return public_job(row)
 
     async def list_owned(self, owner: str) -> list[dict[str, Any]]:
         """Recover bounded recent jobs for the current browser session.
@@ -934,10 +941,9 @@ class ProcessingService:
         Returns:
             At most 50 public job summaries, newest first.
         """
-        return [
-            public_job(row)
-            for row in await asyncio.to_thread(self.jobs.list_owned, owner)
-        ]
+        with measure_request_stage("jobRead"):
+            rows = await asyncio.to_thread(self.jobs.list_owned, owner)
+        return [public_job(row) for row in rows]
 
     async def cancel(
         self, owner: str, identifier: str, delete: bool = False
