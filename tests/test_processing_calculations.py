@@ -326,10 +326,10 @@ def test_catalog_selection_calculates(
         assert ready["result"]["rows"][0]["value"] == "3200"
 
 
-def test_migration_invalidates_unversioned_queued_jobs(
+def test_worker_restart_invalidates_legacy_queued_jobs(
     boundary: Any, store: Any
 ) -> None:
-    """Fail a pre-policy queued job after migration rather than executing its inputs.
+    """Migrate old schemas and interrupt their queued jobs before execution.
 
     Args:
         boundary: Actual HTTP, planning and worker composition.
@@ -338,7 +338,9 @@ def test_migration_invalidates_unversioned_queued_jobs(
     client, worker, *_ = boundary
     job = submit_calculation(client, plan_calculation(client))
     with psycopg.connect(store.conninfo) as conn:
-        conn.execute("ALTER TABLE processing.jobs DROP COLUMN job_format_version")
+        conn.execute(
+            "ALTER TABLE processing.jobs ADD COLUMN job_format_version integer NOT NULL DEFAULT 1"
+        )
         conn.execute(
             "ALTER TABLE processing.jobs ADD COLUMN minimum_claim_version integer NOT NULL DEFAULT 1"
         )
@@ -348,10 +350,12 @@ def test_migration_invalidates_unversioned_queued_jobs(
         )
     store.migrate()
     store.migrate()
+    store.interrupt_unfinished_jobs_on_restart()
+    asyncio.run(worker.cleanup())
     assert not asyncio.run(worker.run_once())
     failed = client.get(f"/api/processing/jobs/{job['jobId']}").json()
-    assert failed["status"] == "failed"
-    assert failed["error"]["code"] == "incompatible_job_format"
+    assert failed["status"] == "interrupted"
+    assert failed["error"]["code"] == "worker_restarted"
     assert failed["sources"] is None
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
@@ -360,7 +364,7 @@ def test_migration_invalidates_unversioned_queued_jobs(
         assert (
             conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_schema='processing' "
-                "AND table_name='jobs' AND column_name='minimum_claim_version'"
+                "AND table_name='jobs' AND column_name IN ('minimum_claim_version','job_format_version')"
             ).fetchone()
             is None
         )

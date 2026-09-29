@@ -147,9 +147,8 @@ ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS request_hash text;
 ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS preparation jsonb;
 INSERT INTO processing.schema_version VALUES (8) ON CONFLICT DO NOTHING;
 
--- Batch deployments use one exact job format, not per-feature worker protocols.
--- Existing rows have format 0 and queued ones will fail before execution.
-ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS job_format_version integer NOT NULL DEFAULT 0;
+-- Worker startup discards unfinished jobs; no persisted compatibility versions.
+ALTER TABLE processing.jobs DROP COLUMN IF EXISTS job_format_version;
 DROP TRIGGER IF EXISTS processing_claim_protocol ON processing.jobs;
 DROP FUNCTION IF EXISTS processing.require_claim_protocol();
 ALTER TABLE processing.jobs DROP COLUMN IF EXISTS minimum_claim_version;

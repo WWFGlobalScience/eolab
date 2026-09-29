@@ -157,7 +157,7 @@ services:
         max-file: "3"
 
   # Processing owns its schema migration and runs independently of HTTP/WMS.
-  # The shared database arbitrates one global active attempt across deployments.
+  # Stop the old worker before deployment; startup interrupts all unfinished jobs.
   processing-worker:
     build:
       context: .

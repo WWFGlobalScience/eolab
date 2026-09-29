@@ -29,12 +29,9 @@ from eolab_app.processing.models import (
 # lock namespace. It serializes schema migration and shared admission, job-state,
 # storage, and transfer decisions; it is never held during native execution.
 # The integer is an assigned identifier, not a limit or a generated random value.
-# Keep it stable across releases so overlapping workers acquire the same lock.
+# Keep it stable across releases so all Processing transactions use the same lock.
 # Other components using this database must allocate a different advisory key.
 PROCESSING_ADVISORY_LOCK_ID = 7_610_329
-# Bump when stored job inputs become incompatible. Workers fail queued jobs
-# from every other format, including newer formats encountered after rollback.
-JOB_FORMAT_VERSION = 1
 LOGGER = logging.getLogger(__name__)
 UNFINISHED = ("queued", "running", "cancelling")
 PUBLIC_COLUMNS = (
@@ -100,6 +97,37 @@ class PostgresJobStore:
         sql = files("eolab_app.processing").joinpath("schema.sql").read_text()
         with self._transaction(locked=True) as cursor:
             cursor.execute(sql)
+
+    def interrupt_unfinished_jobs_on_restart(self) -> int:
+        """Discard pending work before the restarted worker consumes new jobs.
+
+        Call once at worker startup, after stopping the previous worker and its
+        native processes. Queued, running and cancelling jobs become interrupted;
+        completed results and cached values are unchanged. Keep attempt files and
+        reservations until the worker's normal cleanup removes them. Existing
+        job notifications tell browsers to read the interrupted status.
+
+        Returns:
+            Number of unfinished jobs interrupted by this restart.
+
+        Raises:
+            ProcessingError: If PostgreSQL cannot update the jobs.
+        """
+        with self._transaction(locked=True) as cursor:
+            cursor.execute(
+                "UPDATE processing.jobs SET status='interrupted',error=%s,"
+                "updated_at=clock_timestamp() "
+                "WHERE status IN ('queued','running','cancelling')",
+                (
+                    Jsonb(
+                        {
+                            "code": "worker_restarted",
+                            "detail": "The application restarted before this job finished. Submit a new job to retry.",
+                        }
+                    ),
+                ),
+            )
+            return cursor.rowcount
 
     def save_input(self, owner: str, checksum: str, payload: dict[str, Any]) -> str:
         """Retain a bounded private input for one day or until its owner releases it.
@@ -667,7 +695,7 @@ class PostgresJobStore:
                     429,
                 )
             cursor.execute(
-                "INSERT INTO processing.jobs(id,owner,request_key,plan_id,expires_at,status,spec,reserved_bytes,summary,operation,job_format_version,input_bytes,request_hash) VALUES (%s,%s,%s,%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                "INSERT INTO processing.jobs(id,owner,request_key,plan_id,expires_at,status,spec,reserved_bytes,summary,operation,input_bytes,request_hash) VALUES (%s,%s,%s,%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s) RETURNING *",
                 (
                     uuid4().hex,
                     owner,
@@ -678,7 +706,6 @@ class PostgresJobStore:
                     expected.reserved_bytes,
                     Jsonb(expected.summary),
                     expected.operation,
-                    JOB_FORMAT_VERSION,
                     count["new_input_bytes"],
                     request_hash,
                 ),
@@ -874,37 +901,18 @@ class PostgresJobStore:
         previous turn. Running jobs are never preempted. Cancellation and failure
         still count as a turn once execution starts.
 
-        Crash recovery waits through the previous hard deadline plus exit grace.
-        A lost DB connection cannot cause a second native child to start while
-        the old child could still be running under its supervisor deadline.
-        Queued jobs from another job-format version fail with a resubmit message
-        before selection. This applies equally to upgrades and rollbacks; their
-        unused input and disk reservations are released. Running jobs and finished
-        results retain their existing lifecycle.
+        While the worker is running, a lost DB connection cannot start a second
+        native child before the current attempt's hard deadline plus exit grace.
+        Worker startup separately interrupts work left by the stopped worker.
 
         Returns:
-            Claimed job, or None when execution is busy or no supported job waits.
+            Claimed job, or None when execution is busy or no job waits.
 
         Raises:
             ProcessingError: If the database cannot complete the claim.
         """
 
         with self._transaction(locked=True) as cursor:
-            cursor.execute(
-                "UPDATE processing.jobs SET status='failed',error=%s,"
-                "spec=NULL,summary='{}'::jsonb,preparation=NULL,progress='{}'::jsonb,"
-                "reserved_bytes=0,updated_at=clock_timestamp() "
-                "WHERE status='queued' AND job_format_version<>%s",
-                (
-                    Jsonb(
-                        {
-                            "code": "incompatible_job_format",
-                            "detail": "This queued job belongs to an incompatible application version. Submit a new job to retry.",
-                        }
-                    ),
-                    JOB_FORMAT_VERSION,
-                ),
-            )
             cursor.execute(
                 "UPDATE processing.jobs SET status='interrupted',error=%s,updated_at=now() WHERE status IN ('running','cancelling') AND deadline_at<now()",
                 (

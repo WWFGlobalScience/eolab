@@ -325,33 +325,34 @@ Deleting this volume loses result files even if their database records remain.
 Back up persistent database and result storage together when results must be kept.
 
 Deploy the app and Processing worker together, stopping the old containers first.
-Jobs carry one exact format version. Before claiming work, the worker marks queued
-jobs from any other format as failed with a resubmit message and releases their
-unused reservations. This also invalidates newer queued jobs after a rollback to
-a release using this policy. Compatible jobs, running jobs and completed results
-are not invalidated by this check.
+Every Processing worker startup marks all queued, running and cancelling jobs as
+interrupted with a resubmit message before consuming new work. This applies to
+upgrades, rollbacks, same-version redeployments and worker container restarts.
+No job-format version or compatibility check is needed. Completed results and
+cached calculation values survive, subject to their usual expiry. The existing
+worker cleanup removes interrupted attempt files before releasing reservations.
+Never overlap old and new worker containers with this policy.
 
-Releases predating this policy cannot perform that check. Before rolling back to
-one of those releases, stop the app and worker and invalidate queued work in the
-Processing database (then start the older release):
+Releases predating this policy cannot perform the startup reset. Before rolling
+back to one of those releases, stop the app and worker and invalidate unfinished
+work in the Processing database (then start the older release):
 
 ```sql
 UPDATE processing.jobs
-SET status = 'failed', spec = NULL, summary = '{}'::jsonb,
-    reserved_bytes = 0, updated_at = clock_timestamp(),
-    error = '{"code":"incompatible_job_format","detail":"Application rolled back. Submit a new job to retry."}'::jsonb
-WHERE status = 'queued';
+SET status = 'interrupted', updated_at = clock_timestamp(),
+    error = '{"code":"worker_restarted","detail":"The application restarted before this job finished. Submit a new job to retry."}'::jsonb
+WHERE status IN ('queued', 'running', 'cancelling');
 ```
 
-This intentionally discards pending calculations; users must resubmit them.
+The older worker's normal cleanup removes those attempts and releases storage.
+This intentionally discards unfinished calculations; users must resubmit them.
 It does not delete completed results or source data.
 
 An old unsubmitted upload plan can report `legacy_selection_plan`; choose a Catalog
 vector and make a new plan. Completed results retain their usual expiry.
 
-A graceful worker stop interrupts its active job. After an abrupt worker failure,
-the queue can wait about ten minutes for the previous execution deadline before
-starting another attempt. Interrupted jobs require a new plan/job; partial results
+A graceful worker stop interrupts its active job. On restart, any other unfinished
+jobs are interrupted too. Interrupted jobs require a new plan/job; partial results
 are not resumed. App health and map exploration can remain available while
 Processing reports its database or storage unavailable.
 

@@ -663,6 +663,14 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
     monkeypatch.delenv("GEOSERVER_INTERNAL_URL", raising=False)
     monkeypatch.setattr(composition, "PostgresJobStore", lambda limits: store)
 
+    pending = store.submit(
+        "owner",
+        None,
+        "before-restart",
+        PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096),
+        "a" * 64,
+    )
+
     def unexpected(*args: Any, **kwargs: Any) -> None:
         """Fail if worker composition constructs an unrelated feature.
 
@@ -683,6 +691,9 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
         assert worker.limits.max_waiting_jobs == 61
         assert worker.limits.max_owner_waiting_jobs == 17
         assert isinstance(wakeup, composition.PostgresJobWakeup)
+        assert store.get(pending["id"], "owner")["status"] == "interrupted"
+        await worker.cleanup()
+        assert store.get(pending["id"], "owner")["reserved_bytes"] == 0
         assert not await worker.run_once()
 
     monkeypatch.setattr(composition, "create_app", unexpected)
@@ -762,52 +773,61 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
         runner.run(scenario())
 
 
-@pytest.mark.parametrize("version_offset", [-1, 1], ids=["upgrade", "rollback"])
-def test_claim_fails_incompatible_queued_jobs(
-    store: PostgresJobStore, monkeypatch: pytest.MonkeyPatch, version_offset: int
+@pytest.mark.parametrize("status", ["queued", "running", "cancelling"])
+def test_worker_restart_interrupts_unfinished_jobs(
+    store: PostgresJobStore, status: str
 ) -> None:
-    """Invalidate another release's queued inputs without changing active or ready jobs.
+    """Discard unfinished work while preserving results, cache and late-write fences.
 
     Args:
         store: Disposable real PostgreSQL adapter.
-        monkeypatch: Simulate a writer using an older or newer job format.
-        version_offset: Difference between stored and current job format.
+        status: Unfinished state retained from the stopped worker.
     """
-    import eolab_app.processing.job_store as store_module
-
     prepared = PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096)
-    with monkeypatch.context() as other_release:
-        other_release.setattr(
-            store_module,
-            "JOB_FORMAT_VERSION",
-            store_module.JOB_FORMAT_VERSION + version_offset,
-        )
-        completed = store.submit("owner", None, "completed-request", prepared, "a" * 64)
-        claimed = store.claim()
-        assert claimed["id"] == completed["id"]
-        assert store.finish(
-            claimed["id"], claimed["attempt_id"], Artifact(1, "checksum", "result.csv")
-        )
-        active = store.submit("owner", None, "running-request", prepared, "a" * 64)
-        assert store.claim()["id"] == active["id"]
-        obsolete = store.submit("owner", None, "obsolete-request", prepared, "a" * 64)
+    completed = store.submit("owner", None, "completed-request", prepared, "a" * 64)
+    claimed = store.claim()
+    assert claimed["id"] == completed["id"]
+    cached = {"b" * 64: {"value": "1"}}
+    assert store.finish(
+        claimed["id"],
+        claimed["attempt_id"],
+        Artifact(1, "checksum", "result.csv"),
+        reusable_results=cached,
+    )
+    ready = store.get(completed["id"], "owner")
+    pending = store.submit(
+        "other-owner", None, "unfinished-request", prepared, "a" * 64
+    )
+    if status != "queued":
+        pending = store.claim()
+        if status == "cancelling":
+            store.cancel(pending["id"], "other-owner")
 
-    compatible = store.submit("owner", None, "compatible-request", prepared, "a" * 64)
-    assert store.claim() is None  # The active attempt still owns execution.
-    failed = store.get(obsolete["id"], "owner")
-    assert failed["status"] == "failed"
-    assert failed["error"]["code"] == "incompatible_job_format"
-    assert "Submit a new job" in failed["error"]["detail"]
-    assert failed["reserved_bytes"] == 0 and failed["spec"] is None
-    assert store.find_request("owner", "obsolete-request")["status"] == "failed"
+    assert store.interrupt_unfinished_jobs_on_restart() == 1
+    interrupted = store.get(pending["id"], "other-owner")
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["error"]["code"] == "worker_restarted"
+    assert "Submit a new job" in interrupted["error"]["detail"]
+    assert (
+        store.find_request("other-owner", "unfinished-request")["status"]
+        == "interrupted"
+    )
+    # Retain reservations until attempt files have been removed by normal cleanup.
+    assert interrupted["reserved_bytes"] == 4096
+    assert pending["id"] in {row["id"] for row in store.cleanup_candidates()}
+    if status != "queued":
+        assert not store.heartbeat(pending["id"], pending["attempt_id"], {})
+        assert not store.finish(
+            pending["id"], pending["attempt_id"], Artifact(1, "late", "late.csv")
+        )
+    store.cleaned(pending["id"])
+    assert store.get(pending["id"], "other-owner")["reserved_bytes"] == 0
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
-            "SELECT input_bytes FROM processing.jobs WHERE id=%s", (obsolete["id"],)
-        ).fetchone() == (0,)
-    assert store.get(completed["id"], "owner")["status"] == "ready"
-    assert store.get(active["id"], "owner")["status"] == "running"
-    store.cancel(active["id"], "owner")
-    running = store.get(active["id"], "owner")
-    assert store.finish(active["id"], running["attempt_id"], None)
-    assert store.claim()["id"] == compatible["id"]
-    assert store.get(obsolete["id"], "owner")["updated_at"] == failed["updated_at"]
+            "SELECT input_bytes,spec FROM processing.jobs WHERE id=%s", (pending["id"],)
+        ).fetchone() == (0, None)
+    assert store.get(completed["id"], "owner") == ready
+    assert store.get_cached_calculation_results(list(cached)) == cached
+    assert store.interrupt_unfinished_jobs_on_restart() == 0
+    fresh = store.submit("owner", None, "fresh-request", prepared, "a" * 64)
+    assert store.claim()["id"] == fresh["id"]

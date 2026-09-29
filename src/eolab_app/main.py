@@ -473,7 +473,9 @@ async def run_processing_worker() -> None:
     """Compose the dedicated worker through the existing settings boundary.
 
     No web application or GeoServer client is constructed.
-    The worker migrates only its owned schema before consuming durable jobs.
+    After migrating its schema, the worker interrupts all unfinished jobs from
+    the previous run. Deployments must stop the old worker and its native
+    processes before starting this one. Completed results remain available.
 
     Raises:
         ValueError: If source and artifact configuration is unsafe.
@@ -506,9 +508,10 @@ async def run_processing_worker() -> None:
         while True:
             try:
                 await asyncio.to_thread(jobs.migrate)
+                await asyncio.to_thread(jobs.interrupt_unfinished_jobs_on_restart)
                 break
             except ProcessingError:
-                logging.getLogger(__name__).warning("Processing schema is unavailable; retrying in five seconds")
+                logging.getLogger(__name__).warning("Processing startup is unavailable; retrying in five seconds")
                 await asyncio.sleep(5)
         await serve_processing(worker, PostgresJobWakeup())
 

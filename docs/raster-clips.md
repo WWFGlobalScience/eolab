@@ -71,10 +71,12 @@ Results expire 24 hours after completion. Keep the same browser session to inspe
 cancel, delete or download your jobs; knowing a job ID is not sufficient.
 Downloads support resume. An accepted job can continue after the browser closes;
 recover it through History & exports. A failed job does not expose a partial TIFF.
+Deployments and worker restarts interrupt unfinished jobs; submit them again.
+Completed results remain available until expiry.
 
 | Resource | Limit |
 | --- | --- |
-| Active native clip jobs | 1 globally, including overlapping worker deployments |
+| Active native clip jobs | 1 globally; stop the old worker before deploying another |
 | Waiting jobs | 128 globally; 32 queued per browser session; running work is counted separately |
 | Retained job records | 4,096, including finished jobs and seven-day idempotency records |
 | Retained job inputs | 128 MiB of specifications and summaries awaiting cleanup |
