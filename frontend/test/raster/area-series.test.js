@@ -34,9 +34,9 @@ function fixture(overrides = {}, data = new Map()) {
         discardPlan:async id=>{requests.push(["discard",id]);},
         submitCalculation:async submission=>{
             requests.push(["submit",submission]);
-            if(server.has(submission.planId))return server.get(submission.planId);
-            const intent=plans.get(submission.planId);
-            const job={jobId:submission.planId,operation:"raster.aggregate.v1",status:"running",progress:{phase:"calculating",completedBlocks:0,totalBlocks:1},grid,
+            const existing=[...server.values()].find(job=>job.requestId===submission.requestId); if(existing)return existing;
+            const intent=submission.planId ? plans.get(submission.planId) : submission;
+            const job={jobId:submission.planId ?? String(++serial).padStart(32,"0"),requestId:submission.requestId,operation:"raster.aggregate.v1",status:"running",progress:{phase:"calculating",completedBlocks:0,totalBlocks:1},grid,
                 calculations:intent.calculations,sources:{a:intent.source},result:null};
             server.set(job.jobId,job);return job;
         },
@@ -68,7 +68,7 @@ function fixture(overrides = {}, data = new Map()) {
 test("formulas share one job per source, retain exact scalar/unit CSV, and presentation edits do not recalculate",async()=>{
     const h=fixture();h.controller.addFormula("area");await h.open();
     assert.equal(h.requests.filter(([k])=>k==="submit").length,2);
-    assert.equal(h.requests.find(([k])=>k==="plan")[1].calculations.length,2);
+    assert.equal(h.requests.find(([k])=>k==="submit")[1].calculations.length,2);
     await h.finish();await h.finish("ready",true);
     assert.equal(h.area.complete,true);
     assert.equal(h.requests.filter(([k])=>k==="submit").length,2);
@@ -97,27 +97,9 @@ test("formulas share one job per source, retain exact scalar/unit CSV, and prese
     h.close();
 });
 
-test("large stacks get one confirmation; cached whole-raster plans need none",async()=>{
-    const h=fixture();h.controller.chooseArea("whole");await h.open();
-    assert.equal(h.area.confirmation,true);
-    assert.equal(h.requests.filter(([k])=>k==="submit").length,0);
-    await h.area.calculateRemainingRasters();await flush();await h.finish();await h.finish();
-    assert.equal(h.area.confirmation,false);assert.equal(h.area.complete,true);
-    h.close();
-    const cached=fixture();const original=cached.api.planCalculation;
-    cached.api.planCalculation=async intent=>({...await original(intent),cacheHit:true});
-    cached.controller.chooseArea("whole");await cached.open();await cached.finish("ready",true);await cached.finish("ready",true);
-    assert.equal(cached.area.complete,true);assert.equal(cached.area.confirmation,false);cached.close();
-});
 
-test("automatic work budget covers the stack, not just each individual raster",async()=>{
-    const h=fixture();h.grid.nativeBlocks=80;await h.open();await h.finish();
-    assert.equal(h.area.confirmation,true);
-    assert.equal(h.area.results.size,1);
-    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,1);
-    await h.area.calculateRemainingRasters();await flush();await h.finish();
-    assert.equal(h.area.complete,true);h.close();
-});
+
+
 
 test("rapid area changes cancel submitted work and never mix old-area rows",async()=>{
     const h=fixture();await h.open();await h.finish();await h.finish();
@@ -126,7 +108,7 @@ test("rapid area changes cancel submitted work and never mix old-area rows",asyn
     h.controller.setArea(box(20),"Third");await h.tick();
     assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,2);
     await h.finish("cancelled");await h.finish("cancelled");await flush();
-    const planned=h.requests.filter(([kind])=>kind==="plan").at(-1)[1];
+    const planned=h.requests.filter(([kind])=>kind==="submit").at(-1)[1];
     assert.equal(planned.area.selectedBounds.west,20);
     await h.finish();await h.finish();
     assert.equal(h.area.results.size,2);
@@ -154,7 +136,7 @@ test("summary and series submit independently without receiving each other's res
     const h=fixture();const snapshots=[];
     const summary=h.calculationRequests.createClient("summary",state=>{snapshots.push(state);if(state.isIdle&&state.plan)summary.submit(state.plan.planId);});
     await h.open();
-    summary.prepare({source:{collectionId:"catalog",itemId:"summary",label:"Summary"},area:box(0),calculations:[{label:"Mean",expression:"mean(a)"}]});
+    summary.submit({source:{collectionId:"catalog",itemId:"summary",label:"Summary"},area:box(0),calculations:[{label:"Mean",expression:"mean(a)"}]});
     await flush();
     assert.equal(h.server.size,3,"all three submissions precede any result");
     await h.finish("ready",false,"summary");
@@ -165,15 +147,7 @@ test("summary and series submit independently without receiving each other's res
     await h.finish();assert.equal(h.area.complete,true);h.close();
 });
 
-test("obsolete plan responses are released and never submitted",async()=>{
-    const h=fixture();const gate=deferred(),original=h.api.planCalculation;
-    h.api.planCalculation=async intent=>{const plan=await original(intent);if(intent.area.selectedBounds.west===0)await gate.promise;return plan;};
-    await h.open();h.controller.setArea(box(30),"New");await h.tick();gate.resolve();await flush();
-    assert.equal(h.requests.filter(([kind])=>kind==="discard").length,4);
-    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
-    for(const [id] of h.server) assert.equal(h.plans.get(id).area.selectedBounds.west,30);
-    h.close();
-});
+
 
 test("uncertain submissions keep the original key and cannot leak into summary recovery",async()=>{
     const h=fixture();const submit=h.api.submitCalculation;let lost=true;
@@ -191,7 +165,7 @@ test("uncertain submissions keep the original key and cannot leak into summary r
     await h.finish();await h.finish();
     assert.equal(h.area.complete,true);
     assert.equal(h.area.results.size,2);
-    const recoveredResult=[...h.area.results.values()].find(result=>result.job.jobId===saved.pending.planId);
+    const recoveredResult=[...h.area.results.values()].find(result=>result.job.requestId===saved.pending.requestId);
     assert.doesNotMatch(recoveredResult.performanceLines.join(" "),/Planning round trip:/,"lost submission response has no complete timing trace");
     h.close();
 });
@@ -214,16 +188,15 @@ test("catalog predicates and annotation uploads remain exact per-raster inputs",
     for (const area of [{kind:"catalogSelection",catalogSelection:CATALOG_SELECTION},
         {kind:"polygonArea",polygonArea:{id:"a".repeat(32),sha256:"b".repeat(64)}}]) {
         const h=fixture();h.controller.setArea(area,"Selected polygons");await h.open();
-        assert.equal(h.area.confirmation,true);
+
         await h.area.calculateRemainingRasters();await flush();await h.finish();await h.finish();
-        for(const [,intent]of h.requests.filter(([kind])=>kind==="plan"))assert.deepEqual(intent.area,area);
+        for(const [,intent]of h.requests.filter(([kind])=>kind==="submit"))assert.deepEqual(intent.area,area);
         assert.equal(h.area.complete,true);h.close();
     }
 });
 
 test("inline cached completions retain all source positions without queuing extra jobs",async()=>{
-    const h=fixture(),plan=h.api.planCalculation,submit=h.api.submitCalculation;
-    h.api.planCalculation=async intent=>({...await plan(intent),cacheHit:true});
+    const h=fixture(),submit=h.api.submitCalculation;
     h.api.submitCalculation=async input=>{
         const job=await submit(input);
         const ready={...job,status:"ready",result:{cacheHit:true,rows:job.calculations.map(row=>({...row,value:"0",state:"ok",valueType:"float",aggregates:[]}))}};
@@ -235,7 +208,7 @@ test("inline cached completions retain all source positions without queuing extr
     assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);h.close();
 });
 
-test("formula validation and five-formula limit apply before any raster plan",async()=>{
+test("formula validation and five-formula limit apply before any raster submission",async()=>{
     const h=fixture({validateCalculation:async()=>{throw Error("Unknown function bad");}});
     h.controller.editFormula(1,{expression:"bad(a)"});
     for(let i=0;i<8;i++)h.controller.addFormula("mean");
@@ -249,7 +222,7 @@ test("formula validation and five-formula limit apply before any raster plan",as
     assert.equal(h.controller.formulas.length,5,"a sixth active formula is not accepted");
     await h.tick();
     assert.match(h.view.state.message,/Unknown function bad/);
-    assert.equal(h.requests.filter(([kind])=>kind==="plan").length,0);h.close();
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,0);h.close();
 });
 
 test("closing and reopening a completed area plot preserves its result and completion message",async()=>{
@@ -264,10 +237,10 @@ test("one queued caller can replace and cancel its request without cancelling it
     const h=fixture();await h.open();
     const summary=h.calculationRequests.createClient("summary",()=>{});
     const intent={source:{collectionId:"catalog",itemId:"summary",label:"Summary"},area:box(0),calculations:[{label:"Sum",expression:"sum(a)"}]};
-    summary.prepare(intent);summary.prepare({...intent,area:box(10)});summary.stop();
+    summary.submit(intent);summary.submit({...intent,area:box(10)});summary.stop();
     assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,0);
     await h.finish();await h.finish();
-    assert.ok([...h.server.values()].every(job=>job.sources.a.itemId!=="summary"));
+    assert.equal([...h.server.values()].find(job=>job.sources.a.itemId==="summary").status,"cancelling");
     assert.equal(h.area.complete,true);h.close();
 });
 
@@ -295,15 +268,15 @@ test("all statistics keep identities and raster positions through out-of-order r
     h.close();
 });
 
-test("later raster can plan and finish while the first raster's plan is still in flight",async()=>{
-    const h=fixture(), gate=deferred(), plan=h.api.planCalculation;
-    h.api.planCalculation=async intent=>{
-        const result=await plan(intent);
+test("later raster can finish while the first raster's submission response is still in flight",async()=>{
+    const h=fixture(), gate=deferred(), submit=h.api.submitCalculation;
+    h.api.submitCalculation=async intent=>{
+        const result=await submit(intent);
         if(intent.source.itemId==="1")await gate.promise;
         return result;
     };
     await h.open();
-    assert.equal(h.requests.filter(([kind])=>kind==="plan").length,2);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
     await h.finish("ready",false,"2");
     assert.deepEqual(h.view.state.rows.map(row=>row.state),["waiting","value"]);
     assert.equal(h.area.busy,true);
@@ -311,14 +284,14 @@ test("later raster can plan and finish while the first raster's plan is still in
     assert.equal(h.area.complete,true);h.close();
 });
 
-test("unclassified planning rejection leaves an actionable gap and retries only failed rows",async()=>{
-    const h=fixture(), plan=h.api.planCalculation;let full=true;
-    h.api.planCalculation=async intent=>{
-        if(full&&intent.source.itemId==="1")throw new ProcessingRequestError("Planning queue is full. Try again.",429);
-        return plan(intent);
+test("unclassified submission rejection leaves an actionable gap and retries only failed rows",async()=>{
+    const h=fixture(), submit=h.api.submitCalculation;let full=true;
+    h.api.submitCalculation=async intent=>{
+        if(full&&intent.source.itemId==="1")throw new ProcessingRequestError("Submission rejected. Try again.",429);
+        return submit(intent);
     };
     await h.open();await h.finish("ready",false,"2");
-    assert.match(h.view.state.rows[0].errorMessage,/Planning queue is full/);
+    assert.match(h.view.state.rows[0].errorMessage,/Submission rejected/);
     assert.equal(h.area.hasErrors,true);assert.equal(h.area.busy,false);
     full=false;await h.area.calculateRemainingRasters();await flush();await h.finish("ready",false,"1");
     assert.equal(h.area.hasErrors,false);
@@ -337,31 +310,14 @@ test("64 rasters dispatch without a browser worker limit and one cancel stops al
     h.close();
 });
 
-test("all 64 rasters finish automatically through smaller plan and job queues",async context=>{
+test("all 64 rasters finish automatically through a smaller job queue",async context=>{
     context.mock.timers.enable({apis:["setTimeout"]});
-    const h=fixture(), heldPlans=new Set(), submit=h.api.submitCalculation, discard=h.api.discardPlan;
-    const attempts=new Map();let planRejections=0,jobRejections=0;
-    const transport=new ProcessingApiClient(async(url,options)=>{
-        if(url.endsWith("/jobs")) return Response.json({jobs:[]});
-        const planId=url.split("/").at(-1);
-        assert.equal(options.method,"POST");
-        if(heldPlans.size>=8 && !heldPlans.has(planId)) {
-            planRejections++;
-            return Response.json({detail:{code:"plan_queue_full",message:"Queue full"}},
-                {status:429,headers:{"Retry-After":"5"}});
-        }
-        const input=JSON.parse(options.body);
-        heldPlans.add(planId);
-        h.plans.set(planId,{source:input.sources.a,calculations:input.calculations});
-        return Response.json({planId,status:"ready",result:{planId,operation:"raster.aggregate.v1",
-            grid:{...h.grid,dtype:"float32",transform:[1,0,0,0,-1,0]},expiresAt:"2099-01-01T00:00:00Z"}});
-    },null);
-    h.api.planCalculation=(...args)=>transport.planCalculation(...args);
-    h.api.discardPlan=async id=>{heldPlans.delete(id);return discard(id);};
+    const h=fixture(), submit=h.api.submitCalculation;
+    const attempts=new Map();let jobRejections=0;
     h.api.submitCalculation=async request=>{
-        const prior=attempts.get(request.planId);
+        const prior=attempts.get(request.source.itemId);
         if(prior) assert.equal(request.requestId,prior,"capacity retries keep the same request key");
-        attempts.set(request.planId,request.requestId);
+        attempts.set(request.source.itemId,request.requestId);
         if([...h.server.values()].filter(job=>job.status==="running").length>=4) {
             jobRejections++;throw new ProcessingRequestError("Queue full",429,"owner_queue_full",5);
         }
@@ -376,15 +332,14 @@ test("all 64 rasters finish automatically through smaller plan and job queues",a
         for(const job of [...h.server.values()].filter(job=>job.status==="running")) await h.finish("ready",false,job.sources.a.itemId);
         context.mock.timers.tick(31000);await flush();
     }
-    assert.ok(planRejections>0 && jobRejections>0);
+    assert.ok(jobRejections>0);
     assert.equal(h.area.complete,true);
     assert.equal(h.area.hasErrors,false);
     assert.equal(h.area.results.size,64);
     assert.equal(h.view.state.rows.length,64);
     assert.equal(h.server.size,64,"each raster was accepted exactly once");
-    assert.equal(heldPlans.size,0);
+    assert.equal(h.requests.filter(([kind])=>kind==="plan").length,0);
     assert.deepEqual(h.storage.savedClientNames(),[]);
-    assert.equal(h.area.budget.nativeBlocks,64);
     h.close();
 });
 
@@ -399,36 +354,14 @@ test("reload recovers and cancels all 64 independent submissions",async()=>{
     recovered.close();
 });
 
-test("replacing an expired plan counts that raster only once toward confirmation",async()=>{
-    const h=fixture(), submit=h.api.submitCalculation;h.grid.nativeBlocks=64;
-    let expired=false;
-    h.api.submitCalculation=async request=>{
-        if(!expired && h.plans.get(request.planId).source.itemId==="1") {
-            expired=true;throw new ProcessingRequestError("Plan expired",409,"plan_unavailable");
-        }
-        return submit(request);
-    };
-    await h.open();
-    assert.equal(h.area.confirmation,false);
-    assert.equal(h.area.budget.nativeBlocks,128);
-    await h.finish();await h.finish();assert.equal(h.area.complete,true);h.close();
-});
 
-test("reordering sources before confirming the rest cannot overwrite a running raster",async()=>{
-    const h=fixture();h.grid.nativeBlocks=80;await h.open();
-    assert.equal(h.area.confirmation,true);
-    h.area.updateCalculationInputs([source("2"),source("1")],box(0),"Renamed",h.area.formulas);
-    await h.area.calculateRemainingRasters();await flush();
-    assert.equal(h.server.size,2);
-    await h.finish("ready",false,"2");await h.finish("ready",false,"1");
-    assert.equal(h.area.results.get("1").job.sources.a.itemId,"1");
-    assert.equal(h.area.results.get("2").job.sources.a.itemId,"2");h.close();
-});
+
+
 
 test("cancelling a series leaves concurrent summary and clip jobs running",async()=>{
     const h=fixture();
     const summary=h.calculationRequests.createClient("summary",state=>{if(state.isIdle&&state.plan)summary.submit(state.plan.planId);});
-    summary.prepare({source:{collectionId:"catalog",itemId:"summary",label:"Summary"},area:box(0),calculations:[{label:"Mean",expression:"mean(a)"}]});
+    summary.submit({source:{collectionId:"catalog",itemId:"summary",label:"Summary"},area:box(0),calculations:[{label:"Mean",expression:"mean(a)"}]});
     const clip={jobId:"c".repeat(32),operation:"raster.clip.v1",status:"running",sources:{a:{itemId:"clip"}}};
     h.server.set(clip.jobId,clip);h.jobs.accept(clip);
     await h.open();h.area.cancelRemainingRasters();await flush();
@@ -459,43 +392,33 @@ test("each raster's wait starts at dispatch, while whole-series time ends at the
     assert.equal(h.area.elapsedSeconds,0.2,"overlapping request durations are not added");
     for(const result of h.area.results.values()) {
         const report=result.performanceLines.join(" ");
-        assert.match(report,/Planning round trip: 0.000 s/);
+        assert.match(report,/Submission round trip: 0.000 s/);
         assert.match(report,/Excludes earlier area selection, formula debounce and validation/);
         assert.doesNotMatch(report,/result displayed|including vector selection when requested here/);
     }
     h.close();
 });
 
-test("series report accounts for planning, submission and result observation using executor timestamps",async()=>{
+test("series report accounts for submission, queued preparation and result observation",async()=>{
     const h=fixture();h.controller.updateAvailableRasters([source("1")]);
-    const plan=h.api.planCalculation,submit=h.api.submitCalculation,validate=h.api.validateCalculation,discard=h.api.discardPlan;
+    const submit=h.api.submitCalculation,validate=h.api.validateCalculation;
     h.api.validateCalculation=async formulas=>{h.elapse(700);return validate(formulas);};
-    h.api.planCalculation=async intent=>{
-        h.elapse(1200);
-        return {...await plan(intent),timing:{reservationSeconds:.1,preparationSeconds:.2,nativeProcessSeconds:.3,finalizationSeconds:.1,queueSeconds:.2},
-            planningObservation:{sseHints:3,sseRefreshes:2,timerRefreshes:1,readyResponse:"timer"}};
-    };
     h.api.submitCalculation=async input=>{h.elapse(300);return submit(input);};
-    h.api.discardPlan=async id=>{h.elapse(400);return discard(id);};
-    await h.open();h.elapse(3500);await h.finish();
+    await h.open();
+    const job=[...h.server.values()][0];
+    h.server.set(job.jobId,{...job,preparation:{seconds:.2,cacheHit:false,process:null}});
+    h.elapse(3500);await h.finish();
     const result=h.area.results.get("1"),report=result.performanceLines.join(" ");
-    assert.equal(result.elapsedSeconds,5.5,"earlier validation is excluded");
-    assert.match(report,/Before planning: 0.000 s/);
-    assert.match(report,/Planning round trip: 1.200 s/);
-    assert.match(report,/Between planning and submission: 0.000 s/);
+    assert.equal(result.elapsedSeconds,3.9,"earlier validation is excluded");
+    assert.match(report,/Before submission: 0.000 s/);
+    assert.doesNotMatch(report,/Planning round trip/);
     assert.match(report,/Submission round trip: 0.300 s/);
-    assert.match(report,/Submission response → result observed: 4.000 s/);
-    assert.match(report,/Total measured wait: 5.500 s/);
-    assert.match(report,/Inside server planning - admission: 0.100 s/);
-    assert.match(report,/Waiting for the native planner: 0.200 s/);
-    assert.match(report,/3 SSE hints received; 2 SSE-triggered status reads; 1 two-second fallback status reads/);
-    assert.match(report,/Plan ready was first observed in a two-second fallback status read/);
-    assert.match(report,/do not measure calculation-result delivery after submission/);
-    assert.match(report,/Plan cleanup request: 0.400 s/);
-    assert.match(report,/Ready job first received at \+4.300 s from explicit refresh/);
+    assert.match(report,/Submission response → result observed: 3.600 s/);
+    assert.match(report,/Total measured wait: 3.900 s/);
+    assert.match(report,/Calculation preparation: 0.200 s/);
+    assert.match(report,/Ready job first received at \+3.900 s from explicit refresh/);
     assert.match(report,/Executor ready → result consumer: 0.000 s/);
     assert.ok(report.includes(`job ${result.job.jobId}`));
-    assert.match(report,/do not add the two groups together/);
     h.close();
 });
 

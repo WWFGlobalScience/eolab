@@ -342,7 +342,18 @@ Allow streaming through the reverse proxy without buffering. Losing that stream
 does not cancel accepted jobs. The stream reconnects periodically; polling still
 recovers updates if streaming is unavailable.
 
-Raster calculation and clip planning share a FIFO queue with one native planner.
+Current raster summary clients submit complete inputs and a stable `requestId`
+to `POST /api/processing/raster-calculations`. The 202 response is the queued job;
+no separate plan request or later execution submission is needed. The worker
+publishes `progress.phase: preparing`, then stores the prepared `grid` and
+`preparation` timing on that job and starts calculating immediately. Job reads
+and the existing SSE hints expose these updates. Before preparation, `grid` and
+`preparation` are null. Cancellation uses the same job ID throughout. Cached
+results still enter the job queue, but skip native preparation and calculation.
+Deploy API, worker and frontend together: these input-only jobs require worker
+claim protocol 9, so older workers leave them queued.
+
+Raster clip planning and legacy raster calculation clients share a FIFO queue with one native planner.
 The current limits admit 32 unfinished requests, retain 128 plan records, and
 allow each browser session 32 unfinished or ready plans. This admits a burst of
 independent raster plans from one session within the existing global queue;
@@ -357,8 +368,9 @@ checks source access but does not wait for the native planner. Queue waiting has
 its own 60-second limit; active planning retains its 15-second limit. A completed
 estimate is usable for five minutes starting when preparation finishes.
 
-New browser clients submit to `POST /api/processing/raster-calculations/plans/{id}`
-or `/api/processing/raster-clips/plans/{id}`, using a random 32-character lowercase
+Clip clients submit to `POST /api/processing/raster-clips/plans/{id}`.
+`/api/processing/raster-calculations/plans/{id}` remains available for older
+clients and saved pending submissions. These use a random 32-character lowercase
 hex ID. A 202 response contains the current state; `GET /api/processing/plans/{id}`
 returns progress and the completed estimate. Reusing an ID with the same inputs
 recovers an uncertain submission. Changing its inputs returns `plan_conflict`.

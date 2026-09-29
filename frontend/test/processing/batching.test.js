@@ -7,7 +7,7 @@ import { performanceDescription } from "../../src/processing/calculation-perform
 const intent={source:{collectionId:"r",itemId:"r1",label:"Raster"},area:{kind:"wholeRaster"},calculations:[{label:"Mean",expression:"mean(a)"}]};
 const execution={targetChunkPixels:65536,readWidth:512,readHeight:128,evaluationWidth:512,evaluationHeight:128,readWindows:1};
 const grid={width:512,height:128,crs:"EPSG:4326",dtype:"float32",transform:[1,0,0,0,-1,90],nativeBlocks:4,decodedBytes:262144,execution};
-const plan={planId:"P".repeat(32),operation:"raster.aggregate.v1",expiresAt:"2099-01-01T00:00:00Z",grid};
+const plan={jobId:"P".repeat(32),status:"running",progress:{phase:"calculating"},operation:"raster.aggregate.v1",expiresAt:"2099-01-01T00:00:00Z",grid};
 
 /** Wrap a test estimate in the planning resource returned by its admission URL.
  * @param {string} path Request URL. @param {Object} result Completed estimate.
@@ -21,9 +21,9 @@ test("warm-process metadata is validated and distinguishes readiness from repeat
     const process={readyWaitSeconds:0,operationSeconds:.2,overheadSeconds:.01,reusedProcess:true};
     const timing={reservationSeconds:.01,preparationSeconds:.01,nativeProcessSeconds:.21,finalizationSeconds:.01,process};
     for(const value of [process,{...process,readyWaitSeconds:-1},{...process,operationSeconds:".2"},{...process,reusedProcess:"yes"}]){
-        const client=new ProcessingApiClient(async path=>Response.json(path.endsWith("/jobs")?{jobs:[]}:readyPlan(path,{...plan,timing:{...timing,process:value}})));
-        if(value===process)await client.planCalculation(intent);
-        else await assert.rejects(()=>client.planCalculation(intent),/invalid/);
+        const client=new ProcessingApiClient(async path=>Response.json(path.endsWith("/jobs")?{jobs:[]}:{...plan,preparation:{seconds:.23,cacheHit:false,process:value}}));
+        if(value===process)await client.getJob("P".repeat(32));
+        else await assert.rejects(()=>client.getJob("P".repeat(32)),/invalid/);
     }
     const stages={beforePlanningSeconds:0,planningSeconds:.25,beforeSubmissionSeconds:0,submissionSeconds:.1,afterSubmissionSeconds:2,serverPlan:timing};
     const job={result:{executionTiming:{queueSeconds:.01,preparationSeconds:.01,nativeProcessSeconds:.21,publicationSeconds:.01,process}}};
@@ -36,10 +36,10 @@ test("warm-process metadata is validated and distinguishes readiness from repeat
 });
 
 test("stage metrics accept legacy absence and reject malformed durations at the API boundary",async()=>{
-    for(const timing of [undefined,null,{reservationSeconds:0,preparationSeconds:.1,nativeProcessSeconds:1,finalizationSeconds:.2},{reservationSeconds:-1},{nativeProcessSeconds:"1"}]){
-        const client=new ProcessingApiClient(async path=>Response.json(path.endsWith("/jobs")?{jobs:[]}:readyPlan(path,{...plan,timing})));
-        if(timing==null||timing.reservationSeconds===0)await client.planCalculation(intent);
-        else await assert.rejects(()=>client.planCalculation(intent),/stage timings/);
+    for(const timing of [undefined,null,{seconds:0,cacheHit:false},{seconds:-1,cacheHit:false},{seconds:"1",cacheHit:false}]){
+        const client=new ProcessingApiClient(async path=>Response.json(path.endsWith("/jobs")?{jobs:[]}:{...plan,preparation:timing}));
+        if(timing==null||timing.seconds===0)await client.getJob("P".repeat(32));
+        else await assert.rejects(()=>client.getJob("P".repeat(32)),/stage timings/);
     }
     const job={jobId:"J".repeat(32),operation:"raster.aggregate.v1",status:"ready",progress:{phase:"ready"},
         result:{url:`/api/processing/jobs/${"J".repeat(32)}/result`,provenanceUrl:`/api/processing/jobs/${"J".repeat(32)}/provenance`,rows:[{label:"Mean",expression:"mean(a)",state:"ok",value:"1",valueType:"float",aggregates:[]}]}};
@@ -66,10 +66,10 @@ test("API transmits opt-in batch tuning and keeps omitted legacy requests compat
     const bodies=[];
     const api=new ProcessingApiClient(async(path,options)=>{
         if(path.endsWith("/jobs"))return Response.json({jobs:[]});
-        bodies.push(JSON.parse(options.body));return Response.json(readyPlan(path,plan));
+        bodies.push(JSON.parse(options.body));return Response.json(plan);
     });
-    await api.planCalculation(calculationIntent({...intent,targetChunkPixels:65536}));
-    await api.planCalculation(calculationIntent(intent));
+    await api.submitCalculation({...calculationIntent({...intent,targetChunkPixels:65536}),requestId:"r".repeat(32)});
+    await api.submitCalculation({...calculationIntent(intent),requestId:"s".repeat(32)});
     assert.equal(bodies[0].targetChunkPixels,65536);
     assert.equal(Object.hasOwn(bodies[1],"targetChunkPixels"),false);
     for(const bad of [0,-1,4194305,1.5,"65536",true]){
@@ -79,8 +79,8 @@ test("API transmits opt-in batch tuning and keeps omitted legacy requests compat
 
 test("API rejects corrupt execution metadata and durable timing results",async()=>{
     const api=new ProcessingApiClient(async path=>Response.json(path.endsWith("/jobs")?{jobs:[]}:
-        readyPlan(path,{...plan,grid:{...grid,execution:{...execution,evaluationWidth:513}}})));
-    await assert.rejects(()=>api.planCalculation(intent),/batch dimensions/);
+        {...plan,grid:{...grid,execution:{...execution,evaluationWidth:513}}}));
+    await assert.rejects(()=>api.getJob("P".repeat(32)),/batch dimensions/);
     const result={url:`/api/processing/jobs/${"J".repeat(32)}/result`,provenanceUrl:`/api/processing/jobs/${"J".repeat(32)}/provenance`,rows:[{label:"Mean",expression:"mean(a)",state:"ok",value:"1",valueType:"float",aggregates:[]}]};
     const metrics={execution,readWindows:1,evaluationTiles:1,reducerUpdates:1,readSeconds:1,calculationSeconds:2,resultWriteSeconds:.1,kernelSeconds:4};
     for(const performance of [null,metrics,{...metrics,readSeconds:-1},{...metrics,readWindows:2}]){

@@ -25,10 +25,12 @@ has been selected, the result position says **Click the map to calculate**. Clic
 the map to select a sampling box; the automatic-update policy below then applies.
 
 **Update statistics automatically**, in the dock's **More** menu, is on by default.
-With Summarize active, a new map box can update statistics automatically. Plans
-above 128 native blocks, 64 MiB decoded values/masks, or 25,000 estimated geometry
-cells pause for **Calculate**. Whole-raster and vector areas also require an
-explicit action; **Use filtered features & calculate** supplies that action.
+With Summarize active, a new map box can update statistics automatically.
+Each calculation is submitted as one job. The worker prepares the raster grid
+and work estimates, then immediately calculates the result. Progress changes
+from queued to preparing to calculating; prepared estimates remain available
+on the job. Server work and memory limits still apply. Use **Calculate** to run
+manually, or cancel work that is taking too long.
 
 A previous value is grayed out while its replacement is pending. Use the copy
 button beside a current value to copy it. **Value details & downloads** contains
@@ -74,17 +76,14 @@ Missing values and failed rasters leave gaps; the table explains their status.
 Previous plots are faded while replacements are pending. Visibility, plot assignment,
 axis scale, names, chart type and display order change without recalculating.
 
-Small boxes calculate after a 700 ms pause. The automatic work budget applies
-to the entire stack. Large areas or stacks pause once for **Calculate remaining
-rasters**; cached results do not need this confirmation. Each selected raster
+With automatic updates enabled, inputs calculate after a 700 ms pause. Each selected raster
 requests its calculation independently, without waiting for the previous result.
-The server queues planning and execution. Results appear as they finish; the
+The server queues one job per raster, including preparation and execution. Results appear as they finish; the
 table shows each raster's progress or error. Summary cards can run alongside a
-series. If the planning or calculation queue is full, affected rasters show
+series. If the job queue is full, affected rasters show
 **Waiting for server capacity; retrying automatically**. They remain pending
 until space becomes available or you cancel. Retries respect the server's wait
-advice and back off; they do not increase server execution concurrency. A plan
-that expires while waiting is prepared again. Storage exhaustion, invalid inputs,
+advice and back off; they do not increase server execution concurrency. Storage exhaustion, invalid inputs,
 and execution failures remain explicit errors; **Calculate** retries failed rows.
 Changing inputs, leaving area series, or **Cancel remaining** cancels outstanding
 series work without cancelling summary cards or downloads. After a page reload,
@@ -97,7 +96,7 @@ exact scalar values, units, source IDs, area descriptors, job IDs and cache
 status as CSV. **Calculation timings** reports each raster's request-to-result
 time and server timings. Raster requests overlap, so their durations must not be
 added. A separate whole-series time includes debounce, formula validation and any
-confirmation or recovery pauses. Formula choices and series results are not saved in
+recovery pauses. Formula choices and series results are not saved in
 shared map links.
 
 ## Language and numerical meaning
@@ -213,7 +212,7 @@ and timings. These are wall times, including waiting within each operation:
   parts of Calculation, not additional time.
 - **Read/decode and source mask** includes native raster I/O, decompression and
   its validity mask. It includes waiting, so it is not pure disk time.
-- **Vector selection before calculation** is part of Before planning when that
+- **Vector selection before calculation** is part of Before submission when that
   selection was observed in this tab. It excludes optional display-outline work.
   A later Calculate click starts a new measurement.
 - Kernel setup, read, calculation, CSV/checksum and the labelled remaining kernel
@@ -222,7 +221,11 @@ and timings. These are wall times, including waiting within each operation:
   several statistic cards run together.
 - Native-process time also includes communication and cleanup. Readiness wait
   includes any startup required for this request; earlier prewarming is excluded.
-- **Queued → ready** includes server queueing and execution. The estimated
+- **Queued → ready** includes server queueing, preparation and execution.
+  **Calculation preparation** is included in worker preparation; it measures
+  source authorization, cache lookup, area/grid estimates and their storage on
+  the job. It is not an additional browser request or a separate queue.
+  The estimated
   submission/delivery remainder includes request handling, transfer and result
   observation; it is not a measurement of network time alone.
 
@@ -239,7 +242,7 @@ request-to-display time under a busy server or slow connection.
 | Area polygon-cell work / execution transformations | 2,000,000 fallback cells / 4,000,000 positions; supported rectilinear grids use no pixel polygons |
 | Area geometry memory estimate | Additional 128 MiB within the same 512 MiB admission ceiling |
 | Working/result reservation | 12 MiB per calculation job |
-| Planning / execution | Existing 15-second / 10-minute supervised deadlines |
+| Preparation / complete job | 15-second preparation deadline within the 10-minute job deadline |
 | Result lifetime | Existing 24-hour lifetime and transfer leases |
 
 A work-limit refusal asks for a smaller area or batch; it never substitutes

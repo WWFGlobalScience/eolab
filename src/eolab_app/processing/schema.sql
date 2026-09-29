@@ -156,3 +156,9 @@ UPDATE processing.jobs SET started_at=updated_at
 CREATE INDEX IF NOT EXISTS jobs_owner_started ON processing.jobs(owner, started_at DESC)
     WHERE started_at IS NOT NULL;
 INSERT INTO processing.schema_version VALUES (7) ON CONFLICT DO NOTHING;
+
+-- Direct calculation jobs carry input identity without an external plan record.
+ALTER TABLE processing.jobs ALTER COLUMN plan_id DROP NOT NULL;
+ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS request_hash text;
+ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS preparation jsonb;
+INSERT INTO processing.schema_version VALUES (8) ON CONFLICT DO NOTHING;

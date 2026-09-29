@@ -130,6 +130,14 @@ class AggregatePlanRequest(BaseModel):
         return self
 
 
+class AggregateJobRequest(AggregatePlanRequest):
+    """Submit raster, area and formulas once with a stable retry identifier."""
+
+    requestId: Annotated[
+        str, Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    ]
+
+
 class AggregateArea(BaseModel):
     """Exact calculation area: a box, catalog selection, uploaded polygons or whole raster."""
 
@@ -218,6 +226,41 @@ class AggregateArea(BaseModel):
             None,
         )
         return data
+
+
+class UnpreparedCalculation(BaseModel):
+    """Durable calculation inputs awaiting preparation by the execution worker.
+
+    Uploaded polygons are copied at admission so deleting an upload cannot change
+    accepted work. Catalog selections remain immutable descriptors, not snapshots.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    operation: Literal["raster.aggregate.v1"] = OPERATION_VERSION
+    request: AggregatePlanRequest
+    polygonArea: AggregateArea | None = None
+
+    @model_validator(mode="after")
+    def check_uploaded_polygon_copy(self) -> "UnpreparedCalculation":
+        """Check that the retained polygons match the submitted area reference.
+
+        Returns:
+            Validated queued inputs.
+
+        Raises:
+            ValueError: If the polygon snapshot is absent, unexpected or mismatched.
+        """
+        reference = self.request.polygonArea
+        if reference is None:
+            if self.polygonArea is not None:
+                raise ValueError("Unexpected polygon copy for this calculation")
+        elif (
+            self.polygonArea is None
+            or self.polygonArea.kind != "polygons"
+            or self.polygonArea.geometryHash != reference.sha256
+        ):
+            raise ValueError("Saved polygons do not match the requested area")
+        return self
 
 
 class GroundAreaPlan(BaseModel):
@@ -373,9 +416,10 @@ class AggregateValue(BaseModel):
 class AggregateSpec(BaseModel):
     """The raster, formulas, selected area and grid for a calculation job.
 
-    The Processing planning service builds this object from the user's request
-    and the grid returned by plan_aggregate(). The service saves it with the job;
-    the worker loads it and passes it to calculate_raster_statistics_for_area().
+    The worker builds this object from the queued request and the grid returned
+    by plan_aggregate(), saves it on the job, then passes it to
+    calculate_raster_statistics_for_area(). Older clients can still prepare this
+    object through the separate planning API before submitting a job.
 
     sources maps the formula alias (such as a) to a catalog raster.
     calculations contains the named formulas. area describes the map box,
@@ -445,6 +489,15 @@ class AggregatePlanTiming(BaseModel):
     process: NativeProcessTiming | None = None
 
 
+class CalculationPreparation(BaseModel):
+    """Worker preparation duration and cache outcome, retained on the job after completion."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    seconds: StageSeconds
+    cacheHit: Annotated[bool, Field(strict=True)]
+    process: NativeProcessTiming | None = None
+
+
 class AggregateExecutionTiming(BaseModel):
     """Worker stages and database-clock queue interval for one successful attempt."""
 
@@ -482,6 +535,7 @@ class AggregateJobResponse(JobResponse):
     calculations: tuple[NamedCalculation, ...] | None
     area: dict[str, object] | None
     grid: AggregateGrid | None
+    preparation: CalculationPreparation | None = None
     progress: AggregateProgress
     result: AggregateResultResponse | None
 

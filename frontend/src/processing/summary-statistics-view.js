@@ -190,11 +190,9 @@ export class SummaryStatisticsView {
             if (result && resultSignature !== row.resultSignature) {
                 this.renderValueDetails(row.detailsBody, result); row.resultSignature = resultSignature;
             }
-            row.size.hidden = !card.manualRequired || card.current || card.pending || !!card.requested;
-            const grid = card.plan?.grid;
-            row.size.textContent = card.manualRequired ? grid
-                ? `${grid.nativeBlocks.toLocaleString()} source blocks · ${formatDownloadBytes(grid.decodedBytes)} decoded. Calculate to confirm this scan.`
-                : "This area requires Calculate to confirm the scan." : "";
+            const grid = card.preparedJob?.grid;
+            row.size.hidden = !card.pending || !grid;
+            row.size.textContent = grid ? `Prepared: ${grid.nativeBlocks.toLocaleString()} source blocks · ${formatDownloadBytes(grid.decodedBytes)} decoded.` : "";
         }
         const e = this.elements, x = this.extra;
         const areaSignature = state.areaChoice;

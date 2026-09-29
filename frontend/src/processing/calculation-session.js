@@ -93,7 +93,7 @@ export class CalculationSessionStorage {
             const value = JSON.parse(text);
             if (typeof value.automatic !== "boolean" || typeof value.cancelRequested !== "boolean" ||
                 !(value.jobId === null || ID.test(value.jobId)) ||
-                !(value.pending === null || (ID.test(value.pending?.planId) && /^[A-Za-z0-9_-]{16,80}$/.test(value.pending?.requestId))) ||
+                !(value.pending === null || ((value.pending?.planId === undefined || ID.test(value.pending.planId)) && /^[A-Za-z0-9_-]{16,80}$/.test(value.pending?.requestId))) ||
                 (!value.jobId && !value.pending)) return null;
             if (!(value.releasePlanId === undefined || value.releasePlanId === null || ID.test(value.releasePlanId))) return null;
             if (value.client !== undefined && !["summary", "raster-series"].includes(value.client)) return null;

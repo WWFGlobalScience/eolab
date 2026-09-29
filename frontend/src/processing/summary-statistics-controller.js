@@ -1,5 +1,4 @@
 /** Editable statistic cards over the existing durable calculation workflow. */
-import { canAutomaticallyCalculate } from "./calculation-policy.js";
 import { calculationIntent, chunkPixels } from "./calculation-session.js";
 import { normalizeCalculationArea } from "./calculation-area.js";
 import { catalogSelectionsEqual } from "../selected-area.js";
@@ -65,7 +64,7 @@ export class SummaryStatisticsController {
     makeStatistic(value, source = null) {
         return { id: ++this.serial, label: value.label, expression: value.expression, source,
             version: 0, valid: false, checking: false, requested: null, pending: false,
-            message: "Choose a raster", result: null, plan: null, manualRequired: false, error: false };
+            message: "Choose a raster", result: null, preparedJob: null, error: false };
     }
     label(card) { return card.label.trim() || `Summary statistic ${card.id}`; }
     key(card) { return JSON.stringify([sourceKey(card.source), card.expression.trim(), this.state.area, this.state.targetChunkPixels]); }
@@ -247,7 +246,7 @@ export class SummaryStatisticsController {
         this.executor.discardPendingCalculation();
         this.state.targetChunkPixels = target;
         for (const card of this.state.statistics) {
-            card.plan = null; card.manualRequired = false; card.requested = null; card.error = false;
+            card.preparedJob = null; card.requested = null; card.error = false;
         }
         this.render();
     }
@@ -292,7 +291,7 @@ export class SummaryStatisticsController {
             ? this.state.vectorArea?.label ?? "Selected polygons"
             : area?.kind === "wholeRaster" ? "Whole raster" : area ? "Current map sampling box" : "");
         for (const card of this.state.statistics) {
-            card.plan = null; card.manualRequired = false; card.error = false;
+            card.preparedJob = null; card.error = false;
             card.requested = automatic && this.isActive && this.state.automatic && area ? "automatic" : null;
             card.requestStarted = card.requested ? this.now() : null;
             card.vectorSelectionSeconds = undefined;
@@ -329,7 +328,7 @@ export class SummaryStatisticsController {
         Object.assign(card, change);
         if (oldKey !== this.key(card)) {
             this.invalidateBatch(id);
-            card.plan = null; card.manualRequired = false; card.error = false;
+            card.preparedJob = null; card.error = false;
             card.requested = automatic && this.isActive && this.state.automatic ? "automatic" : null;
             card.requestStarted = card.requested ? this.now() : null;
             card.vectorSelectionSeconds = undefined;
@@ -447,7 +446,7 @@ export class SummaryStatisticsController {
         this.batchStartScheduled = true;
         queueMicrotask(() => { this.batchStartScheduled = false; this.startNextBatch(); });
     }
-    /** Start preparing the next compatible statistic batch when execution is idle.
+    /** Submit the next compatible statistic batch when execution is idle.
      * @return {void}
      */
     startNextBatch() {
@@ -474,13 +473,11 @@ export class SummaryStatisticsController {
         this.batch = { intent, previousJobId: execution.completedJob?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted, vectorSelectionSeconds: card.vectorSelectionSeconds })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Preparing calculation…"; }
-        this.executor.prepare(intent);
+        this.executor.submit(intent, Object.freeze({automatic: this.batch.automatic}));
         this.render();
     }
 
-    /** Decide whether a prepared batch may run and apply progress to its cards.
-     * Automatic updates must pass this owner's size policy; explicit Calculate
-     * requests already authorize execution. Only this owner interprets the trigger.
+    /** Apply the queued job’s preparation, calculation progress and results to its cards.
      * @param {CalculationExecutionSnapshot} execution Progress, remaining work and last completed job from one executor update.
      * @return {void}
      */
@@ -502,13 +499,6 @@ export class SummaryStatisticsController {
         }
         const batch = this.batch;
         if (batch) {
-            const prepared = execution.isIdle && execution.phase !== "error" && execution.plan &&
-                !batch.obsolete && same(execution.plannedCalculation, batch.intent);
-            const needsConfirmation = prepared && batch.automatic && !canAutomaticallyCalculate(execution.plan, batch.intent);
-            if (prepared && !needsConfirmation) {
-                this.executor.submit(execution.plan.planId, Object.freeze({ automatic: batch.automatic }));
-                return;
-            }
             const isIdle = execution.isIdle;
             const job = execution.completedJob; // Numeric rows are inside job.result, not the job metadata.
             const matching = !batch.obsolete && same(execution.completedCalculation, batch.intent) && job?.status === "ready" && job.jobId !== batch.previousJobId;
@@ -519,14 +509,11 @@ export class SummaryStatisticsController {
                     card.message = execution.message || (execution.currentJob?.status === "running" ? "Calculating…" : "Waiting to calculate…");
                     card.progress = execution.currentJob?.progress ?? null;
                     card.error = execution.phase === "error";
-                    if (execution.plan) card.plan = execution.plan;
+                    if (execution.currentJob?.grid) card.preparedJob = execution.currentJob;
                     if (isIdle && matching && job.result?.rows[index]) {
                         card.result = { key: entry.key, row: job.result.rows[index], job, source: batch.intent.source, area: batch.intent.area,
                             requestStarted: entry.requestStarted, vectorSelectionSeconds: entry.vectorSelectionSeconds, stageTrace: execution.completedTimings };
                         card.message = "Up to date";
-                    } else if (isIdle && needsConfirmation) {
-                        card.manualRequired = true;
-                        card.message = "Ready to calculate · explicit confirmation needed";
                     } else if (isIdle && !matching) {
                         card.error = execution.phase === "error" || !batch.obsolete;
                     }
@@ -559,7 +546,7 @@ export class SummaryStatisticsController {
                     : "Click the map to select an area, then choose Calculate.")
                     : !card.valid ? "Enter a formula" : !this.state.area ? "Choose an area"
                     : card.requested ? "Ready to calculate · queued" : card.current ? "Up to date"
-                    : card.manualRequired ? "Ready to calculate · explicit confirmation needed" : "Ready to calculate";
+                    : "Ready to calculate";
             }
         }
         for (const card of this.state.statistics) {
@@ -577,16 +564,12 @@ export class SummaryStatisticsController {
                 const displayed = this.now();
                 result.totalWaitSeconds = Math.max(0, displayed - result.requestStarted) / 1000;
                 const trace = result.stageTrace;
-                if (trace && [trace.planningStartedAtMs, trace.planningFinishedAtMs, trace.submissionStartedAtMs, trace.submissionFinishedAtMs].every(Number.isFinite)
-                    && result.requestStarted <= trace.planningStartedAtMs && trace.planningFinishedAtMs <= trace.submissionStartedAtMs) {
+                if (trace && [trace.submissionStartedAtMs, trace.submissionFinishedAtMs].every(Number.isFinite)
+                    && result.requestStarted <= trace.submissionStartedAtMs) {
                     result.stages = {
-                        beforePlanningSeconds: (trace.planningStartedAtMs - result.requestStarted) / 1000,
-                        planningSeconds: (trace.planningFinishedAtMs - trace.planningStartedAtMs) / 1000,
-                        beforeSubmissionSeconds: (trace.submissionStartedAtMs - trace.planningFinishedAtMs) / 1000,
+                        beforeSubmissionSeconds: (trace.submissionStartedAtMs - result.requestStarted) / 1000,
                         submissionSeconds: (trace.submissionFinishedAtMs - trace.submissionStartedAtMs) / 1000,
                         afterSubmissionSeconds: (displayed - trace.submissionFinishedAtMs) / 1000,
-                        planReused: trace.planReused, serverPlan: trace.serverPlan,
-                        planningObservation: trace.planningObservation,
                         delivery: {...trace, controllerReceivedAtMs: displayed},
                         vectorSelectionSeconds: result.vectorSelectionSeconds,
                     };

@@ -385,7 +385,7 @@ def test_legacy_claim_protocol_cannot_consume_calculations(
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
             "SELECT version FROM processing.schema_version ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
 
 
 def paused_calculation(queue: Any, operation: str, arguments: tuple) -> None:
