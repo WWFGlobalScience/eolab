@@ -87,6 +87,26 @@ class JobListResponse(BaseModel, Generic[JobResponseType]):
     jobs: list[JobResponseType]
 
 
+class JobStatusRequest(BaseModel):
+    """Read up to 100 public job IDs belonging to the current session.
+
+    Duplicate IDs are accepted and returned once. This reads statuses without
+    submitting work or changing the requested jobs.
+    """
+
+    jobIds: list[OpaqueId] = Field(min_length=1, max_length=100)
+
+
+class JobStatusResponse(JobListResponse[JobResponseType], Generic[JobResponseType]):
+    """Requested job snapshots and IDs unavailable to the current session.
+
+    Foreign and nonexistent IDs are both unavailable; no other owner's job
+    information is disclosed. Each distinct requested ID appears in one list.
+    """
+
+    unavailableJobIds: list[OpaqueId]
+
+
 @dataclass(frozen=True)
 class ProcessingLimits:
     """Deployment-wide scheduling, execution and retention limits.

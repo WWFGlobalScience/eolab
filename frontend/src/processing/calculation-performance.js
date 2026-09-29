@@ -48,7 +48,7 @@ function deliveryDescription(delivery) {
     const refreshes = ofKind("refresh-start");
     lines.push(`Shared job observer: ${refreshes.length} refreshes (${refreshes.filter(e => e.trigger === "sse").length} SSE, ${refreshes.filter(e => e.trigger === "sse-follow-up").length} SSE follow-up, ${refreshes.filter(e => e.trigger === "timer").length} timer, ${refreshes.filter(e => e.trigger === "explicit").length} explicit); ${ofKind("refresh-coalesced").length} triggers joined an in-flight refresh; ${ofKind("refresh-discarded").length} responses discarded; ${ofKind("refresh-error").length} refresh failures.`,
         `Updates skipped for this job to preserve newer local changes: ${ofKind("job-update-skipped").length}. Unrelated job updates are still accepted.`,
-        `Individual lookups for this job: ${ofKind("extra-job-read").length}. Shared refreshes may include sequential lookups for other tracked jobs.`);
+        "Active jobs are refreshed together by requested ID, in batches of up to 100. Idle refreshes recover recent history.");
     const finishes = ofKind("refresh-finish");
     const coalescedWaits = ofKind("refresh-coalesced").flatMap(event => {
         const finish = finishes.find(item => item.refreshNumber === event.refreshNumber);

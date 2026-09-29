@@ -557,6 +557,26 @@ class PostgresJobStore:
             )
             return cursor.fetchall()
 
+    def read_owned_jobs(
+        self, owner: str, identifiers: list[str]
+    ) -> list[dict[str, Any]]:
+        """Read requested session-owned jobs in one database query.
+
+        Args:
+            owner: Current session hash.
+            identifiers: Validated public job IDs, at most 100.
+
+        Returns:
+            Matching owned records, including deleted jobs, in unspecified order.
+            Foreign and nonexistent IDs are omitted.
+        """
+        with self._transaction() as cursor:
+            cursor.execute(
+                "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND id=ANY(%s)",
+                (owner, identifiers),
+            )
+            return cursor.fetchall()
+
     def cancel(
         self,
         identifier: str,

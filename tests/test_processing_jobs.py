@@ -201,6 +201,70 @@ def submitted(
     return response.json()
 
 
+@pytest.mark.parametrize(
+    "store", [RasterClipLimits(max_owner_waiting_jobs=100)], indirect=True
+)
+def test_requested_statuses_are_complete_owned_and_independent_of_history(
+    boundary: Any, store: PostgresJobStore
+) -> None:
+    """Read old jobs together without leaking foreign jobs or creating new work.
+
+    Args:
+        boundary: Real HTTP, Processing, and PostgreSQL components.
+        store: Disposable job database.
+    """
+    client, worker, source, artifacts, app = boundary
+    first = submitted(client, clip_inputs(client))
+    # Distinct caller records can share one calculation; history still has 50 rows.
+    for _ in range(51):
+        submitted(client, clip_inputs(client))
+    recent = client.get("/api/processing/jobs").json()["jobs"]
+    assert len(recent) == 50
+    assert first["jobId"] not in {job["jobId"] for job in recent}
+    missing = uuid4().hex
+    with TestClient(app, base_url="https://testserver") as stranger:
+        foreign = submitted(stranger, clip_inputs(stranger))
+    requested = [first["jobId"], recent[0]["jobId"], foreign["jobId"], missing]
+    response = client.post(
+        "/api/processing/jobs/status",
+        json={"jobIds": requested + [first["jobId"]]},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "jobs": [first, recent[0]],
+        "unavailableJobIds": [foreign["jobId"], missing],
+    }
+    assert "no-store" in response.headers["cache-control"]
+    assert (
+        client.post(
+            "/api/processing/jobs/status", json={"jobIds": requested}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/processing/jobs/status",
+            json={"jobIds": requested},
+            headers={**HEADERS, "Origin": "https://elsewhere.example"},
+        ).status_code
+        == 403
+    )
+    for invalid in [[], ["invalid"], [first["jobId"]] * 101]:
+        assert (
+            client.post(
+                "/api/processing/jobs/status", json={"jobIds": invalid}, headers=HEADERS
+            ).status_code
+            == 422
+        )
+    assert (
+        client.post(
+            "/api/processing/jobs/status", content=b"x" * 20000, headers=HEADERS
+        ).status_code
+        == 413
+    )
+
+
 def test_real_clip_worker_download_ranges_ownership_and_idempotency(
     boundary: Any, tmp_path: Path
 ) -> None:
@@ -226,6 +290,11 @@ def test_real_clip_worker_download_ranges_ownership_and_idempotency(
     assert asyncio.run(worker.run_once())
     ready = client.get(f"/api/processing/jobs/{identifier}").json()
     assert ready["status"] == "ready", ready
+    batch = client.post(
+        "/api/processing/jobs/status", json={"jobIds": [identifier]}, headers=HEADERS
+    )
+    assert batch.status_code == 200, batch.text
+    assert batch.json() == {"jobs": [ready], "unavailableJobIds": []}
     assert client.get("/api/processing/jobs").json()["jobs"][0]["jobId"] == identifier
     url = ready["result"]["url"]
     complete = client.get(url)

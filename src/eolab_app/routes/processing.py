@@ -23,6 +23,8 @@ from starlette.responses import FileResponse, StreamingResponse
 from eolab_app.processing.models import (
     ArtifactDownload,
     JobListResponse,
+    JobStatusRequest,
+    JobStatusResponse,
     ProcessingError,
 )
 from eolab_app.processing.clip_models import ClipJobRequest, ClipJobResponse
@@ -470,6 +472,31 @@ def create_processing_router(service: ProcessingService) -> APIRouter:
             Bounded owned job summaries.
         """
         return {"jobs": await _result(service.list_owned(_owner(request, response)))}
+
+    @router.post(
+        "/jobs/status",
+        response_model=JobStatusResponse[SupportedJobResponse],
+        openapi_extra=MUTATION_SCHEMA,
+    )
+    async def job_statuses(
+        body: JobStatusRequest, request: Request, response: Response
+    ) -> dict[str, Any]:
+        """Read a batch of requested job statuses for the current session.
+
+        Args:
+            body: One to 100 public job IDs; duplicates are returned once.
+            request: Same-origin browser session and Processing header.
+            response: Secure owner-cookie and private-cache response.
+
+        Returns:
+            Owned job snapshots and IDs unavailable to this session.
+
+        Raises:
+            HTTPException: If the request fails the session or origin checks.
+        """
+        return await _result(
+            service.read_job_statuses(_owner(request, response), body.jobIds)
+        )
 
     @router.get(
         "/events",
