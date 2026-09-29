@@ -15,8 +15,11 @@ from httpx2 import Response
 import psycopg
 import pytest
 
-from eolab_app.processing.job_store import PostgresJobStore
-from eolab_app.processing.models import ProcessingError
+from eolab_app.processing.job_store import (
+    PROCESSING_ADVISORY_LOCK_ID,
+    PostgresJobStore,
+)
+from eolab_app.processing.models import PreparedJobPlan, ProcessingError
 from eolab_app.processing.planning_queue import PlanningQueue
 from eolab_app.processing.job_notifications import (
     JOB_CHANGE_CHANNEL,
@@ -516,6 +519,128 @@ def test_planning_capacity_and_fifo_claims_across_database_connections(
     assert not adapters[next_owner].claim_native_plan(next_id, str(next_owner))
     adapters[first_owner].settle_planning(first, str(first_owner), None)
     assert adapters[next_owner].claim_native_plan(next_id, str(next_owner))
+
+
+def test_status_reads_do_not_wait_for_admission_lock(store: PostgresJobStore) -> None:
+    """Concurrent status reads finish while admission is locked by another client.
+
+    Args:
+        store: Isolated PostgreSQL adapter.
+    """
+    identifier = store.reserve_plan("reader", SOURCE)
+    with ThreadPoolExecutor(max_workers=25) as pool:
+        with psycopg.connect(store.conninfo) as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(%s)", (PROCESSING_ADVISORY_LOCK_ID,)
+            )
+            futures = [
+                pool.submit(store.get_planning, identifier, "reader") for _ in range(25)
+            ]
+            for future in futures:
+                assert future.result(timeout=2)["state"] == "checking"
+
+
+@pytest.mark.parametrize("deadline", ["request_deadline", "planning_until"])
+def test_status_reports_expiration_without_changing_records(
+    store: PostgresJobStore, deadline: str
+) -> None:
+    """Reads report expired work immediately without expiring other owners' work.
+
+    Args:
+        store: Isolated PostgreSQL adapter.
+        deadline: The request or native-planner deadline to expire.
+    """
+    identifier = store.reserve_plan("reader", SOURCE)
+    other = store.reserve_plan("other", SOURCE)
+    ready = store.reserve_plan("ready", SOURCE)
+    store.settle_planning(ready, "ready", {"complete": True})
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            f"UPDATE processing.plans SET {deadline}=now()-interval '1 second'"
+        )
+        before = connection.execute(
+            "SELECT * FROM processing.plans ORDER BY id"
+        ).fetchall()
+    snapshot = store.get_planning(identifier, "reader")
+    assert snapshot["state"] == "failed"
+    assert snapshot["error"]["code"] == "planning_interrupted"
+    assert snapshot["planning_until"] is None
+    assert "planning_expired" not in snapshot
+    assert store.get_planning(ready, "ready")["state"] == "ready"
+    with pytest.raises(ProcessingError) as unavailable:
+        store.get_planning(other, "reader")
+    assert unavailable.value.status == 404
+    with psycopg.connect(store.conninfo) as connection:
+        assert (
+            connection.execute("SELECT * FROM processing.plans ORDER BY id").fetchall()
+            == before
+        )
+        connection.execute(
+            "UPDATE processing.plans SET expires_at=now()-interval '1 second' WHERE id=%s",
+            (identifier,),
+        )
+    with pytest.raises(ProcessingError) as unavailable:
+        store.get_planning(identifier, "reader")
+    assert unavailable.value.status == 404
+
+
+def test_worker_cleanup_expires_abandoned_plans(
+    boundary: Any, store: PostgresJobStore
+) -> None:
+    """Worker maintenance expires abandoned plans but retains a live planner slot.
+
+    Args:
+        boundary: Real application and worker composition.
+        store: Isolated PostgreSQL adapter.
+    """
+    _, worker, _, _, _ = boundary
+    active = hold_planner(store)
+    abandoned = store.reserve_plan("abandoned", SOURCE)
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.plans SET request_deadline=now()-interval '1 second' WHERE id=%s",
+            (abandoned,),
+        )
+    asyncio.run(worker.cleanup())
+    with psycopg.connect(store.conninfo) as connection:
+        assert connection.execute(
+            "SELECT state,planning_until,error->>'code' FROM processing.plans WHERE id=%s",
+            (abandoned,),
+        ).fetchone() == ("failed", None, "planning_interrupted")
+    assert store.get_planning(active, "held")["state"] == "planning"
+    assert store.get_planning(active, "held")["planning_until"] is not None
+
+
+@pytest.mark.parametrize("finish_inputs", [False, True])
+def test_completion_cannot_revive_expired_plan(
+    store: PostgresJobStore, finish_inputs: bool
+) -> None:
+    """Late completion cannot publish success after read-only expiration reporting.
+
+    Args:
+        store: Isolated PostgreSQL adapter.
+        finish_inputs: Whether operation inputs arrive before the public result.
+    """
+    identifier = hold_planner(store)
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.plans SET planning_until=now()-interval '1 second' WHERE id=%s",
+            (identifier,),
+        )
+    assert store.get_planning(identifier, "held")["state"] == "failed"
+    if finish_inputs:
+        prepared = PreparedJobPlan(
+            specification={"operation": "test.summary.v1"},
+            summary={"label": "Test"},
+            reserved_bytes=4096,
+        )
+        assert store.finish_plan(identifier, "held", prepared) is None
+    store.settle_planning(identifier, "held", {"complete": True})
+    with psycopg.connect(store.conninfo) as connection:
+        assert connection.execute(
+            "SELECT state,result,planning_until,spec FROM processing.plans WHERE id=%s",
+            (identifier,),
+        ).fetchone() == ("failed", None, None, None)
 
 
 def test_abandoned_requests_and_queue_timeouts_are_observable(

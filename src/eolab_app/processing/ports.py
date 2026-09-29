@@ -87,7 +87,10 @@ class JobStore(Protocol):
         ...
 
     def get_planning(self, identifier: str, owner: str) -> dict[str, Any]:
-        """Read owned planning state and mark expired work failed.
+        """Read owned planning state without changing records or locking admission.
+
+        Report overdue active requests as failed using database time, even before
+        maintenance persists their expiration.
 
         Args:
             identifier: Plan ID.
@@ -434,11 +437,14 @@ class JobStore(Protocol):
         ...
 
     def cleanup_candidates(self) -> list[dict[str, Any]]:
-        """Revoke expired results and return terminal attempts safe to remove.
+        """Expire abandoned plans and results, then find job files safe to remove.
 
         Returns:
             At most 100 rows with no active transfer; budgets remain reserved
             until the worker confirms filesystem cleanup.
+
+        Raises:
+            ProcessingError: If the database cannot update expiration or read jobs.
         """
         ...
 

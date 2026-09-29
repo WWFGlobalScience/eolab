@@ -276,28 +276,37 @@ class PostgresJobStore:
             )
         return True
 
-    def _expire_planning(self, cursor: Any) -> None:
+    def _expire_planning(self, cursor: Any, identifier: str | None = None) -> None:
         """Mark abandoned or overlong requests failed without replaying native work.
 
         Args:
             cursor: Cursor inside the caller's locked transaction.
+            identifier: Limit expiration to this plan when completing work; None
+                checks all plans during cleanup or capacity decisions.
         """
+        condition = " AND id=%s" if identifier is not None else ""
+        parameters: tuple[Any, ...] = (
+            Jsonb(
+                {
+                    "code": "planning_interrupted",
+                    "detail": "Planning stopped or the server restarted. Start a new request.",
+                }
+            ),
+        )
+        if identifier is not None:
+            parameters += (identifier,)
         cursor.execute(
             "UPDATE processing.plans SET state='failed',planning_until=NULL,error=%s "
             "WHERE state IN ('checking','queued','planning','cancelling') "
-            "AND (request_deadline<=now() OR planning_until<=now())",
-            (
-                Jsonb(
-                    {
-                        "code": "planning_interrupted",
-                        "detail": "Planning stopped or the server restarted. Start a new request.",
-                    }
-                ),
-            ),
+            "AND (request_deadline<=now() OR planning_until<=now())" + condition,
+            parameters,
         )
 
     def get_planning(self, identifier: str, owner: str) -> dict[str, Any]:
-        """Read current planning state for its owner, including terminal errors.
+        """Read one owner's plan without locking admission or changing stored state.
+
+        Requests past their deadline are reported as failed using database time.
+        Cleanup, admission and planner claims persist that expiration separately.
 
         Args:
             identifier: Opaque plan ID.
@@ -309,10 +318,11 @@ class PostgresJobStore:
         Raises:
             ProcessingError: If the plan is unavailable or the database fails.
         """
-        with self._transaction(locked=True) as cursor:
-            self._expire_planning(cursor)
+        with self._transaction() as cursor:
             cursor.execute(
-                "SELECT * FROM processing.plans WHERE id=%s AND owner=%s AND expires_at>now()",
+                "SELECT *, state IN ('checking','queued','planning','cancelling') "
+                "AND (request_deadline<=now() OR planning_until<=now()) AS planning_expired "
+                "FROM processing.plans WHERE id=%s AND owner=%s AND expires_at>now()",
                 (identifier, owner),
             )
             row = cursor.fetchone()
@@ -322,6 +332,13 @@ class PostgresJobStore:
                 "This planning request expired or is unavailable. Start a new request.",
                 404,
             )
+        if row.pop("planning_expired"):
+            row["state"] = "failed"
+            row["planning_until"] = None
+            row["error"] = {
+                "code": "planning_interrupted",
+                "detail": "Planning stopped or the server restarted. Start a new request.",
+            }
         return row
 
     def queue_native_plan(self, identifier: str, owner: str) -> None:
@@ -385,6 +402,8 @@ class PostgresJobStore:
     ) -> None:
         """Publish a result or failure after native work and cancellation cleanup finish.
 
+        An overdue request stays failed even if maintenance has not expired it yet.
+
         Args:
             identifier: Admitted request ID.
             owner: Browser-session hash.
@@ -395,6 +414,7 @@ class PostgresJobStore:
             ProcessingError: If storage is unavailable; the request then expires.
         """
         with self._transaction(locked=True) as cursor:
+            self._expire_planning(cursor, identifier)
             cursor.execute(
                 "UPDATE processing.plans SET state=CASE WHEN state IN ('cancelled','cancelling') THEN 'cancelled' WHEN %s::jsonb IS NOT NULL THEN 'failed' WHEN %s::jsonb IS NOT NULL THEN 'ready' ELSE 'cancelled' END, "
                 "planning_until=NULL,result=CASE WHEN state IN ('cancelled','cancelling') THEN NULL ELSE %s::jsonb END,error=CASE WHEN state IN ('cancelled','cancelling') THEN NULL ELSE %s::jsonb END, "
@@ -415,6 +435,8 @@ class PostgresJobStore:
     ) -> dict[str, Any] | None:
         """Save prepared operation inputs and release the native planner after cleanup.
 
+        Reject overdue work even if maintenance has not persisted its expiration.
+
         Args:
             identifier: Reserved plan ID.
             owner: Original session owner hash.
@@ -428,6 +450,7 @@ class PostgresJobStore:
             ProcessingError: If storage is unavailable.
         """
         with self._transaction(locked=True) as cursor:
+            self._expire_planning(cursor, identifier)
             if plan is None:
                 cursor.execute(
                     "UPDATE processing.plans SET planning_until=NULL WHERE id=%s AND owner=%s",
@@ -1049,13 +1072,17 @@ class PostgresJobStore:
             return cursor.fetchone() is not None
 
     def cleanup_candidates(self) -> list[dict[str, Any]]:
-        """Revoke expired results and return terminal attempts safe to remove.
+        """Expire abandoned plans and results, then find job files safe to remove.
 
         Returns:
             At most 100 rows with no active transfer; budgets remain reserved
             until the worker confirms filesystem cleanup.
+
+        Raises:
+            ProcessingError: If the database cannot update expiration or read jobs.
         """
         with self._transaction(locked=True) as cursor:
+            self._expire_planning(cursor)
             cursor.execute(
                 "DELETE FROM processing.plans WHERE expires_at<=now() AND (planning_until IS NULL OR planning_until<=now())"
             )
