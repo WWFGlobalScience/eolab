@@ -10,7 +10,8 @@ export class ProcessingJobs {
         this.error = "";
         this.listeners = new Set();
         this.tracked = new Set();
-        this.revision = 0;
+        /** @type {Set<string>|null} Jobs changed locally during the current refresh. */
+        this.jobsChangedDuringRefresh = null;
         this.refreshing = null;
         this.timer = null;
         this.destroyed = false;
@@ -22,14 +23,20 @@ export class ProcessingJobs {
     subscribe(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
     /** Notify editors without changing their intent. @return {void} */
     notify() { if (!this.destroyed) for (const listener of this.listeners) listener(this); }
-    /** Protect new/mutated jobs from older list responses. @param {Object} job Accepted snapshot. @return {void} */
+    /** Keep a submission or action response when an older status read is pending.
+     * Other jobs in that read can still update normally.
+     * @param {Object} job Job snapshot returned by submission, cancellation, or deletion.
+     * @return {void}
+     */
     accept(job) {
-        this.revision += 1;
+        this.jobsChangedDuringRefresh?.add(job.jobId);
         this.jobs = [job, ...this.jobs.filter(item => item.jobId !== job.jobId)];
         this.notify();
         this.schedule();
     }
-    /** Fetch authoritative jobs, recording shared refresh delays without changing scheduling.
+    /** Refresh job history, preserving local changes made while the read was pending.
+     * Merge by job ID so one submission or action cannot delay unrelated results.
+     * Jobs absent from server history are removed unless tracked or changed locally.
      * @param {string} [trigger="explicit"] SSE, timer, follow-up, or explicit caller.
      * @return {Promise<void>} The existing in-flight read, or a new refresh.
      */
@@ -41,7 +48,8 @@ export class ProcessingJobs {
         }
         const refreshNumber = ++this.refreshSequence;
         const startedAtMs = diagnostics?.record("refresh-start", {shared: true, trigger, refreshNumber});
-        const revision = this.revision;
+        const changedJobs = new Set();
+        this.jobsChangedDuringRefresh = changedJobs;
         const eventRevision = this.eventRevision;
         this.refreshing = (async () => {
             try {
@@ -57,13 +65,19 @@ export class ProcessingJobs {
                         if (job.status === "ready") diagnostics?.record("ready-received", {jobId: id, trigger, refreshNumber});
                     }
                 }
-                if (!this.destroyed && revision === this.revision) {
-                    this.jobs = jobs; this.error = "";
-                    for (const job of jobs) if (job.status === "ready" && this.tracked.has(job.jobId)) {
+                if (!this.destroyed) {
+                    const accepted = jobs.filter(job => {
+                        if (!changedJobs.has(job.jobId)) return true;
+                        diagnostics?.record("job-update-skipped", {jobId: job.jobId, trigger, refreshNumber});
+                        return false;
+                    });
+                    this.jobs = [...this.jobs.filter(job => changedJobs.has(job.jobId)), ...accepted];
+                    this.error = "";
+                    for (const job of accepted) if (job.status === "ready" && this.tracked.has(job.jobId)) {
                         diagnostics?.record("ready-accepted", {jobId: job.jobId, trigger, refreshNumber});
                     }
                 } else diagnostics?.record("refresh-discarded", {shared: true, trigger, refreshNumber,
-                    reason: this.destroyed ? "destroyed" : "newer-submission"});
+                    reason: "destroyed"});
             } catch (error) {
                 diagnostics?.record("refresh-error", {shared: true, trigger, refreshNumber});
                 this.error = `Processing history unavailable: ${error.message}`;
@@ -71,6 +85,7 @@ export class ProcessingJobs {
         })().finally(() => {
             diagnostics?.record("refresh-finish", {shared: true, trigger, refreshNumber,
                 seconds: (diagnostics.now() - startedAtMs) / 1000});
+            this.jobsChangedDuringRefresh = null;
             this.refreshing = null; this.notify(); this.schedule();
             // An event arriving during a read may describe a newer commit than
             // that read saw. Coalesce the burst into exactly one subsequent read.

@@ -42,7 +42,7 @@ test("HTTP diagnostics separate headers from body parsing and retain only fixed 
     assert.equal(api.diagnostics.events.at(-1).status, null);
 });
 
-test("observer records discarded ready responses, coalesced hints and the eventual accepted refresh", async () => {
+test("observer accepts ready results on the first response despite another submission and coalesced hints", async () => {
     let resolve, changed, now = 0, reads = 0;
     const trace = new ProcessingDiagnostics(() => now);
     const ready = {jobId:"a",status:"ready"};
@@ -57,11 +57,28 @@ test("observer records discarded ready responses, coalesced hints and the eventu
     now = 500; resolve([ready]);
     await pending; await flush();
     assert.equal(reads, 2);
-    assert.equal(trace.events.filter(e => e.kind === "refresh-discarded").length, 1);
+    assert.equal(trace.events.filter(e => e.kind === "refresh-discarded").length, 0);
     assert.equal(trace.events.filter(e => e.kind === "refresh-coalesced").length, 1);
     assert.equal(trace.events.filter(e => e.kind === "ready-received").length, 2);
-    assert.equal(trace.events.find(e => e.kind === "ready-accepted").trigger, "sse-follow-up");
+    assert.equal(trace.events.find(e => e.kind === "ready-accepted").trigger, "explicit");
+    assert.equal(trace.events.find(e => e.kind === "ready-accepted").atMs,
+        trace.events.find(e => e.kind === "ready-received").atMs);
     assert.equal(trace.events.find(e => e.kind === "refresh-finish").seconds, .5);
+    jobs.destroy();
+});
+
+test("diagnostics count skipped same-job updates without discarding unrelated results", async () => {
+    let resolve;
+    const trace = new ProcessingDiagnostics();
+    const jobs = new ProcessingJobs({diagnostics: trace, listJobs: () => new Promise(r => { resolve = r; })});
+    jobs.tracked.add("a"); jobs.tracked.add("b");
+    const pending = jobs.refresh();
+    jobs.accept({jobId: "a", status: "deleted"});
+    resolve([{jobId: "a", status: "ready"}, {jobId: "b", status: "ready"}]);
+    await pending;
+    assert.deepEqual(trace.events.filter(e => e.kind === "job-update-skipped").map(e => e.jobId), ["a"]);
+    assert.deepEqual(trace.events.filter(e => e.kind === "ready-accepted").map(e => e.jobId), ["b"]);
+    assert.equal(trace.events.filter(e => e.kind === "refresh-discarded").length, 0);
     jobs.destroy();
 });
 
