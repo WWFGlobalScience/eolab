@@ -19,12 +19,16 @@ class PreparedJobPlan:
         summary: Bounded public operation metadata, excluding large input payloads.
         reserved_bytes: Conservative working/result storage reservation in bytes.
         operation: Opaque versioned operation discriminator supplied by its owner.
+        work_key: Complete computation identity; None means never join active work.
+        presentation: Small caller-specific labels, separate from shared execution.
     """
 
     specification: dict[str, object]
     summary: dict[str, object]
     reserved_bytes: int
     operation: str = ""
+    work_key: str | None = None
+    presentation: dict[str, object] | None = None
 
 
 class JobResultResponse(BaseModel):
@@ -144,7 +148,17 @@ class Artifact:
 
 @dataclass(frozen=True)
 class ArtifactDownload:
-    """Owned artifact plus its bounded, renewable transfer lease."""
+    """Owned artifact plus its bounded, renewable transfer lease.
+
+    Attributes:
+        path: Confined shared result file retained by the lease.
+        filename: Suggested download name.
+        size: Delivered byte count.
+        sha256: Delivered content checksum.
+        lease_id: Transfer capability keeping shared files alive.
+        media_type: Download content type.
+        content: Optional small CSV/JSON personalized with the caller's labels.
+    """
 
     path: Path
     filename: str
@@ -152,3 +166,4 @@ class ArtifactDownload:
     sha256: str
     lease_id: str
     media_type: str
+    content: bytes | None = None

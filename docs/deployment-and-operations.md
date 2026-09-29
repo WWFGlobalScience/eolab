@@ -388,6 +388,22 @@ job-history exhaustion remain explicit errors requiring attention.
 
 ### Durable calculation and clip queues
 
+Identical summary or clip requests share one queued/running computation across
+browser sessions. Matching includes catalog sources, exact area/filter inputs,
+formulas and execution settings; formula labels and browser retry IDs do not
+affect it. Each browser receives its own job handle and download permission.
+Cancelling one handle withdraws that caller; native work stops only after the
+last caller cancels. Deleting one result leaves other callers' downloads intact.
+Files expire together using the existing result lifetime. Completed statistics
+still use the separate numerical-result cache.
+
+The computation owns its inputs, attempt, progress and files. Small database
+subscriber records retain ownership, retry identity and formula labels. Queue
+and disk limits count shared computation once; per-session waiting limits and
+the record limit count subscriber handles. Shared execution counts as a turn
+for each subscribed session. Deploy the app and worker together: this schema
+migration moves ownership fields to subscribers and preserves existing handles.
+
 Execution uses one global worker lane. Waiting jobs do not occupy that lane, and
 the running job does not count against its session's waiting allowance. The
 worker selects the least recently served session, then that session's oldest
@@ -413,8 +429,8 @@ fail startup. Omitted values use the defaults below.
 | --- | ---: | --- |
 | `EOLAB_PROCESSING_MAX_WAITING_JOBS` | 128 | Global queued jobs, excluding running/cancelling work |
 | `EOLAB_PROCESSING_MAX_OWNER_WAITING_JOBS` | 32 | Queued jobs per browser session |
-| `EOLAB_PROCESSING_MAX_JOB_RECORDS` | 4096 | All job records, including retained results and idempotency records |
-| `EOLAB_PROCESSING_MAX_JOB_INPUT_BYTES` | 134217728 | JSON bytes reserved for job specifications and summaries until cleanup |
+| `EOLAB_PROCESSING_MAX_JOB_RECORDS` | 4096 | Subscriber handles, including retained results and idempotency records |
+| `EOLAB_PROCESSING_MAX_JOB_INPUT_BYTES` | 134217728 | Shared job inputs/summaries plus retained subscriber formula labels |
 | `EOLAB_PROCESSING_MAX_STORED_BYTES` | 21474836480 | Artifact/scratch disk reservations, unchanged 20 GiB default |
 | `EOLAB_PROCESSING_FREE_SPACE_FLOOR_BYTES` | 2147483648 | Physical free space to leave unused; zero disables the floor |
 | `EOLAB_PROCESSING_EXECUTION_TIMEOUT_SECONDS` | 600 | Maximum duration of an executing job, excluding queue wait |

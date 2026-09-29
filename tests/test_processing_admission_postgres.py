@@ -289,6 +289,7 @@ def test_migration_accounts_for_previously_accepted_jobs(
     active = store.claim()
     waiting = admit(store, "owner", plan)
     with psycopg.connect(store.conninfo) as connection:
+        connection.execute("DROP VIEW processing.subscribed_jobs")
         connection.execute("ALTER TABLE processing.jobs DROP COLUMN input_bytes")
         connection.execute("ALTER TABLE processing.jobs DROP COLUMN started_at")
     store.migrate()
@@ -303,10 +304,10 @@ def test_migration_accounts_for_previously_accepted_jobs(
     assert store.heartbeat(first["id"], active["attempt_id"], {})
 
 
-def test_older_writers_keep_input_accounting_during_rollout(
+def test_database_measures_retained_inputs_on_insert_and_cleanup(
     store: PostgresJobStore,
 ) -> None:
-    """Count inserts and cleanup from app versions that do not know input_bytes.
+    """Count retained computation inputs independently of the supplied byte estimate.
 
     Args:
         store: Migrated PostgreSQL receiving the previous writer's column set.
@@ -314,11 +315,11 @@ def test_older_writers_keep_input_accounting_during_rollout(
     with psycopg.connect(store.conninfo) as connection:
         row = connection.execute(
             "INSERT INTO processing.jobs "
-            "(id,owner,request_key,expires_at,status,spec,summary,reserved_bytes) "
-            "VALUES (%s,'old-app',%s,now()+interval '1 day','queued',"
+            "(id,expires_at,status,spec,summary,reserved_bytes) "
+            "VALUES (%s,now()+interval '1 day','queued',"
             '\'{"input":"retained"}\',\'{"label":"old"}\',1024) '
             "RETURNING id,input_bytes,octet_length(spec::text)+octet_length(summary::text)",
-            (uuid4().hex, uuid4().hex),
+            (uuid4().hex,),
         ).fetchone()
         assert row[1] == row[2] > 0
         connection.execute(

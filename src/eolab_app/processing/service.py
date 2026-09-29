@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from pathlib import PurePath
 from typing import Any
 
+from eolab_app.processing.shared_calculations import (
+    identify_shared_calculation,
+    present_calculation_rows,
+)
+from eolab_app.processing.statistics_csv import statistics_csv
 from eolab_app.processing.request_timings import measure_request_stage
 from eolab_app.processing.models import (
     ArtifactDownload,
@@ -66,6 +71,17 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
     spec = row.get("spec") or {}
     if "request" in spec:
         spec = row["summary"]
+    presentation = row.get("presentation")
+    if presentation and spec:
+        spec = {**spec, **presentation}
+        if row.get("artifact"):
+            artifact = dict(row["artifact"])
+            artifact["rows"] = present_calculation_rows(artifact["rows"], presentation)
+            content = statistics_csv(artifact["rows"])
+            artifact.update(
+                size=len(content), sha256=hashlib.sha256(content).hexdigest()
+            )
+            row = {**row, "artifact": artifact}
     status = row["status"]
     if status == "ready" and row["expires_at"] <= datetime.now(timezone.utc):
         status = "expired"
@@ -228,14 +244,14 @@ class ProcessingService:
     async def submit_raster_clip(
         self, owner: str, request: ClipJobRequest
     ) -> dict[str, Any]:
-        """Queue a raster clip before reading its source or measuring its area.
+        """Join identical active clipping work or queue a clip with its complete inputs.
 
         Args:
             owner: Current browser-session hash.
             request: Catalog raster, explicit area and stable submission key.
 
         Returns:
-            The accepted job, or the existing job after an identical retry.
+            The caller's handle for shared/new work, or the same handle on retry.
 
         Raises:
             ProcessingError: If the retry changes inputs or admission is full.
@@ -271,6 +287,7 @@ class ProcessingService:
                     summary=summary,
                     reserved_bytes=0,
                     operation=queued.operation,
+                    work_key=identify_shared_calculation(queued),
                 ),
                 request_hash,
             )
@@ -280,14 +297,14 @@ class ProcessingService:
     async def submit_calculation_inputs(
         self, owner: str, request: AggregateJobRequest
     ) -> dict[str, Any]:
-        """Queue one calculation with all inputs, before inspecting raster metadata.
+        """Join identical active statistics work or queue a calculation with its inputs.
 
         Args:
             owner: Current browser-session hash.
             request: Catalog source, selected area, formulas and stable retry key.
 
         Returns:
-            The accepted job, or the same job after a repeated submission.
+            The caller's handle and labels, or the same handle after a retry.
 
         Raises:
             ProcessingError: For conflicting retries, unavailable polygon inputs,
@@ -351,6 +368,8 @@ class ProcessingService:
                     summary=summary,
                     reserved_bytes=0,
                     operation=queued.operation,
+                    work_key=identify_shared_calculation(queued),
+                    presentation={"calculations": summary["calculations"]},
                 ),
                 request_hash,
             )
@@ -408,10 +427,11 @@ class ProcessingService:
         Args:
             owner: Current session hash.
             identifier: Owned job ID.
-            provenance: Download JSON provenance instead of its GeoTIFF.
+            provenance: Download JSON provenance instead of the result file.
 
         Returns:
-            Confined file, response metadata, and opaque transfer lease.
+            Confined file, response metadata and transfer lease. Summary CSV/JSON
+            also carries small replacement bytes using this caller's formula labels.
 
         Raises:
             ProcessingError: If unavailable, expired, or transfer capacity is full.
@@ -448,7 +468,28 @@ class ProcessingService:
                         "This result file is no longer intact. Submit a new job.",
                         410,
                     )
-            return ArtifactDownload(path, filename, size, sha256, lease, media_type)
+            content = None
+            if row.get("presentation"):
+                rows = present_calculation_rows(artifact["rows"], row["presentation"])
+                content = statistics_csv(rows)
+                if provenance:
+                    document = json.loads(data)
+                    document.update(row["presentation"])
+                    if document.get("cachedRows") is not None:
+                        document["cachedRows"] = present_calculation_rows(
+                            document["cachedRows"], row["presentation"]
+                        )
+                    document.update(
+                        rows=rows,
+                        size=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(),
+                    )
+                    content = json.dumps(document, allow_nan=False).encode("utf-8")
+                size = len(content)
+                sha256 = hashlib.sha256(content).hexdigest()
+            return ArtifactDownload(
+                path, filename, size, sha256, lease, media_type, content
+            )
         except BaseException:
             await asyncio.to_thread(self.jobs.transfer_heartbeat, lease, True)
             raise

@@ -154,19 +154,21 @@ class JobStore(Protocol):
         expected: PreparedJobPlan,
         request_hash: str,
     ) -> dict[str, Any]:
-        """Queue validated work within waiting-job, record, input and disk budgets.
+        """Join matching active work or queue a computation within resource budgets.
 
         The running attempt is separate from the owner's pending-job allowance.
         An idempotent retry returns its existing job even when admission is full.
+        A work key identifies shared execution; each caller still owns a separate
+        handle, cancellation and presentation. Storage does not interpret the key.
 
         Args:
             owner: Current session hash.
             request_key: Client idempotency key.
-            expected: Validated inputs and initial resource reservation.
+            expected: Validated inputs, reservation, optional work key and labels.
             request_hash: Stable input identity required for direct submissions.
 
         Returns:
-            Existing idempotent or newly queued owned job.
+            Owned handle with current computation state and its small public summary.
 
         Raises:
             ProcessingError: If global or owner limits are full.

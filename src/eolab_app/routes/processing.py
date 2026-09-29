@@ -234,6 +234,46 @@ class LeasedJobResponse(FileResponse):
         )
         self.lease = artifact.lease_id
         self.service = service
+        self.content = artifact.content
+
+    def _subscriber_response(self, request: Request, content: bytes) -> Response:
+        """Serve a small caller-labeled CSV or JSON, including one byte range.
+
+        Args:
+            request: Authorized download request, including HEAD and range headers.
+            content: Small result encoded with this caller's labels.
+
+        Returns:
+            Complete content, a single partial response, or an unsatisfiable range.
+        """
+        size = len(content)
+        headers = dict(self.headers)
+        headers["Content-Length"] = str(size)
+        status = 200
+        byte_range = request.headers.get("range")
+        if (
+            byte_range
+            and request.headers.get("if-range", headers["etag"]) == headers["etag"]
+        ):
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", byte_range)
+            start, end = 0, size - 1
+            if match and any(match.groups()):
+                left, right = match.groups()
+                start = int(left) if left else max(0, size - int(right))
+                end = min(size - 1, int(right)) if left and right else size - 1
+            if not match or not any(match.groups()) or start > end or start >= size:
+                return Response(
+                    status_code=416, headers={"Content-Range": f"bytes */{size}"}
+                )
+            content = content[start : end + 1]
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            headers["Content-Length"] = str(len(content))
+            status = 206
+        return Response(
+            b"" if request.method == "HEAD" else content,
+            status_code=status,
+            headers=headers,
+        )
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         """Send bounded chunks/ranges and stop on disconnection or lease loss.
@@ -264,7 +304,12 @@ class LeasedJobResponse(FileResponse):
                 if name != "http.response.pathsend"
             },
         }
-        response = asyncio.create_task(super().__call__(scope, receive, send))
+        delivery = (
+            self._subscriber_response(Request(scope), self.content)
+            if self.content is not None
+            else super()
+        )
+        response = asyncio.create_task(delivery.__call__(scope, receive, send))
         heartbeat = asyncio.create_task(renew())
         disconnect = asyncio.create_task(
             wait_for_http_disconnect(Request(scope, receive))
