@@ -10,6 +10,7 @@ from contextlib import suppress
 import hashlib
 import re
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -43,6 +44,7 @@ from eolab_app.processing.polygon_areas import (
     PolygonAreaUploadResponse,
 )
 from eolab_app.processing.service import ProcessingService
+from eolab_app.processing.request_timings import request_timings
 from eolab_app.routes.processing_events import JobEventResponse
 from eolab_app.raster.errors import RasterFeatureError
 from eolab_app.routes.raster_http import raster_http_exception
@@ -128,7 +130,34 @@ class BoundedProcessingRoute(APIRoute):
 
             return await handler(Request(request.scope, receive))
 
-        return bounded
+        async def timed(request: Request) -> Response:
+            """Report server handling time without changing validation or errors.
+
+            Args:
+                request: Incoming request before body validation.
+
+            Returns:
+                Response with optional numeric Server-Timing metadata. The total
+                includes serialization but excludes ASGI send and proxy transfer.
+
+            Raises:
+                Exception: The original handler's error, unchanged.
+            """
+            timings: dict[str, float] = {}
+            token = request_timings.set(timings)
+            started = time.perf_counter()
+            try:
+                response = await bounded(request)
+                timings["processing"] = time.perf_counter() - started
+                response.headers["Server-Timing"] = ", ".join(
+                    f"{name};dur={seconds * 1000:.3f}"
+                    for name, seconds in timings.items()
+                )
+                return response
+            finally:
+                request_timings.reset(token)
+
+        return timed
 
 
 def _owner(request: Request, response: Response) -> str:

@@ -23,33 +23,97 @@ export function executionDescription(grid) {
     ];
 }
 
+/** Explain browser result delivery, retaining shared activity as shared evidence.
+ * @param {Object|undefined} delivery Executor timestamps and bounded diagnostic snapshot.
+ * @return {string[]} Request details and handoff timings; absent for historical results.
+ */
+function deliveryDescription(delivery) {
+    if (!delivery) return [];
+    const seconds = n => `${n.toFixed(3)} s`;
+    const lines = [`Calculation trace: plan ${delivery.planId ?? "unavailable"}; job ${delivery.jobId ?? "unavailable"}.`,
+        `Submission attempts: ${delivery.submissionAttempts ?? 1}; capacity backoff: ${seconds(delivery.capacityWaitSeconds ?? 0)} (included in Submission round trip).`];
+    if (Number.isFinite(delivery.cleanupFinishedAtMs)) lines.push(
+        `Plan cleanup request: ${seconds((delivery.cleanupFinishedAtMs - delivery.cleanupStartedAtMs) / 1000)}. The executor awaits this request before continuing; it can overlap server execution and status refreshes.`);
+    if (Number.isFinite(delivery.executorReadyAtMs) && Number.isFinite(delivery.controllerReceivedAtMs)) lines.push(
+        `Executor ready → result consumer: ${seconds(Math.max(0, delivery.controllerReceivedAtMs - delivery.executorReadyAtMs) / 1000)}.`);
+    const snapshot = delivery.deliveryDiagnostics;
+    if (!snapshot) return lines;
+    const events = snapshot.events;
+    const ofKind = kind => events.filter(event => event.kind === kind);
+    const received = ofKind("ready-received").find(event => event.jobId === delivery.jobId);
+    const accepted = ofKind("ready-accepted").find(event => event.jobId === delivery.jobId);
+    if (received) lines.push(`Ready job first received at +${seconds(received.afterSubmissionSeconds)} from ${received.trigger}${received.refreshNumber ? ` refresh #${received.refreshNumber}` : ""}.`);
+    if (received && accepted) lines.push(`Ready response received → accepted by observer: ${seconds(Math.max(0, accepted.atMs - received.atMs) / 1000)}. Earlier responses may have been discarded.`);
+    if (received && Number.isFinite(delivery.executorReadyAtMs)) lines.push(`Ready response received → executor ready: ${seconds(Math.max(0, delivery.executorReadyAtMs - received.atMs) / 1000)} (includes observer acceptance and any remaining cleanup).`);
+    const refreshes = ofKind("refresh-start");
+    lines.push(`Shared job observer: ${refreshes.length} refreshes (${refreshes.filter(e => e.trigger === "sse").length} SSE, ${refreshes.filter(e => e.trigger === "sse-follow-up").length} SSE follow-up, ${refreshes.filter(e => e.trigger === "timer").length} timer, ${refreshes.filter(e => e.trigger === "explicit").length} explicit); ${ofKind("refresh-coalesced").length} triggers joined an in-flight refresh; ${ofKind("refresh-discarded").length} responses discarded; ${ofKind("refresh-error").length} refresh failures.`,
+        `Individual lookups for this job: ${ofKind("extra-job-read").length}. Shared refreshes may include sequential lookups for other tracked jobs.`);
+    const finishes = ofKind("refresh-finish");
+    const coalescedWaits = ofKind("refresh-coalesced").flatMap(event => {
+        const finish = finishes.find(item => item.refreshNumber === event.refreshNumber);
+        return finish ? [(finish.atMs - event.atMs) / 1000] : [];
+    });
+    lines.push(`Longest shared refresh: ${finishes.length ? seconds(Math.max(...finishes.map(e => e.seconds))) : "not observed"}; longest trigger wait behind a completed in-flight refresh: ${coalescedWaits.length ? seconds(Math.max(...coalescedWaits)) : "not observed"}.`);
+    const starts = ofKind("http-start");
+    lines.push(`Processing HTTP activity in this tab: ${starts.length} requests started; up to ${Math.max(0, ...events.filter(e => e.kind.startsWith("http-")).map(e => e.inFlight))} concurrently in flight. Includes other calculations; excludes tiles and non-Processing APIs.`);
+    const timers = ofKind("fallback-timer");
+    lines.push(`Shared SSE connection: ${ofKind("sse-open").length} open/reopen events, ${ofKind("sse-error").length} errors, ${ofKind("sse-close").length} closes, ${ofKind("sse-hint").length} hints during this interval. Zero open events can mean the connection was already open.`,
+        `Browser visibility at measured events: ${events.some(e => e.hidden) ? "hidden at least once" : "visible"}. Maximum fallback timer lateness: ${timers.length ? seconds(Math.max(...timers.map(e => e.lateSeconds))) : "not observed"}. Visibility between events is not sampled.`);
+    const serverHints = ofKind("sse-server-timing");
+    if (serverHints.length) lines.push(`Shared server notification timing: maximum listener receipt → SSE handoff ${seconds(Math.max(...serverHints.map(e => e.listenerToStreamSeconds)))}; maximum reported previous ASGI send ${seconds(Math.max(...serverHints.map(e => e.previousSendSeconds)))}. These are shared, coalesced hints, not timings for this job alone.`);
+    lines.push("Database commit → notification receipt is not measured. ASGI handoff does not measure proxy transfer or browser receipt. Durations below overlap; do not add them to total wait.");
+    const relevant = events.filter(event => event.kind === "http-finish" &&
+        (event.shared || event.planId === delivery.planId || event.jobId === delivery.jobId));
+    if (snapshot.partial) lines.push("Trace is partial: the bounded event buffer dropped older activity. Counts below and above cover retained events only.");
+    for (const event of relevant.slice(-24)) {
+        const server = Object.entries(event.serverTiming).map(([name, value]) => `${name} ${seconds(value)}`).join(", ");
+        lines.push(`HTTP #${event.requestNumber} ${event.method} ${event.path} completed at +${seconds(event.afterSubmissionSeconds)}: ${event.status ?? "transport error"}, ${seconds(event.seconds)} total; headers ${event.headersSeconds == null ? "unavailable" : seconds(event.headersSeconds)}, body/JSON ${event.bodySeconds == null ? "unavailable" : seconds(event.bodySeconds)}${server ? `; server: ${server}` : "; server timing unavailable"}.`);
+    }
+    if (relevant.length > 24) lines.push(`Showing the last 24 of ${relevant.length} relevant HTTP completions.`);
+    lines.push("Server processing includes route handling and serialization; admissionChecks includes source/area validation; queueAdmission includes database admission, commit and thread scheduling; jobRead includes database access and thread scheduling. These server stages overlap HTTP durations. Any remaining time is unaccounted for, not identified as network latency.");
+    return lines;
+}
+
 /** Describe final timings with precise measurement boundaries.
  * @param {Object} job Completed job.
- * @param {number|undefined} totalWaitSeconds Browser request through result DOM update, if observed.
- * @param {Object|undefined} stages Browser-local stage durations for this request.
+ * @param {number|undefined} totalWaitSeconds Browser-measured wait, if observed.
+ * @param {Object|undefined} stages Browser-local durations and optional planningObservation
+ * counters identifying SSE-triggered and timer-triggered planning status reads.
+ * @param {string} [waitDescription] Explanation of the caller's timer boundaries;
+ * defaults to the summary panel's request-through-display interval.
  * @return {string[]} Lines.
  */
-export function performanceDescription(job, totalWaitSeconds, stages) {
+export function performanceDescription(job, totalWaitSeconds, stages, waitDescription =
+    "Measured in this tab from the calculation request through the result UI update, including vector selection when requested here, debounce, planning, queueing and result delivery (notifications or polling); excludes earlier confirmation time and the browser's subsequent paint.") {
     const p = job.result?.performance;
     const lines = [...(Number.isFinite(totalWaitSeconds) && totalWaitSeconds >= 0
-        ? [`Total wait → result displayed: ${totalWaitSeconds.toFixed(3)} s.`,
-            "Measured in this tab from the calculation request through the result UI update, including vector selection when requested here, debounce, planning, queueing and result delivery (notifications or polling); excludes earlier confirmation time and the browser's subsequent paint."]
+        ? [`Total measured wait: ${totalWaitSeconds.toFixed(3)} s.`, waitDescription]
         : ["Total wait unavailable for this result. A complete request-to-display interval was not recorded in this tab."]),
     ...(job.result?.cacheHit ? ["Reused cached result; no raster pixels were read or calculated for this job."] : executionDescription(job.grid))];
     const seconds = n => `${n.toFixed(3)} s`;
     if (stages) {
         lines.push(
-            `Before planning (selection, debounce, validation or previous-work wait): ${seconds(stages.beforePlanningSeconds)}.`,
+            `Before planning: ${seconds(stages.beforePlanningSeconds)}.`,
             `Planning round trip: ${seconds(stages.planningSeconds)}${stages.planReused ? " (existing plan reused)" : ""}.`,
             `Between planning and submission: ${seconds(stages.beforeSubmissionSeconds)}.`,
             `Submission round trip: ${seconds(stages.submissionSeconds)}.`,
-            `Submission response → result displayed: ${seconds(stages.afterSubmissionSeconds)}.`,
+            `Submission response → result observed: ${seconds(stages.afterSubmissionSeconds)}.`,
             "These browser stages add up to total wait. Server stages below overlap them; do not add the two groups together.",
         );
         if (Number.isFinite(stages.vectorSelectionSeconds)) lines.push(
             `Vector selection before calculation: ${seconds(stages.vectorSelectionSeconds)} (included in Before planning). Includes the selection request/response and source preparation; excludes optional display-outline work.`,
         );
         const plan = stages.serverPlan;
+        const observation = stages.planningObservation;
+        if (observation && !stages.planReused) {
+            const trigger = {submission: "the submission response", recovery: "the admission-recovery status read",
+                sse: "an SSE-triggered status read", timer: "a two-second fallback status read"}[observation.readyResponse];
+            lines.push(
+                `Planning notifications: ${observation.sseHints} SSE hints received; ${observation.sseRefreshes} SSE-triggered status reads; ${observation.timerRefreshes} two-second fallback status reads.`,
+                `Plan ready was first observed in ${trigger}.`,
+                "These counts cover the successful planning attempt. SSE hints are shared across your plans and jobs and include the initial connection hint; receiving one does not prove this plan changed. These counts do not measure calculation-result delivery after submission.",
+            );
+        }
         if (plan && !stages.planReused) lines.push(
             `Inside server planning - admission: ${seconds(plan.reservationSeconds)}; source/selection preparation: ${seconds(plan.preparationSeconds)}; native process (including startup and transfer): ${seconds(plan.nativeProcessSeconds)}; selection recheck and plan storage: ${seconds(plan.finalizationSeconds)}.`,
             ...processDescription("Planning", plan.process),
@@ -80,6 +144,7 @@ export function performanceDescription(job, totalWaitSeconds, stages) {
         if (residual >= 0) lines.push(`Submission admission + result delivery (estimated remainder): ${seconds(residual)}. Includes request handling before queue insertion, completion/response transfer and notification delivery or fallback polling; not a measurement of network time alone.`);
     }
     lines.push("Server intervals use one database clock or a worker's monotonic clock. Browser intervals use this tab's monotonic clock. Small residual differences can include database transaction timestamp boundaries. Timings are diagnostic and do not change scheduling.");
+    lines.push(...deliveryDescription(stages?.delivery));
     if (job.result?.cacheHit) return lines;
     if (!p) return [...lines, "Kernel measurements are unavailable for this saved result."];
     if (p.stages) {

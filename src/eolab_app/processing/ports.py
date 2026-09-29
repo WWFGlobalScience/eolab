@@ -8,6 +8,9 @@ from eolab_app.processing.models import Artifact, PreparedJobPlan, ProcessingLim
 class JobSubscription(Protocol):
     """A bounded owner-specific change hint, never a result or authorization."""
 
+    received_at: float | None
+    """Server monotonic time of the oldest coalesced hint consumed by wait()."""
+
     async def wait(self, timeout: float) -> bool:
         """Consume a coalesced hint or time out for a transport heartbeat.
 

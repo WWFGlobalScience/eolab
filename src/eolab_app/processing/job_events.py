@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Callable
 import re
+import time
 
 from eolab_app.processing.job_notifications import (
     JOB_CHANGE_CHANNEL,
@@ -23,6 +24,8 @@ class Subscription:
         self.pending = asyncio.Event()
         self.release = release
         self.closed = False
+        self.received_at: float | None = None
+        self.pending_received_at: float | None = None
 
     async def wait(self, timeout: float) -> bool:
         """Consume the pending hint without dropping changes between waits.
@@ -39,6 +42,8 @@ class Subscription:
             if self.closed:
                 raise ProcessingError("events_closed", "Live job updates closed.", 503)
             self.pending.clear()
+            self.received_at = self.pending_received_at
+            self.pending_received_at = None
             return True
         except TimeoutError:
             return False
@@ -90,6 +95,8 @@ class PostgresJobEvents:
         )
         for group in groups:
             for subscription in group:
+                if not subscription.pending.is_set():
+                    subscription.pending_received_at = time.perf_counter()
                 subscription.pending.set()
 
     def start(self) -> None:

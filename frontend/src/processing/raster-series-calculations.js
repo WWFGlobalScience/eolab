@@ -255,6 +255,8 @@ export class RasterSeriesCalculations {
     /** Apply progress only to this executor's current immutable raster request.
      * Failures leave gaps while peers continue. Plans needing confirmation are
      * released immediately so they do not occupy server plan capacity.
+     * Completed results include browser timing stages when the executor recorded
+     * the full request. The timer stops here, before the view renders the result.
      * @param {number} index Executor position.
      * @param {import("./calculation-executor.js").CalculationExecutionSnapshot} state Execution progress.
      * @return {void}
@@ -270,9 +272,26 @@ export class RasterSeriesCalculations {
         const matchesCalculationInputs = calculationInputs => JSON.stringify(calculationInputs) === JSON.stringify(request.calculationInputs);
         if (state.completedJob && matchesCalculationInputs(state.completedCalculation) && request.submitted &&
             state.completedJob.jobId !== request.previousJobId && !state.unfinishedCalculation && state.isIdle) {
-            const elapsedSeconds = (this.now() - request.startedAt) / 1000;
+            const receivedAt = this.now();
+            const elapsedSeconds = (receivedAt - request.startedAt) / 1000;
+            const trace = state.completedTimings;
+            let stages;
+            if (trace && [trace.planningStartedAtMs, trace.planningFinishedAtMs, trace.submissionStartedAtMs, trace.submissionFinishedAtMs].every(Number.isFinite)
+                && request.startedAt <= trace.planningStartedAtMs && trace.planningFinishedAtMs <= trace.submissionStartedAtMs) {
+                stages = {
+                    beforePlanningSeconds: (trace.planningStartedAtMs - request.startedAt) / 1000,
+                    planningSeconds: (trace.planningFinishedAtMs - trace.planningStartedAtMs) / 1000,
+                    beforeSubmissionSeconds: (trace.submissionStartedAtMs - trace.planningFinishedAtMs) / 1000,
+                    submissionSeconds: (trace.submissionFinishedAtMs - trace.submissionStartedAtMs) / 1000,
+                    afterSubmissionSeconds: (receivedAt - trace.submissionFinishedAtMs) / 1000,
+                    planReused: trace.planReused, serverPlan: trace.serverPlan,
+                    planningObservation: trace.planningObservation,
+                    delivery: {...trace, controllerReceivedAtMs: receivedAt},
+                };
+            }
             this.results.set(request.key, { job: state.completedJob, calculationInputs: request.calculationInputs, elapsedSeconds,
-                performanceLines: performanceDescription(state.completedJob, elapsedSeconds) });
+                performanceLines: performanceDescription(state.completedJob, elapsedSeconds, stages,
+                    "Measured in this tab from dispatching this raster for planning until its completed result reaches the series controller, including planning, queueing, submission and result delivery (notifications or polling). Excludes earlier area selection, formula debounce and validation, and subsequent UI rendering.") });
             this.pending.delete(index);
         } else if (state.recoverable) {
             request.phase = "recovery"; request.message = state.message;
