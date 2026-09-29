@@ -32,6 +32,10 @@ from queued to preparing to calculating; prepared estimates remain available
 on the job. Server work and memory limits still apply. Use **Calculate** to run
 manually, or cancel work that is taking too long.
 
+If another request is already calculating the same source, area and formulas,
+your request shares that work. Your status, formula labels and downloads remain
+your own. Cancelling your request does not cancel someone else's calculation.
+
 A previous value is grayed out while its replacement is pending. Use the copy
 button beside a current value to copy it. **Value details & downloads** contains
 coverage, method, CSV and provenance. Missing data can produce a completed job

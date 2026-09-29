@@ -85,7 +85,7 @@ def store(request: pytest.FixtureRequest) -> PostgresJobStore:
     result.migrate()  # Exercise redeployment of an already initialized schema.
     with psycopg.connect(dsn) as connection:
         connection.execute(
-            "TRUNCATE processing.transfers, processing.jobs, processing.calculation_results, processing.inputs"
+            "TRUNCATE processing.job_subscribers, processing.transfers, processing.jobs, processing.calculation_results, processing.inputs"
         )
     return result
 
@@ -424,7 +424,7 @@ def test_job_store_admits_operation_data_without_raster_fields(
     submitted_job = store.submit(
         "owner", "summary-request", prepared, "fixture-input-hash"
     )
-    assert submitted_job["spec"] == prepared.specification
+    assert submitted_job["spec"] == prepared.summary
     assert submitted_job["reserved_bytes"] == 4096
     assert store.get(submitted_job["id"], "owner")["spec"] == prepared.summary
     assert store.list_owned("owner")[0]["spec"] == prepared.summary
@@ -461,7 +461,7 @@ def test_owner_disk_limits_and_transfer_lease_cleanup(
     client, worker, source, artifacts, app = boundary
     plan = clip_inputs(client)
     first = submitted(client, plan)
-    second = submitted(client, plan)
+    second = submitted(client, {**plan, "selectedBounds": {**AREA, "west": 0.2}})
     full = client.post(
         "/api/processing/raster-clips",
         json={**plan, "requestId": uuid4().hex},
@@ -786,12 +786,14 @@ def test_worker_restart_interrupts_unfinished_jobs(
 
     assert store.interrupt_unfinished_jobs_on_restart() == 1
     interrupted = store.get(pending["id"], "other-owner")
-    assert interrupted["status"] == "interrupted"
-    assert interrupted["error"]["code"] == "worker_restarted"
-    assert "Submit a new job" in interrupted["error"]["detail"]
+    expected_status = "cancelled" if status == "cancelling" else "interrupted"
+    assert interrupted["status"] == expected_status
+    if status != "cancelling":
+        assert interrupted["error"]["code"] == "worker_restarted"
+        assert "Submit a new job" in interrupted["error"]["detail"]
     assert (
         store.find_request("other-owner", "unfinished-request")["status"]
-        == "interrupted"
+        == expected_status
     )
     # Retain reservations until attempt files have been removed by normal cleanup.
     assert interrupted["reserved_bytes"] == 4096

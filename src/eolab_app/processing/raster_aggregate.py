@@ -1,10 +1,11 @@
 """Plan native single-raster calculations and stream scalar results to artifacts."""
 
+from eolab_app.processing.statistics_csv import statistics_csv
+
 from eolab_app.bounded_vector import PolygonRasterizer
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-import csv
 import hashlib
 import json
 from pathlib import Path
@@ -380,23 +381,6 @@ def plan_aggregate(
     return result
 
 
-def csv_text(value: str) -> str:
-    """Keep user-provided labels/expressions inert in spreadsheet applications.
-
-    Args:
-        value: Bounded user-provided text field.
-
-    Returns:
-        Text escaped against spreadsheet formula interpretation.
-    """
-    return (
-        "'" + value
-        if value.lstrip().startswith(("=", "+", "-", "@"))
-        or value.startswith(("\t", "\r", "\n"))
-        else value
-    )
-
-
 def calculate_raster_statistics_for_area(
     raster_path: Path,
     calculation_plan: AggregateSpec,
@@ -664,20 +648,7 @@ def write_statistics_result(
     """
     writing_started = time.perf_counter()
     result = directory / "result.csv"
-    with result.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(["label", "expression", "value", "value_type", "state", "unit"])
-        for row in rows:
-            writer.writerow(
-                [
-                    csv_text(row["label"]),
-                    csv_text(row["expression"]),
-                    row["value"],
-                    row["valueType"],
-                    row["state"],
-                    row["unit"],
-                ]
-            )
+    result.write_bytes(statistics_csv(rows))
     with result.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     source = next(iter(calculation_plan.sources.values()))
