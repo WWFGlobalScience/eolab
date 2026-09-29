@@ -85,17 +85,15 @@ test("clearing raster coverage cancels automatic work without relabeling the pre
  */
 function fixture(overrides = {}, data = new Map(), browserContext = {}, context = {sources:[source,resistance],area:box(77)}) {
     let serial = 0, jobSerial = 0, elapsed = 0;
-    const timers = new Map(), requests = [], server = new Map(), plans = new Map();
+    const timers = new Map(), requests = [], server = new Map();
     const clock = { setTimeout(fn, delay) { timers.set(++serial, { fn, delay }); return serial; }, clearTimeout(id) { timers.delete(id); } };
     const api = {
         listJobs: async () => [...server.values()], getJob: async id => server.get(id),
         validateCalculation: async rows => { requests.push(["validate", rows]); if (rows.some(row=>row.expression.includes("bad"))) throw Error("Unknown function bad"); return {valid:true}; },
-        planCalculation: async intent => { const planId = String(++jobSerial).padStart(32,"0"); requests.push(["plan",intent]); plans.set(planId,intent); return {planId,grid,expiresAt:"2099-01-01T00:00:00Z"}; },
-        discardPlan: async id => { requests.push(["discard",id]); },
         submitCalculation: async submission => {
             requests.push(["submit",submission]);
-            const intent = submission.planId ? plans.get(submission.planId) : submission;
-            const job = { jobId:submission.planId ?? String(++jobSerial).padStart(32,"0"),operation:"raster.aggregate.v1",status:"running",sources:{a:intent.source},calculations:intent.calculations,
+            const intent = submission;
+            const job = { jobId:String(++jobSerial).padStart(32,"0"),operation:"raster.aggregate.v1",status:"running",sources:{a:intent.source},calculations:intent.calculations,
                 area:{kind:"bounds",bounds:[77,22,78,23]},grid,createdAt:"2026-09-08T00:00:00Z",progress:{phase:"calculating",totalBlocks:4,completedBlocks:0},result:null };
             server.set(job.jobId,job); return job;
         },
@@ -120,7 +118,7 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}, context 
     };
     const open = async()=>{controller.open();await tick();};
     const submits=()=>requests.filter(r=>r[0]==="submit").length;
-    return {controller,api,jobs,storage,view,document,requests,server,plans,tick,finish,open,submits,data,elapse:ms=>{elapsed+=ms;}};
+    return {controller,api,jobs,storage,view,document,requests,server,tick,finish,open,submits,data,elapse:ms=>{elapsed+=ms;}};
 }
 
 /** Read text throughout a fake DOM tree. @param {Object} node Test node. @return {string} Descendant text. */

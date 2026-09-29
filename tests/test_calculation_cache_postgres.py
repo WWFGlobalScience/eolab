@@ -10,17 +10,13 @@ import psycopg
 import pytest
 
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.calculation_cache import calculation_result_cache_keys
-from eolab_app.processing.aggregate_models import AggregateSpec
 from test_processing_jobs import boundary, store, HEADERS
 from test_processing_calculations import (
-    ENDPOINT,
-    plan_calculation,
+    calculation_inputs,
     submit_calculation,
     request_body,
 )
 import eolab_app.processing.worker as worker_module
-import eolab_app.processing.service as service_module
 
 
 def test_other_session_reuses_values_but_not_downloads(
@@ -34,7 +30,7 @@ def test_other_session_reuses_values_but_not_downloads(
         monkeypatch: Forbid a second native calculation.
     """
     client, worker, _, _, app = boundary
-    first = submit_calculation(client, plan_calculation(client, wholeRaster=True))
+    first = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
     assert asyncio.run(worker.run_once())
     first_url = f"/api/processing/jobs/{first['jobId']}"
     original = client.get(first_url).json()
@@ -54,15 +50,11 @@ def test_other_session_reuses_values_but_not_downloads(
         raise AssertionError("Cache hit must not run the native calculation")
 
     monkeypatch.setattr(worker_module, "run_process", unexpected_calculation)
-    monkeypatch.setattr(service_module, "run_process", unexpected_calculation)
     with TestClient(app, base_url="https://testserver") as other:
         body = request_body(wholeRaster=True)
         body["calculations"][0]["label"] = "My own title"
         body["calculations"][0]["expression"] = " count (a > 5000) "
-        planned = other.post(ENDPOINT + "/plan", json=body, headers=HEADERS)
-        assert planned.status_code == 200, planned.text
-        assert planned.json()["cacheHit"] is True
-        second = submit_calculation(other, planned.json())
+        second = submit_calculation(other, body)
         assert asyncio.run(worker.run_once())
         reused = other.get(f"/api/processing/jobs/{second['jobId']}").json()
         assert reused["status"] == "ready", reused
@@ -80,7 +72,7 @@ def test_other_session_reuses_values_but_not_downloads(
         assert client.get(reused["result"]["url"]).status_code == 404
 
         # Existing cache entries never waive authorization at execution time.
-        denied = submit_calculation(other, plan_calculation(other, wholeRaster=True))
+        denied = submit_calculation(other, calculation_inputs(other, wholeRaster=True))
 
         async def deny_source(source: Any) -> None:
             """Reject the source after planning.
@@ -110,7 +102,7 @@ def test_cache_expiry_capacity_and_cancelled_attempt(boundary: Any, store: Any) 
     """
     client, worker, _, _, _ = boundary
     store.limits = replace(store.limits, calculation_cache_capacity=1)
-    job = submit_calculation(client, plan_calculation(client, wholeRaster=True))
+    job = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
     assert asyncio.run(worker.run_once())
     with psycopg.connect(store.conninfo) as connection:
         keys = [
@@ -125,13 +117,13 @@ def test_cache_expiry_capacity_and_cancelled_attempt(boundary: Any, store: Any) 
         )
     assert store.get_cached_calculation_results(keys) == {}
     # A queued cancellation never executes and cannot repopulate expired entries.
-    cancelled = submit_calculation(client, plan_calculation(client, wholeRaster=True))
+    cancelled = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
     client.post(f"/api/processing/jobs/{cancelled['jobId']}/cancel", headers=HEADERS)
     assert not asyncio.run(worker.run_once())
     assert store.get_cached_calculation_results(keys) == {}
 
     # Even already calculated values cannot be cached if cancellation won publication.
-    submitted = submit_calculation(client, plan_calculation(client, wholeRaster=True))
+    submitted = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
     claimed = store.claim()
     assert claimed["id"] == submitted["jobId"]
     artifact = asyncio.run(worker._execute(claimed))
@@ -151,7 +143,7 @@ def test_oversized_cache_entry_is_skipped(boundary: Any, store: Any) -> None:
         store: Disposable PostgreSQL database.
     """
     client, worker, _, _, _ = boundary
-    submitted = submit_calculation(client, plan_calculation(client, wholeRaster=True))
+    submitted = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
     claimed = store.claim()
     artifact = asyncio.run(worker._execute(claimed))
     key = "f" * 64
@@ -205,7 +197,7 @@ def test_cached_area_skips_geometry_work_even_after_entry_expires(
         area = {"catalogSelection": register_selection(client, vector)}
     else:
         area = {"selectedBounds": AREA}
-    first = submit_calculation(client, plan_calculation(client, **area))
+    first = submit_calculation(client, calculation_inputs(client, **area))
     assert asyncio.run(worker.run_once())
     original = client.get(f"/api/processing/jobs/{first['jobId']}").json()
     assert original["status"] == "ready", original
@@ -222,22 +214,23 @@ def test_cached_area_skips_geometry_work_even_after_entry_expires(
         """
         raise AssertionError("Cached area must not run native work")
 
-    monkeypatch.setattr(service_module, "run_process", forbid_native_work)
     monkeypatch.setattr(worker_module, "run_process", forbid_native_work)
-    plan = plan_calculation(client, **area)
-    assert plan["cacheHit"] is True
-    assert plan["timing"]["nativeProcessSeconds"] == 0
+    submitted = submit_calculation(client, calculation_inputs(client, **area))
+    claimed = store.claim()
+    asyncio.run(worker._prepare_calculation(claimed))
+    assert claimed["preparation"]["cacheHit"] is True
+    assert claimed["preparation"]["process"] is None
     with psycopg.connect(store.conninfo) as connection:
         connection.execute("DELETE FROM processing.calculation_results")
     # The prepared result is retained even after every cache entry was evicted.
-    submitted = submit_calculation(client, plan)
     with psycopg.connect(store.conninfo) as connection:
         row = connection.execute(
             "SELECT reserved_bytes FROM processing.jobs WHERE id=%s",
             (submitted["jobId"],),
         ).fetchone()
         assert row == (worker.aggregate_limits.result_reservation_bytes,)
-    assert asyncio.run(worker.run_once())
+    artifact = asyncio.run(worker._execute(claimed))
+    assert store.finish(claimed["id"], claimed["attempt_id"], artifact)
     ready = client.get(f"/api/processing/jobs/{submitted['jobId']}").json()
     assert ready["status"] == "ready", ready
     assert ready["result"]["cacheHit"] is True

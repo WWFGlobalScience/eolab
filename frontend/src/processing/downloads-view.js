@@ -11,7 +11,7 @@ export class DownloadsView {
     constructor(documentContext = globalThis.document) {
         this.document = documentContext;
         this.elements = Object.fromEntries([
-            "source", "area", "area-description", "review", "create", "plan", "message", "jobs", "job-message",
+            "source", "area", "area-description", "create", "message", "jobs", "job-message",
             "pending", "retry-submission", "refresh", "edit-area", "close", "form",
         ].map(name => [name, documentContext.querySelector(`#downloads-${name}`)]));
         this.openers = [
@@ -29,7 +29,6 @@ export class DownloadsView {
         this.listeners = [];
         this.sourceSignature = "";
         this.jobSignature = "";
-        this.planId = null;
     }
 
     /** Connect fixed controls to semantic callbacks. @param {Object} handlers User intent handlers. @return {void} */
@@ -48,8 +47,8 @@ export class DownloadsView {
             [this.elements.close, "click", handlers.onClose],
             [this.elements.source, "change", () => handlers.onSource(Number(this.elements.source.value))],
             [this.elements.area, "change", () => handlers.onArea(this.elements.area.value)],
-            [this.elements.form, "submit", event => { event.preventDefault(); handlers.onReview(); }],
-            ...[["create", "onCreate"], ["retry-submission", "onRetrySubmission"],
+            [this.elements.form, "submit", event => { event.preventDefault(); handlers.onCreate(); }],
+            ...[["retry-submission", "onRetrySubmission"],
                 ["refresh", "onRefresh"], ["edit-area", "onEditArea"]]
                 .map(([element, handler]) => [this.elements[element], "click", handlers[handler]]),
         ];
@@ -93,22 +92,14 @@ export class DownloadsView {
         e.area.disabled = locked;
         e["edit-area"].disabled = locked;
         e["area-description"].textContent = describeClipArea(state.area);
-        e.review.disabled = locked || state.busy || !state.source || !state.area;
-        e.review.textContent = state.busy ? "Reading clip metadata…" : "Review clip";
-        e.create.hidden = !state.plan || !!state.pending;
-        e.create.disabled = state.busy || locked;
+        e.create.disabled = locked || !state.source || !state.area;
+        e.create.textContent = state.submitting ? "Submitting clip…" : "Create clip";
         e.message.textContent = state.message;
         e["job-message"].textContent = state.jobMessage;
         e.pending.hidden = !state.pending;
         e.pending.textContent = state.pending ? `${state.submitting ? "Confirming" : "Unconfirmed submission for"} ${state.pending.label}. Its area and raster are fixed until this request is recovered.` : "";
         e["retry-submission"].hidden = !state.pending;
         e["retry-submission"].disabled = state.submitting;
-        e.plan.hidden = !state.plan;
-        if (state.plan && this.planId !== state.plan.planId) {
-            this.renderPlan(state.plan, state.source);
-            e.plan.scrollIntoView?.({ block: "nearest" });
-        }
-        this.planId = state.plan?.planId ?? null;
         const active = state.jobs.filter(job => ACTIVE_JOB_STATES.has(job.status)).length;
         const ready = state.jobs.filter(job => job.status === "ready").length;
         const activity = active
@@ -129,34 +120,9 @@ export class DownloadsView {
         if (this.jobSignature !== jobSignature) {
             const focus = this.document.activeElement?.getAttribute("data-download-action");
             const cards = state.jobs.filter(job => job.status !== "deleted").map(job => this.jobCard(job, state));
-            e.jobs.replaceChildren(...(cards.length ? cards : [this.element("p", "No clips yet. Choose a raster and area, then review your clip.")]));
+            e.jobs.replaceChildren(...(cards.length ? cards : [this.element("p", "No clips yet. Choose a raster and area, then create your clip.")]));
             if (focus) e.jobs.querySelector?.(`[data-download-action="${focus}"]`)?.focus();
             this.jobSignature = jobSignature;
-        }
-    }
-
-    /** Render the metadata-only plan for explicit confirmation. @param {Object} plan Native-grid review. @param {Object} source Captured catalog label. @return {void} */
-    renderPlan(plan, source) {
-        const grid = plan.grid;
-        const resolutionX = Math.hypot(grid.transform[0], grid.transform[3]);
-        const resolutionY = Math.hypot(grid.transform[1], grid.transform[4]);
-        const details = this.element("dl", "");
-        const rows = [
-            ["Raster", source.label], ["Area", describeClipArea(plan.area)],
-            ["Output", "Cloud Optimized GeoTIFF · native values and validity mask"],
-            ["Native CRS", describeClipCrs(grid.crs)],
-            ["Pixel size", `${resolutionX.toPrecision(6)} × ${resolutionY.toPrecision(6)} in native CRS units`],
-            ["Dimensions", `${grid.width.toLocaleString()} × ${grid.height.toLocaleString()} pixels · ${grid.dtype}`],
-            ["Estimated size", `${formatDownloadBytes(grid.estimatedRawBytes)} uncompressed; downloaded size depends on compression`],
-            ["Estimate expires", new Date(plan.expiresAt).toLocaleString()],
-        ];
-        for (const [label, value] of rows) details.append(this.element("dt", label), this.element("dd", value));
-        this.elements.plan.replaceChildren(this.element("h3", "Review clip"), details,
-            this.element("p", "The clip keeps the original pixel grid. Cells outside the box or polygon, including polygon holes, are masked. Map colors and histogram sampling do not change the downloaded values."));
-        if (describeClipCrs(grid.crs) !== grid.crs) {
-            const definition = this.element("details", "");
-            definition.append(this.element("summary", "Full native CRS definition"), this.element("pre", grid.crs));
-            this.elements.plan.append(definition);
         }
     }
 
@@ -178,6 +144,8 @@ export class DownloadsView {
             card.append(progress);
         }
         if (job.grid) card.append(this.element("p", `${job.grid.width} × ${job.grid.height} pixels · ${describeClipCrs(job.grid.crs)}`));
+        if (!calculation && job.grid) card.append(this.element("p",
+            `COG · native resolution · ${formatDownloadBytes(job.grid.estimatedRawBytes)} estimated uncompressed`));
         if (job.error) card.append(this.element("p", `${job.error.detail} (${job.error.code})`));
         if (job.result && job.status === "ready") {
             card.append(this.element("p", `${formatDownloadBytes(job.result.bytes)} · expires ${new Date(job.expiresAt).toLocaleString()}`));

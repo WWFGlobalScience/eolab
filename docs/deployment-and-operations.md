@@ -348,11 +348,8 @@ The older worker's normal cleanup removes those attempts and releases storage.
 This intentionally discards unfinished calculations; users must resubmit them.
 It does not delete completed results or source data.
 
-An old unsubmitted upload plan can report `legacy_selection_plan`; choose a Catalog
-vector and make a new plan. Completed results retain their usual expiry.
-
 A graceful worker stop interrupts its active job. On restart, any other unfinished
-jobs are interrupted too. Interrupted jobs require a new plan/job; partial results
+jobs are interrupted too. Interrupted jobs require a new submission; partial results
 are not resumed. App health and map exploration can remain available while
 Processing reports its database or storage unavailable.
 
@@ -371,45 +368,22 @@ and the existing SSE hints expose these updates. Before preparation, `grid` and
 results still enter the job queue, but skip native preparation and calculation.
 Deploy API, worker and frontend together; see the rollback procedure above.
 
-Raster clip planning and legacy raster calculation clients share a FIFO queue with one native planner.
-The current limits admit 32 unfinished requests, retain 128 plan records, and
-allow each browser session 32 unfinished or ready plans. This admits a burst of
-independent raster plans from one session within the existing global queue;
-it does not add native workers or limit a map to 32 rasters. Tabs sharing the
-Processing session cookie share this allowance, including calculation and clip
-plans. A 64-raster area series still processes all 64: requests beyond current
-capacity stay pending in the browser and retry automatically as space opens.
-Released plans no longer count against the
-session allowance, but remain in the 128-record budget until expiry so that
-late retries cannot recreate cancelled work. A cache hit still
-checks source access but does not wait for the native planner. Queue waiting has
-its own 60-second limit; active planning retains its 15-second limit. A completed
-estimate is usable for five minutes starting when preparation finishes.
+Raster clips use `POST /api/processing/raster-clips` with the catalog source,
+explicit box or catalog selection, and a stable `requestId`. The worker prepares
+the grid and reserves disk space, publishes these details on that job, then
+creates the COG. Downloads shows preparation and clipping progress without a
+separate estimate/confirmation step. The job can be cancelled at either stage.
+Both operations retain the existing source, memory, work and disk limits.
 
-Clip clients submit to `POST /api/processing/raster-clips/plans/{id}`.
-`/api/processing/raster-calculations/plans/{id}` remains available for older
-clients and saved pending submissions. These use a random 32-character lowercase
-hex ID. A 202 response contains the current state; `GET /api/processing/plans/{id}`
-returns progress and the completed estimate. Reusing an ID with the same inputs
-recovers an uncertain submission. Changing its inputs returns `plan_conflict`.
-`DELETE /api/processing/plans/{id}` cancels queued/active planning or releases a
-ready estimate. Cancellation remains visible until native cleanup finishes;
-another request cannot take its active slot early. Status is owner-scoped, with
-the existing SSE change hints and two-second polling fallback.
+The independent planning API, database table, queue and native process have been
+removed. Reload older browser tabs after deployment. Unsubmitted legacy plan
+records are discarded; completed job downloads and calculation caches remain.
+Preparation retains a 15-second timeout within the job's overall deadline.
+Status reads use the existing owner-scoped SSE hints and polling fallback.
 
-The older singular `/plan` endpoints still return completed estimates, waiting
-on this same queue. Deploy the API before serving the new frontend bundle, or
-deploy them together. A graceful app shutdown cancels preparation; after an
-abrupt stop an abandoned request reports `planning_interrupted` within its stored
-deadline (at most 100 seconds under current limits). It is not replayed: retry
-with a new ID. `plan_queue_full` means the pending queue filled, while
-`plan_record_capacity` means retained records or the session limit filled.
-These limits apply to planning; execution-job admission has separate limits.
-The browser automatically retries `plan_queue_full` and `plan_record_capacity`,
-and starts a new plan after `plan_queue_timeout`. Calculation submissions retry
-`owner_queue_full` and `queue_full` with the same request key. These waits are
-cancellable, honor `Retry-After`, and back off from 5 to 30 seconds plus jitter;
-longer server retry delays take precedence. Retained-input, result-storage and
+Calculation submissions retry `owner_queue_full` and `queue_full` with the same
+request key, using cancellable backoff and `Retry-After`. Downloads retains an
+unconfirmed submission for an explicit retry. Retained-input, result-storage and
 job-history exhaustion remain explicit errors requiring attention.
 
 ### Durable calculation and clip queues
@@ -421,10 +395,9 @@ queued job. A session without an earlier execution start goes first; ties use
 the oldest queued job. Each start counts as a turn even if execution fails or is
 cancelled. Running work is never preempted, so another session can still wait
 up to the current job's execution deadline. This shares turns, not CPU seconds.
-Queued inputs and scheduling history survive restarts. Deploy the app and worker
-together: an older worker still uses the former FIFO policy. The migration counts
-existing inputs; a database trigger also accounts for inserts and cleanup by older
-versions during rollout.
+Unfinished jobs are interrupted on worker startup. Deploy the app and worker
+together. The migration counts
+existing inputs; a database trigger accounts for inserted inputs and their cleanup.
 
 The defaults admit a burst of 32 jobs from one session plus four jobs each from
 twelve other sessions (80 waiting jobs), provided storage budgets also fit.

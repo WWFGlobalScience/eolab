@@ -1,8 +1,8 @@
 """Thin same-origin HTTP delivery for owned processing jobs and downloads.
 
 Job listing, status, cancellation, deletion, and leased artifact delivery share
-one lifecycle. Raster-clip planning and submission are explicitly named operation
-commands, alongside single-raster calculation planning and submission.
+one lifecycle. Raster clips and calculations submit complete inputs; the worker
+prepares and executes each request under the same job ID.
 """
 
 import asyncio
@@ -22,21 +22,13 @@ from starlette.responses import FileResponse, StreamingResponse
 
 from eolab_app.processing.models import (
     ArtifactDownload,
-    JobSubmitRequest,
     JobListResponse,
     ProcessingError,
-    PlanningResponse,
 )
-from eolab_app.processing.clip_models import (
-    ClipPlanRequest,
-    ClipJobResponse,
-    ClipPlanResponse,
-)
+from eolab_app.processing.clip_models import ClipJobRequest, ClipJobResponse
 from eolab_app.processing.aggregate_models import (
     AggregateJobResponse,
     AggregateJobRequest,
-    AggregatePlanRequest,
-    AggregatePlanResponse,
     AggregateValidationRequest,
 )
 from eolab_app.processing.polygon_areas import (
@@ -49,11 +41,7 @@ from eolab_app.processing.request_timings import request_timings
 from eolab_app.routes.processing_events import JobEventResponse
 from eolab_app.raster.errors import RasterFeatureError
 from eolab_app.routes.raster_http import raster_http_exception
-from eolab_app.routes.http_disconnect import (
-    HttpClientDisconnectedError,
-    run_until_http_disconnect,
-    wait_for_http_disconnect,
-)
+from eolab_app.routes.http_disconnect import wait_for_http_disconnect
 
 SupportedJobResponse = Annotated[
     ClipJobResponse | AggregateJobResponse, Field(discriminator="operation")
@@ -222,8 +210,6 @@ async def _result(awaitable: Any) -> Any:
         ) from error
     except RasterFeatureError as error:
         raise raster_http_exception(error) from error
-    except HttpClientDisconnectedError as error:
-        raise HTTPException(499, "The processing plan request was cancelled") from error
 
 
 class LeasedJobResponse(FileResponse):
@@ -358,117 +344,18 @@ def create_processing_router(service: ProcessingService) -> APIRouter:
         )
 
     @router.post(
-        "/raster-clips/plan",
-        response_model=ClipPlanResponse,
-        openapi_extra=MUTATION_SCHEMA,
-    )
-    async def plan_raster_clip(
-        body: ClipPlanRequest, request: Request, response: Response
-    ) -> dict[str, Any]:
-        """Plan a bounded native clip from a catalog source and explicit area.
-
-        Args:
-            body: Validated source and area request.
-            request: HTTP owner and origin context.
-            response: Cookie and cache-control response.
-
-        Returns:
-            Reviewable expiring clip plan.
-        """
-        return await _result(
-            run_until_http_disconnect(
-                request, service.plan_raster_clip(_owner(request, response), body)
-            )
-        )
-
-    @router.post(
-        "/raster-clips/plans/{plan_id}",
-        status_code=202,
-        response_model=PlanningResponse,
-        openapi_extra=MUTATION_SCHEMA,
-    )
-    async def start_clip_plan(
-        body: ClipPlanRequest, plan_id: JobId, request: Request, response: Response
-    ) -> dict[str, Any]:
-        """Admit clip planning under a client ID; repeating identical input is safe.
-
-        Args:
-            body: Validated catalog raster and explicit area.
-            plan_id: Client-generated ID retained across uncertain admission retries.
-            request: Same-origin session context.
-            response: Private headers and session cookie.
-
-        Returns:
-            Current planning state; no clip job has been submitted.
-
-        Raises:
-            HTTPException: On ownership, capacity, input or storage failure.
-        """
-        response.headers["Location"] = f"/api/processing/plans/{plan_id}"
-        return await _result(
-            service.start_clip_plan(_owner(request, response), plan_id, body)
-        )
-
-    @router.post(
-        "/raster-calculations/plans/{plan_id}",
-        status_code=202,
-        response_model=PlanningResponse,
-        openapi_extra=MUTATION_SCHEMA,
-    )
-    async def start_calculation_plan(
-        body: AggregatePlanRequest, plan_id: JobId, request: Request, response: Response
-    ) -> dict[str, Any]:
-        """Admit calculation planning without holding HTTP open for a planner.
-
-        Args:
-            body: Validated catalog source, area and expressions.
-            plan_id: Client-generated ID reused on retries with identical input.
-            request: Same-origin session context.
-            response: Private headers and session cookie.
-
-        Returns:
-            Current planning state; callers still explicitly submit the ready plan.
-
-        Raises:
-            HTTPException: On ownership, capacity, input or storage failure.
-        """
-        response.headers["Location"] = f"/api/processing/plans/{plan_id}"
-        return await _result(
-            service.start_calculation_plan(_owner(request, response), plan_id, body)
-        )
-
-    @router.get("/plans/{plan_id}", response_model=PlanningResponse)
-    async def get_planning(
-        plan_id: JobId, request: Request, response: Response
-    ) -> dict[str, Any]:
-        """Read the authoritative planning state, including queued and cancelled work.
-
-        Args:
-            plan_id: Owned plan ID.
-            request: Current browser session.
-            response: Private cache headers.
-
-        Returns:
-            Status, completed operation plan and sanitized error.
-
-        Raises:
-            HTTPException: If the request expired or is not available to this owner.
-        """
-        return await _result(service.get_planning(_owner(request, response), plan_id))
-
-    @router.post(
         "/raster-clips",
         status_code=202,
         response_model=ClipJobResponse,
         openapi_extra=MUTATION_SCHEMA,
     )
     async def submit_raster_clip(
-        body: JobSubmitRequest, request: Request, response: Response
+        body: ClipJobRequest, request: Request, response: Response
     ) -> dict[str, Any]:
-        """Accept one reviewed plan with idempotent durable queue admission.
+        """Queue clip inputs for preparation and execution.
 
         Args:
-            body: Plan ID and client request key.
+            body: Catalog raster, explicit area and stable request key.
             request: HTTP owner/origin context.
             response: Response cookie and headers.
 
@@ -497,45 +384,20 @@ def create_processing_router(service: ProcessingService) -> APIRouter:
         return {"valid": True}
 
     @router.post(
-        "/raster-calculations/plan",
-        response_model=AggregatePlanResponse,
-        openapi_extra=MUTATION_SCHEMA,
-    )
-    async def plan_raster_calculation(
-        body: AggregatePlanRequest, request: Request, response: Response
-    ) -> dict[str, Any]:
-        """Review a native single-raster calculation without starting a job.
-
-        Args:
-            body: Validated source, explicit area, and named expressions.
-            request: Owner, origin, and disconnect context.
-            response: Private cookie and cache headers.
-
-        Returns:
-            Reviewable expiring native calculation plan.
-        """
-        return await _result(
-            run_until_http_disconnect(
-                request,
-                service.plan_raster_calculation(_owner(request, response), body),
-            )
-        )
-
-    @router.post(
         "/raster-calculations",
         status_code=202,
         response_model=AggregateJobResponse,
         openapi_extra=MUTATION_SCHEMA,
     )
     async def submit_raster_calculation(
-        body: AggregateJobRequest | JobSubmitRequest,
+        body: AggregateJobRequest,
         request: Request,
         response: Response,
     ) -> dict[str, Any]:
-        """Queue calculation inputs, or accept a prepared plan from an older client.
+        """Queue calculation inputs for preparation and execution.
 
         Args:
-            body: Source, area, formulas and retry key; alternatively a legacy plan ID and key.
+            body: Source, area, formulas and stable retry key.
             request: Same-origin owner context.
             response: Private cookie and job location headers.
 
@@ -547,28 +409,9 @@ def create_processing_router(service: ProcessingService) -> APIRouter:
         """
         job = await _result(
             service.submit_calculation_inputs(_owner(request, response), body)
-            if isinstance(body, AggregateJobRequest)
-            else service.submit_raster_calculation(_owner(request, response), body)
         )
         response.headers["Location"] = f"/api/processing/jobs/{job['jobId']}"
         return job
-
-    @router.delete("/plans/{plan_id}", openapi_extra=MUTATION_SCHEMA)
-    async def discard_plan(
-        plan_id: JobId, request: Request, response: Response
-    ) -> dict[str, bool]:
-        """Cancel planning or discard a completed review after replacement, idempotently.
-
-        Args:
-            plan_id: Opaque review ID.
-            request: Same-origin owner context.
-            response: Private cookie/cache headers.
-
-        Returns:
-            Acknowledgement, without revealing another owner's plans.
-        """
-        await _result(service.discard_plan(_owner(request, response), plan_id))
-        return {"discarded": True}
 
     @router.get("/jobs", response_model=JobListResponse[SupportedJobResponse])
     async def jobs(request: Request, response: Response) -> dict[str, Any]:

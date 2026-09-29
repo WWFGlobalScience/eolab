@@ -1,125 +1,44 @@
 """Owned processing lifecycle and explicit raster operation commands."""
 
-from eolab_app.catalog_selection import (
-    CatalogSelection,
-    CatalogSelectionReader,
-    SelectionUnavailableError,
-)
-from eolab_app.bounded_vector import summary_process, READ_SECONDS
 import asyncio
-from dataclasses import asdict
 import hashlib
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import PurePath
 from typing import Any
-from uuid import uuid4
 
-from eolab_app.execution.bounded_process import (
-    ProcessDeadlineError,
-)
-from eolab_app.execution.reusable_process import ReusableProcess, run_process
 from eolab_app.processing.request_timings import measure_request_stage
 from eolab_app.processing.models import (
     ArtifactDownload,
-    JobSubmitRequest,
     PreparedJobPlan,
     ProcessingError,
 )
-from eolab_app.processing.clip_models import (
-    ClipArea,
-    ClipPlanRequest,
-    ClipSpec,
-    RasterClipLimits,
-)
+from eolab_app.processing.clip_models import ClipInputs, ClipJobRequest, UnpreparedClip
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateJobRequest,
     UnpreparedCalculation,
     AggregatePlanRequest,
-    AggregatePlanTiming,
-    AggregateSpec,
-    RasterAggregateLimits,
 )
-from eolab_app.processing.calculation_cache import (
-    calculation_result_cache_keys,
-    restore_cached_calculation_plan,
-)
-from eolab_app.processing.raster_aggregate import aggregate_process_target
 from eolab_app.processing.polygon_areas import PolygonAreaReference, PolygonSummaryInput
-from eolab_app.processing.calculation_preparation import prepare_aggregate_job
 from eolab_app.processing.ports import (
     JobArtifactStore,
     JobStore,
     JobChanges,
     JobSubscription,
 )
-from eolab_app.processing.raster_clip import clip_process_target
-from eolab_app.processing.planning_queue import PlanningQueue
-from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
-from eolab_app.raster.ports import RasterSourceAuthorizer
-from eolab_app.raster.errors import (
-    RasterFeatureError,
-    RasterNotFoundError,
-    RasterRequestError,
-    RasterConflictError,
-    RasterUpstreamError,
-)
-
-
-def _planning_source_error(error: RasterFeatureError) -> ProcessingError:
-    """Retain a catalog failure as a safe asynchronous planning error.
-
-    Args:
-        error: Catalog or mounted-source authorization failure.
-
-    Returns:
-        Processing error preserving the public source failure's HTTP status.
-    """
-    status = 422
-    for category, code in (
-        (RasterNotFoundError, 404),
-        (RasterRequestError, 400),
-        (RasterConflictError, 409),
-        (RasterUpstreamError, 502),
-    ):
-        if isinstance(error, category):
-            status = code
-            break
-    return ProcessingError("source_unavailable", error.detail, status)
-
-
-def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
-    """Project a validated clip specification onto operation-neutral storage data.
-
-    Args:
-        spec: Immutable native grid and source/area snapshot checked by clipping.
-
-    Returns:
-        Serialized specification, bounded public summary, and storage reservation.
-    """
-    return PreparedJobPlan(
-        specification=spec.model_dump(mode="json", by_alias=True),
-        summary={
-            "source": spec.source.model_dump(by_alias=True),
-            "grid": spec.grid.model_dump(mode="json"),
-            "area": {"kind": spec.area.kind, "bounds": list(spec.area.bounds)},
-        },
-        reserved_bytes=spec.grid.reservedBytes,
-        operation=spec.operation,
-    )
+from eolab_app.raster.models import CatalogRasterRequest
 
 
 def require_operation(row: dict[str, Any], operation: str) -> None:
-    """Keep reviewed plans and idempotency retries on their original command.
+    """Keep idempotent retries on their original operation.
 
     Args:
-        row: Authorized plan or job row.
+        row: Authorized job row.
         operation: Explicit operation supported by the submitting endpoint.
 
     Raises:
-        ProcessingError: When the supplied plan belongs to a different operation.
+        ProcessingError: When the supplied job belongs to a different operation.
     """
     actual = (
         row.get("operation")
@@ -129,7 +48,7 @@ def require_operation(row: dict[str, Any], operation: str) -> None:
     if actual != operation:
         raise ProcessingError(
             "operation_mismatch",
-            "This plan belongs to a different processing operation.",
+            "This job belongs to a different processing operation.",
             409,
         )
 
@@ -172,7 +91,7 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "progress": row["progress"],
-        **({"preparation": row.get("preparation")} if calculation else {}),
+        "preparation": row.get("preparation"),
         "error": row["error"],
         "result": (
             {
@@ -206,35 +125,21 @@ class ProcessingService:
 
     def __init__(
         self,
-        authorizer: RasterSourceAuthorizer,
-        areas: CatalogSelectionReader,
         jobs: JobStore,
         artifacts: JobArtifactStore,
-        limits: RasterClipLimits,
         *,
-        native: ReusableProcess | None = None,
         changes: JobChanges | None = None,
     ) -> None:
         """Compose job storage and currently supported raster-operation capabilities.
 
         Args:
-            authorizer: Catalog-owned current-source authorization port.
-            areas: Neutral reader of immutable catalog-vector source capabilities.
             jobs: Durable job and admission adapter.
             artifacts: Confined result-file adapter.
-            limits: Deployment-owned resource and lifecycle policy.
-            native: Lifecycle-managed planning lane supplied by composition.
             changes: Lifecycle-managed owned-job notification provider.
         """
-        self.authorizer = authorizer
-        self.areas = areas
         self.jobs = jobs
         self.artifacts = artifacts
-        self.limits = limits
-        self.native = native
         self.changes = changes
-        self.aggregate_limits = RasterAggregateLimits.with_lifecycle(limits)
-        self.planning = PlanningQueue(jobs, limits)
 
     async def subscribe_jobs(self, owner: str) -> JobSubscription:
         """Subscribe to hints for the same owner used by ordinary job reads.
@@ -255,248 +160,6 @@ class ProcessingService:
                 503,
             )
         return self.changes.subscribe(owner)
-
-    async def _area_snapshot(
-        self, bounds: Wgs84Bounds | None, selection: CatalogSelection | None
-    ) -> dict[str, Any]:
-        """Resolve a box or catalog descriptor without retaining coordinates.
-
-        Args:
-            bounds: Explicit box, exclusive of a catalog selection.
-            selection: Immutable catalog source/native-layer/predicate definition.
-
-        Returns:
-            Path-free area plus a private, serialization-excluded read capability.
-
-        Raises:
-            ProcessingError: If the catalog selection is unavailable or empty.
-        """
-        if bounds is not None:
-            return {"kind": "bounds", "bounds": bounds.canonical_tuple()}
-        try:
-            resolved = await self.areas.resolve_for_sampling(selection)
-            outcome = await run_process(
-                summary_process, (resolved,), READ_SECONDS, self.native
-            )
-            success, summary = outcome.value
-            if not success:
-                raise ProcessingError("selection_unavailable", summary, 409)
-            await self.areas.resolve_for_sampling(selection)
-        except (SelectionUnavailableError, ValueError) as error:
-            raise ProcessingError("selection_unavailable", str(error), 409) from error
-        return {
-            "kind": "catalogSelection",
-            "bounds": summary["bbox"],
-            "catalogSelection": selection,
-            "resolved": resolved,
-        }
-
-    async def _area(self, request: ClipPlanRequest) -> ClipArea:
-        """Build clipping's area value from the shared immutable selection.
-
-        Args:
-            request: Explicit clip area selection.
-
-        Returns:
-            Clip-owned descriptor or box value.
-        """
-        return ClipArea(
-            **await self._area_snapshot(
-                request.selectedBounds, request.catalogSelection
-            )
-        )
-
-    async def plan_raster_clip(
-        self, owner: str, request: ClipPlanRequest
-    ) -> dict[str, Any]:
-        """Wait for a queued clip plan for clients using the synchronous API.
-
-        Args:
-            owner: Browser-session hash.
-            request: Validated raster and area.
-
-        Returns:
-            Completed clip plan in the existing response format.
-
-        Raises:
-            ProcessingError: If planning fails, expires or exceeds capacity.
-        """
-        identifier = uuid4().hex
-        await self.start_clip_plan(owner, identifier, request)
-        return await self.planning.wait(identifier, owner)
-
-    async def start_clip_plan(
-        self, owner: str, identifier: str, request: ClipPlanRequest
-    ) -> dict[str, Any]:
-        """Accept an asynchronous clip-plan request without waiting for native work.
-
-        Args:
-            owner: Browser-session hash.
-            identifier: Client-generated plan ID, reused on admission retries.
-            request: Validated raster and area.
-
-        Returns:
-            Current owned planning snapshot.
-
-        Raises:
-            ProcessingError: If record capacity is full or the ID conflicts.
-        """
-        return await self.planning.start(
-            identifier,
-            owner,
-            request.model_dump(mode="json", by_alias=True),
-            lambda _: self._prepare_clip_plan(owner, request, identifier),
-        )
-
-    async def _prepare_clip_plan(
-        self, owner: str, request: ClipPlanRequest, identifier: str
-    ) -> dict[str, Any]:
-        """Create a bounded metadata plan; this does not accept an export job.
-
-        Args:
-            owner: Hash of the current opaque session cookie.
-            request: Catalog source and exactly one explicit area.
-            identifier: Already admitted planning record.
-
-        Returns:
-            Reviewable grid, native byte estimate, limits, and expiring plan ID.
-
-        Raises:
-            ProcessingError: For unsupported sources, size, area, or capacity.
-        """
-        completed = False
-        try:
-            async with asyncio.timeout(self.limits.plan_timeout_seconds):
-                source = CatalogRasterRequest(
-                    collectionId=request.collection_id, itemId=request.item_id
-                )
-                authorized = await self.authorizer.authorize(source)
-            async with self.planning.native_planner(identifier, owner) as queue_seconds:
-                authorized = await self.authorizer.authorize(source)
-                area = await self._area(request)
-                signature = tuple(authorized.source_signature.to_catalog())
-                outcome = await run_process(
-                    clip_process_target,
-                    ("plan", (authorized.source_path, area, self.limits)),
-                    self.limits.plan_timeout_seconds,
-                    self.native,
-                )
-                status, value = outcome.value
-                if status != "ok":
-                    raise ProcessingError(*value)
-                if area.catalogSelection is not None:
-                    try:
-                        await self.areas.resolve_for_sampling(area.catalogSelection)
-                    except SelectionUnavailableError as error:
-                        raise ProcessingError(
-                            "selection_unavailable", error.detail, 409
-                        ) from error
-                spec = ClipSpec(
-                    source=source, sourceSignature=signature, area=area, grid=value
-                )
-            plan = await asyncio.to_thread(
-                self.jobs.finish_plan, identifier, owner, prepare_clip_job(spec)
-            )
-            if plan is None:
-                raise ProcessingError(
-                    "plan_expired",
-                    "This clip plan expired. Please create a new one.",
-                    409,
-                )
-            completed = True
-            return {
-                "planId": identifier,
-                "operation": spec.operation,
-                "source": source.model_dump(by_alias=True),
-                "area": {"kind": area.kind, "bounds": area.bounds},
-                "grid": value.model_dump(),
-                "expiresAt": plan["expires_at"].isoformat(),
-                "queueSeconds": queue_seconds,
-                "format": "COG",
-                "resolution": "native",
-                "allTouched": True,
-                "limits": {
-                    "maxRawBytes": self.limits.max_raw_bytes,
-                    "runtimeSeconds": self.limits.runtime_seconds,
-                    "downloadLifetimeSeconds": self.limits.result_ttl_seconds,
-                },
-            }
-        except (TimeoutError, ProcessDeadlineError) as error:
-            raise ProcessingError(
-                "planning_timeout",
-                "Clip planning exceeded its time limit. Try a simpler area or try again.",
-                422,
-            ) from error
-        except RasterFeatureError as error:
-            raise _planning_source_error(error) from error
-        finally:
-            if not completed:
-                # Supervisor has already joined its cancelled child before releasing this
-                # slot. A DB outage leaves a bounded expiring reservation.
-                await asyncio.shield(
-                    asyncio.to_thread(self.jobs.finish_plan, identifier, owner, None)
-                )
-
-    async def submit_raster_clip(
-        self, owner: str, request: JobSubmitRequest
-    ) -> dict[str, Any]:
-        """Revalidate the plan, then durably accept an idempotent clip job.
-
-        Args:
-            owner: Current session hash.
-            request: Reviewed plan ID and client idempotency key.
-
-        Returns:
-            Public queued or previously accepted job.
-
-        Raises:
-            ProcessingError: If a lifecycle changed, the plan expired, or limits are full.
-        """
-        existing = await asyncio.to_thread(
-            self.jobs.find_request, owner, request.requestId
-        )
-        if existing:
-            require_operation(existing, "raster.clip.v1")
-            if existing["plan_id"] != request.planId:
-                raise ProcessingError(
-                    "request_conflict",
-                    "That request ID already belongs to another plan.",
-                    409,
-                )
-            return public_job(existing)
-        plan = await asyncio.to_thread(self.jobs.get_plan, request.planId, owner)
-        require_operation(plan, "raster.clip.v1")
-        if plan["request"].get("temporaryAoiId") is not None:
-            raise ProcessingError(
-                "legacy_selection_plan",
-                "This historical AOI plan cannot be submitted again. Select a catalog vector and create a new plan.",
-                409,
-            )
-        spec = ClipSpec.model_validate(plan["spec"])
-        await self.authorizer.authorize(spec.source)
-        area = await self._area(
-            ClipPlanRequest.model_validate(
-                {
-                    key: value
-                    for key, value in plan["request"].items()
-                    if key != "temporaryAoiId"
-                }
-            )
-        )
-        if area.model_dump() != spec.area.model_dump():
-            raise ProcessingError(
-                "area_changed",
-                "The catalog selection changed since planning. Create a new clip plan.",
-                409,
-            )
-        row = await asyncio.to_thread(
-            self.jobs.submit,
-            owner,
-            request.planId,
-            request.requestId,
-            prepare_clip_job(spec),
-        )
-        return public_job(row)
 
     async def upload_polygon_area(
         self, owner: str, polygons: PolygonSummaryInput
@@ -533,7 +196,7 @@ class ProcessingService:
             reference: Expiring input ID and expected geometry hash.
 
         Returns:
-            Validated geometry copied into this calculation's plan.
+            Validated geometry copied into this calculation job.
 
         Raises:
             ProcessingError: If the input expired or is not owned by the caller.
@@ -550,23 +213,6 @@ class ProcessingService:
             geometries=tuple(p.model_dump(mode="json") for p in polygons.polygons),
         )
 
-    async def _aggregate_area(self, request: AggregatePlanRequest) -> AggregateArea:
-        """Resolve a Catalog descriptor, box, or explicit whole-source intent.
-
-        Args:
-            request: Validated single-raster calculation request.
-
-        Returns:
-            Independent immutable area for the calculation kernel.
-        """
-        if request.wholeRaster:
-            return AggregateArea(kind="wholeRaster")
-        return AggregateArea(
-            **await self._area_snapshot(
-                request.selectedBounds, request.catalogSelection
-            )
-        )
-
     async def discard_polygon_area(self, owner: str, identifier: str) -> None:
         """Release polygons that this browser no longer uses for new calculations.
 
@@ -579,227 +225,57 @@ class ProcessingService:
         """
         await asyncio.to_thread(self.jobs.discard_input, owner, identifier)
 
-    async def discard_plan(self, owner: str, identifier: str) -> None:
-        """Cancel an obsolete planning request without changing accepted job work.
+    async def submit_raster_clip(
+        self, owner: str, request: ClipJobRequest
+    ) -> dict[str, Any]:
+        """Queue a raster clip before reading its source or measuring its area.
 
         Args:
             owner: Current browser-session hash.
-            identifier: Opaque plan to discard; missing plans are a safe no-op.
-        """
-        await asyncio.to_thread(self.jobs.discard_plan, identifier, owner)
-
-    async def get_planning(self, owner: str, identifier: str) -> dict[str, Any]:
-        """Read this session's asynchronous planning progress or completed plan.
-
-        Args:
-            owner: Current browser-session hash.
-            identifier: Client-generated plan ID.
+            request: Catalog raster, explicit area and stable submission key.
 
         Returns:
-            Path-free planning snapshot.
+            The accepted job, or the existing job after an identical retry.
 
         Raises:
-            ProcessingError: If the record is unavailable or storage fails.
+            ProcessingError: If the retry changes inputs or admission is full.
         """
-        return await self.planning.get(identifier, owner)
-
-    async def close(self) -> None:
-        """Cancel planning and wait for native cleanup before closing its providers."""
-        await self.planning.close()
-
-    async def plan_raster_calculation(
-        self, owner: str, request: AggregatePlanRequest
-    ) -> dict[str, Any]:
-        """Wait for a queued calculation plan for existing synchronous API clients.
-
-        Args:
-            owner: Browser-session hash.
-            request: Validated raster, area and formulas.
-
-        Returns:
-            Completed calculation plan, including authorized cached values.
-
-        Raises:
-            ProcessingError: If planning fails, expires or exceeds capacity.
-        """
-        identifier = uuid4().hex
-        await self.start_calculation_plan(owner, identifier, request)
-        return await self.planning.wait(identifier, owner)
-
-    async def start_calculation_plan(
-        self, owner: str, identifier: str, request: AggregatePlanRequest
-    ) -> dict[str, Any]:
-        """Accept asynchronous calculation planning, including cache-hit lookup.
-
-        Args:
-            owner: Browser-session hash.
-            identifier: Client-generated plan ID, reused on admission retries.
-            request: Validated raster, area and formulas.
-
-        Returns:
-            Current owned planning snapshot.
-
-        Raises:
-            ProcessingError: If record capacity is full or the ID conflicts.
-        """
-        return await self.planning.start(
-            identifier,
-            owner,
-            request.model_dump(mode="json", by_alias=True),
-            lambda admission_seconds: self._prepare_calculation_plan(
-                owner, request, identifier, admission_seconds
-            ),
+        inputs = ClipInputs.model_validate(
+            request.model_dump(exclude={"requestId"}, by_alias=True)
         )
-
-    async def _prepare_calculation_plan(
-        self,
-        owner: str,
-        request: AggregatePlanRequest,
-        identifier: str,
-        admission_seconds: float,
-    ) -> dict[str, Any]:
-        """Reuse authorized cached values, or estimate work for an uncached calculation.
-
-        Args:
-            owner: Current session hash.
-            request: Exactly one catalog raster, explicit area, and scalar expressions.
-            identifier: Already admitted plan record.
-            admission_seconds: Time spent reserving that record.
-
-        Returns:
-            Expiring plan with retained cached values or estimated native work.
-            Cache hits skip raster planning and polygon-envelope reads.
-
-        Raises:
-            ProcessingError: For resource, source, or area admission failures.
-        """
-        reserved = time.perf_counter()
-        queue_seconds = 0.0
-        completed = False
-        limits = self.aggregate_limits
-        try:
-            async with asyncio.timeout(limits.plan_timeout_seconds):
-                alias, source = next(iter(request.sources.items()))
-                authorized = await self.authorizer.authorize(source)
-                signature = tuple(authorized.source_signature.to_catalog())
-                if request.catalogSelection is not None:
-                    try:
-                        await self.areas.resolve_for_sampling(request.catalogSelection)
-                    except SelectionUnavailableError as error:
-                        raise ProcessingError(
-                            "selection_unavailable", error.detail, 409
-                        ) from error
-                polygon_area = (
-                    await self.read_polygon_area(owner, request.polygonArea)
-                    if request.polygonArea
-                    else None
-                )
-                cached = await asyncio.to_thread(
-                    self.jobs.get_cached_calculation_results,
-                    calculation_result_cache_keys(request, signature),
-                )
-                spec = restore_cached_calculation_plan(
-                    request, signature, cached, polygon_area
-                )
-                outcome = None
-                prepared = calculated = time.perf_counter()
-            if spec is None:
-                async with self.planning.native_planner(
-                    identifier, owner
-                ) as queue_seconds:
-                    authorized = await self.authorizer.authorize(source)
-                    signature = tuple(authorized.source_signature.to_catalog())
-                    area = polygon_area or await self._aggregate_area(request)
-                    prepared = time.perf_counter()
-                    outcome = await run_process(
-                        aggregate_process_target,
-                        (
-                            "plan",
-                            (
-                                authorized.source_path,
-                                area,
-                                request.calculations,
-                                alias,
-                                limits,
-                                request.targetChunkPixels,
-                            ),
-                        ),
-                        limits.plan_timeout_seconds,
-                        self.native,
-                    )
-                    status, value = outcome.value
-                    calculated = time.perf_counter()
-                    if status != "ok":
-                        raise ProcessingError(*value)
-                    if area.catalogSelection is not None:
-                        try:
-                            await self.areas.resolve_for_sampling(area.catalogSelection)
-                        except SelectionUnavailableError as error:
-                            raise ProcessingError(
-                                "selection_unavailable", error.detail, 409
-                            ) from error
-                    spec = AggregateSpec(
-                        sources=request.sources,
-                        sourceSignature=signature,
-                        area=area,
-                        calculations=request.calculations,
-                        grid=value,
-                    )
-            plan = await asyncio.to_thread(
-                self.jobs.finish_plan,
-                identifier,
+        queued = UnpreparedClip(request=inputs)
+        request_hash = hashlib.sha256(
+            json.dumps(
+                inputs.model_dump(mode="json", by_alias=True), sort_keys=True
+            ).encode()
+        ).hexdigest()
+        source = CatalogRasterRequest(
+            collectionId=inputs.collection_id, itemId=inputs.item_id
+        )
+        bounds = inputs.selectedBounds
+        summary = {
+            "source": source.model_dump(by_alias=True),
+            "grid": None,
+            "area": {
+                "kind": "bounds" if bounds else "catalogSelection",
+                "bounds": bounds.canonical_tuple() if bounds else None,
+            },
+        }
+        with measure_request_stage("queueAdmission"):
+            row = await asyncio.to_thread(
+                self.jobs.submit,
                 owner,
-                prepare_aggregate_job(spec, limits),
+                request.requestId,
+                PreparedJobPlan(
+                    specification=queued.model_dump(mode="json", by_alias=True),
+                    summary=summary,
+                    reserved_bytes=0,
+                    operation=queued.operation,
+                ),
+                request_hash,
             )
-            if plan is None:
-                raise ProcessingError(
-                    "plan_expired",
-                    "This calculation plan expired. Create a new one.",
-                    409,
-                )
-            completed = True
-            return {
-                "planId": identifier,
-                "operation": spec.operation,
-                **prepare_aggregate_job(spec, limits).summary,
-                "expiresAt": plan["expires_at"].isoformat(),
-                "resolution": "native",
-                "cacheHit": spec.cachedRows is not None,
-                "valueDomain": "stored",
-                "inclusion": "per_function" if spec.grid.groundArea else "cell_center",
-                "timing": AggregatePlanTiming(
-                    reservationSeconds=admission_seconds,
-                    queueSeconds=queue_seconds,
-                    preparationSeconds=max(0, prepared - reserved - queue_seconds),
-                    nativeProcessSeconds=calculated - prepared,
-                    finalizationSeconds=time.perf_counter() - calculated,
-                    process=(
-                        asdict(outcome.timing) if outcome and outcome.timing else None
-                    ),
-                ).model_dump(),
-                "limits": {
-                    "maxDecodedBytes": limits.max_decoded_bytes,
-                    "maxMemoryBytes": limits.max_memory_bytes,
-                    "maxNativeBlocks": limits.max_native_blocks,
-                    "maxAreaGeometryCells": limits.max_area_geometry_cells,
-                    "maxAreaTransformCoordinates": limits.max_area_transform_coordinates,
-                    "runtimeSeconds": limits.runtime_seconds,
-                    "downloadLifetimeSeconds": limits.result_ttl_seconds,
-                },
-            }
-        except (TimeoutError, ProcessDeadlineError) as error:
-            raise ProcessingError(
-                "planning_timeout",
-                "Calculation planning exceeded its time limit. Try a simpler area or try again.",
-                422,
-            ) from error
-        except RasterFeatureError as error:
-            raise _planning_source_error(error) from error
-        finally:
-            if not completed:
-                await asyncio.shield(
-                    asyncio.to_thread(self.jobs.finish_plan, identifier, owner, None)
-                )
+        require_operation(row, queued.operation)
+        return public_job(row)
 
     async def submit_calculation_inputs(
         self, owner: str, request: AggregateJobRequest
@@ -869,7 +345,6 @@ class ProcessingService:
             row = await asyncio.to_thread(
                 self.jobs.submit,
                 owner,
-                None,
                 request.requestId,
                 PreparedJobPlan(
                     specification=queued.model_dump(mode="json", by_alias=True),
@@ -878,86 +353,6 @@ class ProcessingService:
                     operation=queued.operation,
                 ),
                 request_hash,
-            )
-        return public_job(row)
-
-    async def submit_raster_calculation(
-        self, owner: str, request: JobSubmitRequest
-    ) -> dict[str, Any]:
-        """Revalidate and durably admit the reviewed calculation exactly once.
-
-        Args:
-            owner: Current session hash.
-            request: Reviewed plan ID and client-generated idempotency key.
-
-        Returns:
-            Accepted or previously accepted owned calculation job.
-
-        Raises:
-            ProcessingError: For expired or changed intent, conflicts, or capacity.
-        """
-        with measure_request_stage("admissionChecks"):
-            existing = await asyncio.to_thread(
-                self.jobs.find_request, owner, request.requestId
-            )
-            if existing:
-                require_operation(existing, "raster.aggregate.v1")
-                if existing["plan_id"] != request.planId:
-                    raise ProcessingError(
-                        "request_conflict",
-                        "That request ID already belongs to another plan.",
-                        409,
-                    )
-                return public_job(existing)
-            plan = await asyncio.to_thread(self.jobs.get_plan, request.planId, owner)
-            require_operation(plan, "raster.aggregate.v1")
-            if plan["request"].get("temporaryAoiId") is not None:
-                raise ProcessingError(
-                    "legacy_selection_plan",
-                    "This historical AOI plan cannot be submitted again. Select a catalog vector and create a new plan.",
-                    409,
-                )
-            spec = AggregateSpec.model_validate(plan["spec"])
-            polygon_area = None
-            if plan["request"].get("polygonArea"):
-                polygon_area = await self.read_polygon_area(
-                    owner,
-                    PolygonAreaReference.model_validate(plan["request"]["polygonArea"]),
-                )
-            await self.authorizer.authorize(next(iter(spec.sources.values())))
-            if spec.cachedRows is not None:
-                if spec.area.catalogSelection is not None:
-                    try:
-                        await self.areas.resolve_for_sampling(
-                            spec.area.catalogSelection
-                        )
-                    except SelectionUnavailableError as error:
-                        raise ProcessingError(
-                            "selection_unavailable", error.detail, 409
-                        ) from error
-            else:
-                area = polygon_area or await self._aggregate_area(
-                    AggregatePlanRequest.model_validate(
-                        {
-                            key: value
-                            for key, value in plan["request"].items()
-                            if key != "temporaryAoiId"
-                        }
-                    )
-                )
-                if area.model_dump() != spec.area.model_dump():
-                    raise ProcessingError(
-                        "area_changed",
-                        "The catalog selection changed since planning. Create a new calculation plan.",
-                        409,
-                    )
-        with measure_request_stage("queueAdmission"):
-            row = await asyncio.to_thread(
-                self.jobs.submit,
-                owner,
-                request.planId,
-                request.requestId,
-                prepare_aggregate_job(spec, self.aggregate_limits),
             )
         return public_job(row)
 

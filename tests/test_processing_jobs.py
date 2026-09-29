@@ -27,7 +27,8 @@ from eolab_app.processing.models import (
     ProcessingError,
 )
 from eolab_app.processing.clip_models import ClipArea, RasterClipLimits
-from eolab_app.processing.service import ProcessingService, prepare_clip_job
+from eolab_app.processing.service import ProcessingService
+from eolab_app.processing.job_preparation import prepare_clip_job
 from eolab_app.processing.worker import ProcessingWorker
 import eolab_app.processing.worker as worker_module
 from eolab_app.processing.raster_clip import create_clip
@@ -84,7 +85,7 @@ def store(request: pytest.FixtureRequest) -> PostgresJobStore:
     result.migrate()  # Exercise redeployment of an already initialized schema.
     with psycopg.connect(dsn) as connection:
         connection.execute(
-            "TRUNCATE processing.transfers, processing.jobs, processing.plans, processing.calculation_results, processing.inputs"
+            "TRUNCATE processing.transfers, processing.jobs, processing.calculation_results, processing.inputs"
         )
     return result
 
@@ -149,7 +150,7 @@ def boundary(tmp_path: Path, store: PostgresJobStore) -> Any:
     )
     artifacts = LocalJobArtifacts(tmp_path / "outputs", (path,))
     artifacts.initialize()
-    service = ProcessingService(authorizer, areas, store, artifacts, store.limits)
+    service = ProcessingService(store, artifacts)
     worker = ProcessingWorker(authorizer, store, artifacts, store.limits, areas=areas)
     app = FastAPI()
     app.state.vector_items = vector_items
@@ -160,34 +161,32 @@ def boundary(tmp_path: Path, store: PostgresJobStore) -> Any:
     asyncio.run(catalog_client.aclose())
 
 
-def planned(client: TestClient, aoi: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Create a real bounded metadata plan through HTTP.
+def clip_inputs(
+    client: TestClient, aoi: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return a catalog raster and explicit box or filtered vector for submission.
 
     Args:
-        client: Owned HTTPS test client.
-        aoi: Optional ready AOI ID, otherwise the explicit fixture rectangle.
+        client: Test client retained for shared fixture call sites.
+        aoi: Optional catalog selection; otherwise use the fixture rectangle.
 
     Returns:
-        Reviewed native clip plan.
+        Path-free inputs accepted by the clip endpoint.
     """
-    selection = {"catalogSelection": aoi} if aoi else {"selectedBounds": AREA}
-    response = client.post(
-        "/api/processing/raster-clips/plan",
-        json={**SOURCE, **selection},
-        headers=HEADERS,
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+    return {
+        **SOURCE,
+        **({"catalogSelection": aoi} if aoi else {"selectedBounds": AREA}),
+    }
 
 
 def submitted(
-    client: TestClient, plan: dict[str, Any], request_id: str | None = None
+    client: TestClient, inputs: dict[str, Any], request_id: str | None = None
 ) -> dict[str, Any]:
-    """Durably submit a plan through its idempotent HTTP contract.
+    """Queue clip inputs through the idempotent HTTP endpoint.
 
     Args:
         client: Owner session.
-        plan: Existing plan result.
+        inputs: Catalog raster and explicit clipping area.
         request_id: Optional repeated client key.
 
     Returns:
@@ -195,14 +194,14 @@ def submitted(
     """
     response = client.post(
         "/api/processing/raster-clips",
-        json={"planId": plan["planId"], "requestId": request_id or uuid4().hex},
+        json={**inputs, "requestId": request_id or uuid4().hex},
         headers=HEADERS,
     )
     assert response.status_code == 202, response.text
     return response.json()
 
 
-def test_real_plan_worker_download_ranges_ownership_and_idempotency(
+def test_real_clip_worker_download_ranges_ownership_and_idempotency(
     boundary: Any, tmp_path: Path
 ) -> None:
     """Exercise a complete native clip via PostgreSQL and real HTTP file delivery.
@@ -212,14 +211,13 @@ def test_real_plan_worker_download_ranges_ownership_and_idempotency(
         tmp_path: Download validation storage.
     """
     client, worker, source, artifacts, app = boundary
-    plan = planned(client)
+    plan = clip_inputs(client)
     assert (
         client.post(
-            "/api/processing/raster-clips/plan", content=b"x" * 20000, headers=HEADERS
+            "/api/processing/raster-clips", content=b"x" * 20000, headers=HEADERS
         ).status_code
         == 413
     )
-    assert plan["grid"]["estimatedRawBytes"] > 0
     assert "Set-Cookie" not in plan
     key = uuid4().hex
     job = submitted(client, plan, key)
@@ -274,22 +272,22 @@ def test_real_plan_worker_download_ranges_ownership_and_idempotency(
         assert (
             stranger.post(
                 "/api/processing/raster-clips",
-                json={"planId": plan["planId"], "requestId": uuid4().hex},
+                json={**plan, "requestId": uuid4().hex},
                 headers=HEADERS,
             ).status_code
-            == 404
+            == 202
         )
     assert (
         client.post(
             "/api/processing/raster-clips",
-            json={"planId": plan["planId"], "requestId": uuid4().hex},
+            json={**plan, "requestId": uuid4().hex},
         ).status_code
         == 403
     )
     assert (
         client.post(
             "/api/processing/raster-clips",
-            json={"planId": plan["planId"], "requestId": uuid4().hex},
+            json={**plan, "requestId": uuid4().hex},
             headers={**HEADERS, "Origin": "https://other.example"},
         ).status_code
         == 403
@@ -312,7 +310,7 @@ def test_catalog_job_reauthorizes_after_restart_and_preserves_ready_result(
         vector, "area", crs="EPSG:4326", geometry_type="Polygon", geometry=geometry
     )
     selection = register_selection(client, vector)
-    plan = planned(client, selection)
+    plan = clip_inputs(client, selection)
     job = submitted(client, plan)
     # A fresh worker receives no geometry, source handle, or selection registry.
     restarted = ProcessingWorker(
@@ -325,10 +323,15 @@ def test_catalog_job_reauthorizes_after_restart_and_preserves_ready_result(
     app.state.vector_items.clear()
     rejected = client.post(
         "/api/processing/raster-clips",
-        json={"planId": plan["planId"], "requestId": uuid4().hex},
+        json={**plan, "requestId": uuid4().hex},
         headers=HEADERS,
     )
-    assert rejected.status_code == 409
+    assert rejected.status_code == 202
+    assert asyncio.run(worker.run_once())
+    assert (
+        client.get(f"/api/processing/jobs/{rejected.json()['jobId']}").json()["status"]
+        == "failed"
+    )
     assert client.get(f"/api/processing/jobs/{job['jobId']}/result").status_code == 200
 
 
@@ -339,7 +342,7 @@ def test_queued_cancellation_never_publishes(boundary: Any) -> None:
         boundary: Real owners and worker fixture.
     """
     client, worker, source, artifacts, app = boundary
-    plan = planned(client)
+    plan = clip_inputs(client)
     cancelled = submitted(client, plan)
     identifier = cancelled["jobId"]
     assert (
@@ -365,20 +368,13 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
     spec = prepare_clip_job(
         make_spec(path, ClipArea(kind="bounds", bounds=(0.1, 9.1, 0.9, 9.9)))
     )
-    plan_id = store.reserve_plan("owner", SOURCE)
-    store.queue_native_plan(plan_id, "owner")
-    assert store.claim_native_plan(plan_id, "owner")
-    next_plan = store.reserve_plan("another", SOURCE)
-    store.queue_native_plan(next_plan, "another")
-    assert not store.claim_native_plan(next_plan, "another")
-    store.finish_plan(plan_id, "owner", spec)
-    assert store.claim_native_plan(next_plan, "another")
-    store.discard_plan(next_plan, "another")
-    store.settle_planning(next_plan, "another", None)
     with ThreadPoolExecutor(max_workers=6) as pool:
         jobs = list(
             pool.map(
-                lambda _: store.submit("owner", plan_id, "same-request", spec), range(6)
+                lambda _: store.submit(
+                    "owner", "same-request", spec, "fixture-input-hash"
+                ),
+                range(6),
             )
         )
     assert len({job["id"] for job in jobs}) == 1
@@ -393,7 +389,7 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
     assert not store.finish(claim["id"], claim["attempt_id"], Artifact(1, "x", "x.tif"))
     assert store.finish(claim["id"], claim["attempt_id"], None)
     assert store.get(claim["id"], "owner")["status"] == "cancelled"
-    queued = store.submit("owner", plan_id, "next-request", spec)
+    queued = store.submit("owner", "next-request", spec, "fixture-input-hash")
     lost = other_store.claim()
     with psycopg.connect(store.conninfo) as connection:
         connection.execute(
@@ -425,20 +421,20 @@ def test_job_store_admits_operation_data_without_raster_fields(
         summary={"operation": "test.summary.v1", "label": "Year summary"},
         reserved_bytes=4096,
     )
-    plan_id = store.reserve_plan("owner", {"fields": ["year"]})
-    store.finish_plan(plan_id, "owner", prepared)
-    submitted_job = store.submit("owner", plan_id, "summary-request", prepared)
+    submitted_job = store.submit(
+        "owner", "summary-request", prepared, "fixture-input-hash"
+    )
     assert submitted_job["spec"] == prepared.specification
     assert submitted_job["reserved_bytes"] == 4096
     assert store.get(submitted_job["id"], "owner")["spec"] == prepared.summary
     assert store.list_owned("owner")[0]["spec"] == prepared.summary
     assert (
-        store.submit("owner", plan_id, "summary-request", prepared)["id"]
+        store.submit("owner", "summary-request", prepared, "fixture-input-hash")["id"]
         == submitted_job["id"]
     )
     store.limits = replace(store.limits, max_stored_bytes=4096)
     with pytest.raises(ProcessingError) as refused:
-        store.submit("owner", plan_id, "another-request", prepared)
+        store.submit("owner", "another-request", prepared, "fixture-input-hash")
     assert refused.value.code == "storage_full"
     claimed = store.claim()
     assert claimed["spec"] == prepared.specification
@@ -463,12 +459,12 @@ def test_owner_disk_limits_and_transfer_lease_cleanup(
         store: Real adapter used to simulate time passage without waiting a day.
     """
     client, worker, source, artifacts, app = boundary
-    plan = planned(client)
+    plan = clip_inputs(client)
     first = submitted(client, plan)
     second = submitted(client, plan)
     full = client.post(
         "/api/processing/raster-clips",
-        json={"planId": plan["planId"], "requestId": uuid4().hex},
+        json={**plan, "requestId": uuid4().hex},
         headers=HEADERS,
     )
     assert full.status_code == 429
@@ -494,11 +490,14 @@ def test_owner_disk_limits_and_transfer_lease_cleanup(
     store.limits = replace(store.limits, max_stored_bytes=1)
     denied = client.post(
         "/api/processing/raster-clips",
-        json={"planId": plan["planId"], "requestId": uuid4().hex},
+        json={**plan, "requestId": uuid4().hex},
         headers=HEADERS,
     )
-    assert denied.status_code == 429
-    assert denied.json()["detail"]["code"] == "storage_full"
+    assert denied.status_code == 202
+    assert asyncio.run(worker.run_once())
+    assert asyncio.run(worker.run_once())
+    failed = client.get(f"/api/processing/jobs/{denied.json()['jobId']}").json()
+    assert failed["error"]["code"] == "storage_full"
 
 
 def _paused_clip(queue: Any, operation: str, arguments: tuple) -> None:
@@ -509,6 +508,11 @@ def _paused_clip(queue: Any, operation: str, arguments: tuple) -> None:
         operation: Expected explicit clip operation.
         arguments: Native clip source/spec/directory/limits.
     """
+    if operation == "plan":
+        from eolab_app.processing.raster_clip import clip_process_target
+
+        clip_process_target(queue, operation, arguments)
+        return
     path, spec, directory, limits = arguments
     assert operation == "clip"
     artifact = None
@@ -539,7 +543,7 @@ def test_worker_cancellation_and_shutdown_join_child_before_cleanup(
         shutdown: Simulate worker shutdown instead of a browser cancel request.
     """
     client, worker, source, artifacts, app = boundary
-    job = submitted(client, planned(client))
+    job = submitted(client, clip_inputs(client))
     if phase == "finalizing":
         (artifacts.root / "pause-after-output").touch()
     monkeypatch.setattr(worker_module, "clip_process_target", _paused_clip)
@@ -575,40 +579,22 @@ def test_worker_cancellation_and_shutdown_join_child_before_cleanup(
     asyncio.run(exercise())
 
 
-def test_expired_plan_and_idempotency_key_conflict(
-    boundary: Any, store: PostgresJobStore
-) -> None:
-    """Expiration blocks new admission while an accepted request remains recoverable.
+def test_clip_retry_rejects_changed_inputs(boundary: Any) -> None:
+    """Retrying one key recovers the original job and rejects a changed area.
 
     Args:
-        boundary: Real application boundary.
-        store: Disposable PostgreSQL adapter for deterministic expiry.
+        boundary: Real HTTP submission and PostgreSQL providers.
     """
-    client, worker, source, artifacts, app = boundary
-    plan = planned(client)
+    client, *_ = boundary
+    inputs = clip_inputs(client)
     key = uuid4().hex
-    job = submitted(client, plan, key)
-    with psycopg.connect(store.conninfo) as connection:
-        connection.execute(
-            "UPDATE processing.plans SET expires_at=now()-interval '1 second' WHERE id=%s",
-            (plan["planId"],),
-        )
-    assert submitted(client, plan, key)["jobId"] == job["jobId"]
-    assert (
-        client.post(
-            "/api/processing/raster-clips",
-            json={"planId": plan["planId"], "requestId": uuid4().hex},
-            headers=HEADERS,
-        ).status_code
-        == 404
+    job = submitted(client, inputs, key)
+    assert submitted(client, inputs, key)["jobId"] == job["jobId"]
+    changed = {**inputs, "selectedBounds": {**AREA, "west": 0.2}, "requestId": key}
+    response = client.post(
+        "/api/processing/raster-clips", json=changed, headers=HEADERS
     )
-    another = planned(client)
-    conflict = client.post(
-        "/api/processing/raster-clips",
-        json={"planId": another["planId"], "requestId": key},
-        headers=HEADERS,
-    )
-    assert conflict.status_code == 409
+    assert response.status_code == 409
 
 
 def test_previously_created_clip_download_retains_its_content_type(
@@ -621,7 +607,7 @@ def test_previously_created_clip_download_retains_its_content_type(
         store: Disposable database used to model the earlier metadata format.
     """
     client, worker, source, artifacts, app = boundary
-    job = submitted(client, planned(client))
+    job = submitted(client, clip_inputs(client))
     assert asyncio.run(worker.run_once())
     url = f"/api/processing/jobs/{job['jobId']}/result"
     current = client.get(url)
@@ -665,7 +651,6 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
 
     pending = store.submit(
         "owner",
-        None,
         "before-restart",
         PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096),
         "a" * 64,
@@ -714,8 +699,6 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
     spec = prepare_clip_job(
         make_spec(path, ClipArea(kind="bounds", bounds=(0.1, 9.1, 0.9, 9.9)))
     )
-    plan_id = store.reserve_plan("owner", SOURCE)
-    store.finish_plan(plan_id, "owner", spec)
 
     async def scenario():
         """Check two listeners, commit/rollback delivery, and durable claims."""
@@ -746,18 +729,18 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
                 patch.setattr(store, "_transaction", rolled_back)
                 with pytest.raises(RuntimeError, match="rollback admission"):
                     await asyncio.to_thread(
-                        store.submit, "owner", plan_id, "rolled-back", spec
+                        store.submit, "owner", "rolled-back", spec, "fixture-input-hash"
                     )
             assert not await listeners[0].wait(0.05)
             assert await asyncio.to_thread(store.claim) is None
             queued = await asyncio.to_thread(
-                store.submit, "owner", plan_id, "committed", spec
+                store.submit, "owner", "committed", spec, "fixture-input-hash"
             )
             assert all(
                 await asyncio.gather(*(listener.wait(1) for listener in listeners))
             )
             duplicate = await asyncio.to_thread(
-                store.submit, "owner", plan_id, "committed", spec
+                store.submit, "owner", "committed", spec, "fixture-input-hash"
             )
             assert duplicate["id"] == queued["id"]
             claims = await asyncio.gather(
@@ -784,7 +767,7 @@ def test_worker_restart_interrupts_unfinished_jobs(
         status: Unfinished state retained from the stopped worker.
     """
     prepared = PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096)
-    completed = store.submit("owner", None, "completed-request", prepared, "a" * 64)
+    completed = store.submit("owner", "completed-request", prepared, "a" * 64)
     claimed = store.claim()
     assert claimed["id"] == completed["id"]
     cached = {"b" * 64: {"value": "1"}}
@@ -795,9 +778,7 @@ def test_worker_restart_interrupts_unfinished_jobs(
         reusable_results=cached,
     )
     ready = store.get(completed["id"], "owner")
-    pending = store.submit(
-        "other-owner", None, "unfinished-request", prepared, "a" * 64
-    )
+    pending = store.submit("other-owner", "unfinished-request", prepared, "a" * 64)
     if status != "queued":
         pending = store.claim()
         if status == "cancelling":
@@ -829,5 +810,5 @@ def test_worker_restart_interrupts_unfinished_jobs(
     assert store.get(completed["id"], "owner") == ready
     assert store.get_cached_calculation_results(list(cached)) == cached
     assert store.interrupt_unfinished_jobs_on_restart() == 0
-    fresh = store.submit("owner", None, "fresh-request", prepared, "a" * 64)
+    fresh = store.submit("owner", "fresh-request", prepared, "a" * 64)
     assert store.claim()["id"] == fresh["id"]

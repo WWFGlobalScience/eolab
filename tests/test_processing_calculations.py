@@ -19,7 +19,7 @@ from test_processing_jobs import (
     store,
     HEADERS,
     AREA,
-    planned,
+    clip_inputs,
     submitted,
     write_geopackage_layer,
     register_selection,
@@ -27,51 +27,6 @@ from test_processing_jobs import (
 from test_raster_clips import SOURCE
 
 ENDPOINT = "/api/processing/raster-calculations"
-
-
-def test_repeated_calculations_release_reviews_but_preserve_owned_job_recovery(
-    boundary: Any, store: Any
-) -> None:
-    """Interactive clicks exceed five runs without retaining used review slots.
-
-    Args:
-        boundary: Real API and Processing composition.
-        store: PostgreSQL adapter for the native-planning fence assertion.
-    """
-    from eolab_app.routes.processing import COOKIE
-
-    client, _, _, _, app = boundary
-    for _ in range(7):
-        plan = plan_calculation(client)
-        path = f"/api/processing/plans/{plan['planId']}"
-        with TestClient(app, base_url="https://testserver") as stranger:
-            assert stranger.delete(path, headers=HEADERS).status_code == 200
-        key = uuid4().hex
-        job = submit_calculation(client, plan, key)
-        assert client.delete(path).status_code == 403
-        assert client.delete(path, headers=HEADERS).status_code == 200
-        assert client.delete(path, headers=HEADERS).status_code == 200
-        assert submit_calculation(client, plan, key)["jobId"] == job["jobId"]
-        assert (
-            client.post(
-                f"/api/processing/jobs/{job['jobId']}/cancel", headers=HEADERS
-            ).json()["status"]
-            == "cancelled"
-        )
-    owner = hashlib.sha256(client.cookies[COOKIE].encode()).hexdigest()
-    active = store.reserve_plan(owner, request_body())
-    store.queue_native_plan(active, owner)
-    assert store.claim_native_plan(active, owner)
-    assert (
-        client.delete(f"/api/processing/plans/{active}", headers=HEADERS).status_code
-        == 200
-    )
-    with psycopg.connect(store.conninfo) as connection:
-        assert connection.execute(
-            "SELECT planning_until IS NOT NULL FROM processing.plans WHERE id=%s",
-            (active,),
-        ).fetchone() == (True,)
-    store.finish_plan(active, owner, None)
 
 
 def request_body(**selection: Any) -> dict:
@@ -93,29 +48,27 @@ def request_body(**selection: Any) -> dict:
     }
 
 
-def plan_calculation(client: TestClient, **selection: Any) -> dict:
-    """Review calculation intent through the real HTTP boundary.
+def calculation_inputs(client: TestClient, **selection: Any) -> dict:
+    """Build immutable source, area and formula inputs for the calculation endpoint.
 
     Args:
-        client: Owned HTTPS browser session.
-        selection: Explicit calculation area.
+        client: Test client retained for shared fixture call sites.
+        **selection: Area and formula overrides.
 
     Returns:
-        Reviewable calculation plan.
+        Valid calculation request fields without an idempotency key.
     """
-    response = client.post(
-        ENDPOINT + "/plan", json=request_body(**selection), headers=HEADERS
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
+    return request_body(**selection)
 
 
-def submit_calculation(client: TestClient, plan: dict, key: str | None = None) -> dict:
+def submit_calculation(
+    client: TestClient, inputs: dict, key: str | None = None
+) -> dict:
     """Submit or retry reviewed intent with a stable client key.
 
     Args:
         client: Owned browser session.
-        plan: Reviewed immutable plan.
+        inputs: Raster, area and formulas for the queued calculation.
         key: Optional repeated request key.
 
     Returns:
@@ -123,7 +76,7 @@ def submit_calculation(client: TestClient, plan: dict, key: str | None = None) -
     """
     response = client.post(
         ENDPOINT,
-        json={"planId": plan["planId"], "requestId": key or uuid4().hex},
+        json={**inputs, "requestId": key or uuid4().hex},
         headers=HEADERS,
     )
     assert response.status_code == 202, response.text
@@ -143,10 +96,7 @@ def test_calculation_http_lifecycle_mixed_history_and_owned_csv(
         store: Disposable PostgreSQL for deterministic expiry.
     """
     client, worker, source, artifacts, app = boundary
-    plan = plan_calculation(client, wholeRaster=True)
-    assert plan["timing"]["nativeProcessSeconds"] >= 0
-    assert plan["inclusion"] == "cell_center"
-    assert plan["grid"]["width"] == 100
+    plan = calculation_inputs(client, wholeRaster=True)
     key = uuid4().hex
     job = submit_calculation(client, plan, key)
     assert submit_calculation(client, plan, key)["jobId"] == job["jobId"]
@@ -175,7 +125,7 @@ def test_calculation_http_lifecycle_mixed_history_and_owned_csv(
     with TestClient(app, base_url="https://testserver") as reloaded:
         reloaded.cookies.update(client.cookies)
         assert reloaded.get(url).json()["result"] == ready["result"]
-    clip = submitted(client, planned(client))
+    clip = submitted(client, clip_inputs(client))
     jobs = client.get("/api/processing/jobs").json()["jobs"]
     assert {item["operation"] for item in jobs} == {
         "raster.clip.v1",
@@ -217,15 +167,15 @@ def test_batched_plan_metrics_and_execution(boundary: Any, store: Any) -> None:
         store: Disposable PostgreSQL adapter.
     """
     client, worker, *_ = boundary
-    plan = plan_calculation(client, wholeRaster=True, targetChunkPixels=65536)
-    execution = plan["grid"]["execution"]
-    assert execution["targetChunkPixels"] == 65536
-    assert execution["readWindows"] < plan["grid"]["nativeBlocks"]
+    plan = calculation_inputs(client, wholeRaster=True, targetChunkPixels=65536)
     job = submit_calculation(client, plan)
     assert asyncio.run(worker.run_once())
     ready = client.get(f"/api/processing/jobs/{job['jobId']}").json()
     assert ready["status"] == "ready", ready
     metrics = ready["result"]["performance"]
+    execution = ready["grid"]["execution"]
+    assert execution["targetChunkPixels"] == 65536
+    assert execution["readWindows"] < ready["grid"]["nativeBlocks"]
     assert metrics["execution"] == execution
     assert metrics["readWindows"] == execution["readWindows"]
     assert client.get(ready["result"]["provenanceUrl"]).json()["performance"] == metrics
@@ -236,28 +186,27 @@ def test_batched_plan_metrics_and_execution(boundary: Any, store: Any) -> None:
 def test_operation_mismatch_and_language_rejected_before_admission(
     boundary: Any,
 ) -> None:
-    """Clip and calculation commands cannot accidentally consume each other's plans.
+    """Clip and calculation endpoints reject inputs for the other operation.
 
     Args:
         boundary: Real processing HTTP composition.
     """
     client, *_ = boundary
-    clip = planned(client)
-    calc = plan_calculation(client)
+    clip = clip_inputs(client)
+    calc = calculation_inputs(client)
     for endpoint, plan in [(ENDPOINT, clip), ("/api/processing/raster-clips", calc)]:
         response = client.post(
             endpoint,
-            json={"planId": plan["planId"], "requestId": uuid4().hex},
+            json={**plan, "requestId": uuid4().hex},
             headers=HEADERS,
         )
-        assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "operation_mismatch"
+        assert response.status_code == 422
     key = uuid4().hex
     submit_calculation(client, calc, key)
     assert (
         client.post(
             "/api/processing/raster-clips",
-            json={"planId": calc["planId"], "requestId": key},
+            json={**clip, "requestId": key},
             headers=HEADERS,
         ).status_code
         == 409
@@ -272,15 +221,19 @@ def test_operation_mismatch_and_language_rejected_before_admission(
         {**request_body(), "sources": {"a": SOURCE, "b": SOURCE}},
     ]:
         assert (
-            client.post(ENDPOINT + "/plan", json=body, headers=HEADERS).status_code
+            client.post(
+                ENDPOINT, json={**body, "requestId": uuid4().hex}, headers=HEADERS
+            ).status_code
             == 422
         )
-    assert client.post(ENDPOINT + "/plan", json=request_body()).status_code == 403
     assert (
         client.post(
-            ENDPOINT + "/plan", content=b"x" * 20000, headers=HEADERS
+            ENDPOINT, json={**request_body(), "requestId": uuid4().hex}
         ).status_code
-        == 413
+        == 403
+    )
+    assert (
+        client.post(ENDPOINT, content=b"x" * 20000, headers=HEADERS).status_code == 413
     )
 
 
@@ -310,7 +263,7 @@ def test_catalog_selection_calculates(
         if area_expression
         else {}
     )
-    plan = plan_calculation(client, catalogSelection=aoi, **expressions)
+    plan = calculation_inputs(client, catalogSelection=aoi, **expressions)
     job = submit_calculation(client, plan)
     assert asyncio.run(worker.run_once())
     ready = client.get(f"/api/processing/jobs/{job['jobId']}").json()
@@ -332,12 +285,23 @@ def test_worker_restart_invalidates_legacy_queued_jobs(
     """Migrate old schemas and interrupt their queued jobs before execution.
 
     Args:
-        boundary: Actual HTTP, planning and worker composition.
+        boundary: Actual HTTP and worker composition.
         store: Disposable PostgreSQL adapter.
     """
     client, worker, *_ = boundary
-    job = submit_calculation(client, plan_calculation(client))
+    completed = submit_calculation(client, calculation_inputs(client))
+    assert asyncio.run(worker.run_once())
+    completed_job = client.get(f"/api/processing/jobs/{completed['jobId']}").json()
+    assert completed_job["status"] == "ready", completed_job
+    result_url = completed_job["result"]["url"]
+    original_csv = client.get(result_url).content
+    job = submit_calculation(client, calculation_inputs(client))
     with psycopg.connect(store.conninfo) as conn:
+        conn.execute(
+            "CREATE TABLE processing.plans (id text PRIMARY KEY, request jsonb)"
+        )
+        conn.execute("INSERT INTO processing.plans VALUES ('old-plan', '{}'::jsonb)")
+        conn.execute("ALTER TABLE processing.jobs ADD COLUMN plan_id text")
         conn.execute(
             "ALTER TABLE processing.jobs ADD COLUMN job_format_version integer NOT NULL DEFAULT 1"
         )
@@ -357,16 +321,20 @@ def test_worker_restart_invalidates_legacy_queued_jobs(
     assert failed["status"] == "interrupted"
     assert failed["error"]["code"] == "worker_restarted"
     assert failed["sources"] is None
+    assert client.get(result_url).content == original_csv
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
             "SELECT version FROM processing.schema_version ORDER BY version"
-        ).fetchall() == [(n,) for n in range(1, 10)]
+        ).fetchall() == [(n,) for n in range(1, 11)]
         assert (
             conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_schema='processing' "
-                "AND table_name='jobs' AND column_name IN ('minimum_claim_version','job_format_version')"
+                "AND table_name='jobs' AND column_name IN ('minimum_claim_version','job_format_version','plan_id')"
             ).fetchone()
             is None
+        )
+        assert conn.execute("SELECT to_regclass('processing.plans')").fetchone() == (
+            None,
         )
 
 
@@ -378,6 +346,11 @@ def paused_calculation(queue: Any, operation: str, arguments: tuple) -> None:
         operation: Explicit calculation dispatch.
         arguments: Native kernel inputs.
     """
+    if operation == "plan":
+        from eolab_app.processing.raster_aggregate import aggregate_process_target
+
+        aggregate_process_target(queue, operation, arguments)
+        return
     assert operation == "calculate"
     artifact = calculate_raster_statistics_for_area(*arguments)
     directory = arguments[2]
@@ -406,7 +379,7 @@ def test_calculation_cancel_joins_native_child_and_removes_private_results(
         else {}
     )
     job = submit_calculation(
-        client, plan_calculation(client, selectedBounds=AREA, **expressions)
+        client, calculation_inputs(client, selectedBounds=AREA, **expressions)
     )
     monkeypatch.setattr(worker_module, "aggregate_process_target", paused_calculation)
     if stop == "deadline":
@@ -416,9 +389,10 @@ def test_calculation_cancel_joins_native_child_and_removes_private_results(
         """Cancel after the actual native child has produced its private output."""
         task = asyncio.create_task(worker.run_once())
         try:
-            async with asyncio.timeout(10):
-                while not list((artifacts.root / "attempts").glob("*/checkpoint")):
-                    await asyncio.sleep(0.05)
+            if stop != "deadline":
+                async with asyncio.timeout(15):
+                    while not list((artifacts.root / "attempts").glob("*/checkpoint")):
+                        await asyncio.sleep(0.05)
             url = f"/api/processing/jobs/{job['jobId']}"
             if stop == "cancel":
                 assert (

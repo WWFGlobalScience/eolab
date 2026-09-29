@@ -2,7 +2,6 @@
 
 from eolab_app.catalog_selection import CatalogSelection, ResolvedCatalogSelection
 from dataclasses import dataclass, field, fields
-from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -19,7 +18,6 @@ from eolab_app.processing.models import (
     JobProgressResponse,
     JobResponse,
     JobResultResponse,
-    OpaqueId,
     ProcessingLimits,
     ProcessingError,
 )
@@ -477,18 +475,6 @@ class NativeProcessTiming(BaseModel):
     reusedProcess: Annotated[bool, Field(strict=True)]
 
 
-class AggregatePlanTiming(BaseModel):
-    """Monotonic server durations within one successful planning request."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    reservationSeconds: StageSeconds
-    queueSeconds: StageSeconds = 0
-    preparationSeconds: StageSeconds
-    nativeProcessSeconds: StageSeconds
-    finalizationSeconds: StageSeconds
-    process: NativeProcessTiming | None = None
-
-
 class CalculationPreparation(BaseModel):
     """Worker preparation duration and cache outcome, retained on the job after completion."""
 
@@ -538,24 +524,6 @@ class AggregateJobResponse(JobResponse):
     preparation: CalculationPreparation | None = None
     progress: AggregateProgress
     result: AggregateResultResponse | None
-
-
-class AggregatePlanResponse(BaseModel):
-    """Metadata-only review of the immutable source/area/expression intent."""
-
-    planId: OpaqueId
-    operation: Literal["raster.aggregate.v1"]
-    sources: dict[str, CatalogRasterRequest]
-    calculations: tuple[NamedCalculation, ...]
-    area: dict[str, object]
-    grid: AggregateGrid
-    expiresAt: datetime
-    resolution: Literal["native"] = "native"
-    valueDomain: Literal["stored"] = "stored"
-    inclusion: Literal["cell_center", "per_function"] = "cell_center"
-    limits: dict[str, int | float]
-    timing: AggregatePlanTiming | None = None
-    cacheHit: bool = False
 
 
 @dataclass(frozen=True)

@@ -22,7 +22,7 @@ from eolab_app.execution.bounded_process import (
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.clip_models import (
     ClipArea,
-    ClipPlanRequest,
+    ClipInputs,
     ClipSpec,
     RasterClipLimits,
 )
@@ -124,7 +124,7 @@ def test_plan_rejects_implicit_whole_arbitrary_sources_and_ambiguous_area(
         extra: Invalid or ambiguous request fields.
     """
     with pytest.raises(ValidationError):
-        ClipPlanRequest(**SOURCE, **extra)
+        ClipInputs(**SOURCE, **extra)
 
 
 def test_clip_preserves_native_grid_values_zero_metadata_and_cog(

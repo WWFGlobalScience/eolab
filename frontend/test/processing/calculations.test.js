@@ -81,22 +81,16 @@ test("a lost response after a capacity retry preserves the original recoverable 
 function fixture(overrides = {}, data = new Map()) {
     const timers = new Map(); let serial = 0; let id = 0;
     const clock = { setTimeout(fn,delay) { timers.set(++serial,{fn,delay}); return serial; }, clearTimeout(key) { timers.delete(key); } };
-    const requests = []; const server = new Map(); const plans = new Map();
+    const requests = []; const server = new Map();
     const storage = new CalculationSessionStorage({ getItem: key => data.get(key), setItem: (key,value) => data.set(key,value), removeItem: key => data.delete(key) });
     const api = {
         listJobs: async () => [...server.values()], getJob: async id => server.get(id),
         validateCalculation: async rows => { requests.push(["validate",rows]); return {valid:true}; },
-        discardPlan: async id => { requests.push(["discard",id]); },
-        planCalculation: async intent => {
-            requests.push(["plan", intent]); const planId = String(++id).padStart(32,"0");
-            plans.set(planId,intent);
-            return {planId, grid, operation:"raster.aggregate.v1", expiresAt:"2099-01-01T00:00:00Z"};
-        },
         submitCalculation: async submission => {
             requests.push(["submit",submission]);
-            const intent = submission.planId ? plans.get(submission.planId) ?? {source,area:box(77),calculations:[{label:"Mean",expression:"mean(a)"}]} : submission;
+            const intent = submission;
             const existing=[...server.values()].find(job=>job.requestId===submission.requestId); if(existing)return existing;
-            const jobId = submission.planId ?? String(++id).padStart(32,"0");
+            const jobId = String(++id).padStart(32,"0");
             const job = {jobId,requestId:submission.requestId,operation:"raster.aggregate.v1",status:"running", sources:{a:intent.source},calculations:intent.calculations,
                 grid,area:{kind:"bounds",bounds:[intent.area.selectedBounds?.west ?? 0,22,(intent.area.selectedBounds?.west ?? 0)+1,23]},progress:{phase:"calculating",completedBlocks:0,totalBlocks:4},result:null};
             server.set(jobId,job); return job;
@@ -126,7 +120,7 @@ function fixture(overrides = {}, data = new Map()) {
         await jobs.refresh(); await flush();
     };
     const run = async automatic => { execute(intent(),automatic); await flush(); };
-    return {controller,api,jobs,storage,view,requests,server,plans,tick,finish,run,activity,data,options,click,intent,snapshots,execute};
+    return {controller,api,jobs,storage,view,requests,server,tick,finish,run,activity,data,options,click,intent,snapshots,execute};
 }
 
 test("execution snapshots remain busy through cancellation and replacement admission", async () => {
@@ -371,24 +365,6 @@ test("calculation API serializes identities, explicit scopes, and useful validat
     assert.deepEqual(JSON.parse(calls[1][1].body),{alias:"a",calculations:[{label:"N",expression:"sum(b)"}]});
     assert.equal(calls[1][1].headers["X-EOLab-Processing"],"1");
 });
-
-
-
-
-
-test("a used review is released after acceptance; failed release is recoverable without resubmitting", async () => {
-    const h=fixture({discardPlan:async()=>{throw new Error("Connection lost");}});
-    h.storage.write({intent:h.intent(),context:{automatic:false},cancelRequested:false,jobId:null,pending:{planId:"a".repeat(32),requestId:"r".repeat(32)}});
-    h.controller.destroy();
-    h.controller=new CalculationExecutor(h.options);await h.controller.start();await flush();assert.equal(h.controller.snapshot.recoverable,true);
-    assert.ok(h.storage.read().releasePlanId);assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
-    h.api.discardPlan=async()=>({discarded:true});void h.controller.retry();await flush();
-    assert.equal(h.storage.read().releasePlanId,null);
-    assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
-});
-
-
-
 
 
 

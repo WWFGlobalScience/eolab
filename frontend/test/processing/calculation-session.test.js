@@ -6,7 +6,7 @@ import { CalculationSessionStorage } from "../../src/processing/calculation-sess
 function record() {
     return {intent:{source:{collectionId:"catalog",itemId:"raster",label:"Raster"},
         area:{kind:"wholeRaster"},calculations:[{label:"Sum",expression:"sum(a)"}]},
-    jobId:null,pending:{planId:"a".repeat(32),requestId:"request-original-1234"},
+    jobId:null,pending:{requestId:"request-original-1234"},
     cancelRequested:false,context:{automatic:true}};
 }
 
@@ -19,7 +19,7 @@ function storage(data = new Map()) {
 test("independent records preserve each request key and clearing one cannot clear its peers",()=>{
     const data=new Map(), root=new CalculationSessionStorage(storage(data));
     for(const name of ["summary","raster-series:0","raster-series:49"]) {
-        root.forClient(name).write({...record(),pending:{planId:"a".repeat(32),requestId:"request-original-"+name.replace(":","-")}});
+        root.forClient(name).write({...record(),pending:{requestId:"request-original-"+name.replace(":","-")}});
     }
     root.forClient("raster-series:0").clear();
     assert.deepEqual(root.savedClientNames(),["summary","raster-series:49"]);

@@ -16,7 +16,12 @@ from eolab_app.execution.bounded_process import (
 )
 from eolab_app.execution.reusable_process import ReusableProcess, run_process
 from eolab_app.processing.models import Artifact, ProcessingError
-from eolab_app.processing.clip_models import ClipSpec, RasterClipLimits
+from eolab_app.processing.clip_models import (
+    ClipArea,
+    ClipSpec,
+    UnpreparedClip,
+    RasterClipLimits,
+)
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateSpec,
@@ -34,7 +39,8 @@ from eolab_app.processing.calculation_cache import (
     prepare_calculation_values_for_cache,
     restore_cached_calculation_plan,
 )
-from eolab_app.processing.calculation_preparation import prepare_aggregate_job
+from eolab_app.processing.job_preparation import prepare_aggregate_job, prepare_clip_job
+from eolab_app.raster.models import CatalogRasterRequest
 from eolab_app.bounded_vector import summary_process, READ_SECONDS
 from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import JobArtifactStore, JobStore, JobWakeup
@@ -192,6 +198,85 @@ class ProcessingWorker:
             updated["updated_at"] = row["updated_at"]
             row.update(updated)
 
+    async def _prepare_clip(self, row: dict[str, Any]) -> None:
+        """Measure a queued clip and reserve its output storage on the same job.
+
+        Args:
+            row: Claimed job, updated with the grid and selected area after preparation.
+
+        Raises:
+            ProcessingError: If the source, area, storage or attempt is unavailable.
+            TimeoutError: If source inspection exceeds its time limit.
+        """
+        started = time.perf_counter()
+        request = UnpreparedClip.model_validate(row["spec"]).request
+        async with asyncio.timeout(self.limits.plan_timeout_seconds):
+            if not await asyncio.to_thread(
+                self.jobs.heartbeat,
+                row["id"],
+                row["attempt_id"],
+                {"phase": "preparing"},
+            ):
+                raise ProcessingError(
+                    "job_cancelled", "Clip stopped before preparation.", 409
+                )
+            source = CatalogRasterRequest(
+                collectionId=request.collection_id, itemId=request.item_id
+            )
+            authorized = await self.authorizer.authorize(source)
+            if request.selectedBounds:
+                area = ClipArea(
+                    kind="bounds", bounds=request.selectedBounds.canonical_tuple()
+                )
+            else:
+                if self.areas is None:
+                    raise ProcessingError(
+                        "selection_unavailable",
+                        "Vector selection reader is unavailable.",
+                        409,
+                    )
+                resolved = await self.areas.resolve_for_sampling(
+                    request.catalogSelection
+                )
+                measured = await run_process(
+                    summary_process, (resolved,), READ_SECONDS, self.native
+                )
+                success, summary = measured.value
+                if not success:
+                    raise ProcessingError("selection_unavailable", summary, 409)
+                area = ClipArea(
+                    kind="catalogSelection",
+                    bounds=summary["bbox"],
+                    catalogSelection=request.catalogSelection,
+                    resolved=resolved,
+                )
+            outcome = await run_process(
+                clip_process_target,
+                ("plan", (authorized.source_path, area, self.limits)),
+                self.limits.plan_timeout_seconds,
+                self.native,
+            )
+            status, grid = outcome.value
+            if status != "ok":
+                raise ProcessingError(*grid)
+            if request.catalogSelection:
+                await self.areas.resolve_for_sampling(request.catalogSelection)
+            spec = ClipSpec(
+                source=source,
+                sourceSignature=tuple(authorized.source_signature.to_catalog()),
+                area=area,
+                grid=grid,
+            )
+            updated = await asyncio.to_thread(
+                self.jobs.save_prepared_job,
+                row["id"],
+                row["attempt_id"],
+                prepare_clip_job(spec),
+                {"seconds": time.perf_counter() - started},
+            )
+            updated["updated_at"] = row["updated_at"]
+            row.update(updated)
+
     async def _execute(self, row: dict[str, Any]) -> Artifact:
         """Authorize the inputs, reuse or calculate values, and publish result files.
 
@@ -208,6 +293,8 @@ class ProcessingWorker:
         operation = row["spec"]["operation"]
         if operation == "raster.aggregate.v1" and "request" in row["spec"]:
             await self._prepare_calculation(row)
+        elif operation == "raster.clip.v1" and "request" in row["spec"]:
+            await self._prepare_clip(row)
         if operation == "raster.clip.v1":
             spec = ClipSpec.model_validate(row["spec"])
             source = spec.source
@@ -217,8 +304,7 @@ class ProcessingWorker:
             required_disk_bytes = estimate_calculation_disk_bytes(
                 spec, self.aggregate_limits
             )
-            # Queued jobs survive deployments and retain their original disk
-            # reservation. Compare it with the files this worker will create.
+            # Keep execution within the reservation established during preparation.
             if row["reserved_bytes"] < required_disk_bytes:
                 raise ProcessingError(
                     "insufficient_disk_reservation",

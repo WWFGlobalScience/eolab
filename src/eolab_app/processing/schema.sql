@@ -6,27 +6,10 @@ CREATE TABLE IF NOT EXISTS processing.schema_version (
 -- Early clip-only installations constrained this registry to version 1.
 ALTER TABLE processing.schema_version DROP CONSTRAINT IF EXISTS schema_version_version_check;
 INSERT INTO processing.schema_version VALUES (1) ON CONFLICT DO NOTHING;
-CREATE TABLE IF NOT EXISTS processing.plans (
-    id text PRIMARY KEY,
-    owner text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    expires_at timestamptz NOT NULL,
-    planning_until timestamptz,
-    request jsonb NOT NULL,
-    spec jsonb
-);
-CREATE INDEX IF NOT EXISTS plans_owner ON processing.plans(owner, expires_at);
-ALTER TABLE processing.plans ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'ready';
-ALTER TABLE processing.plans ADD COLUMN IF NOT EXISTS result jsonb;
-ALTER TABLE processing.plans ADD COLUMN IF NOT EXISTS error jsonb;
-ALTER TABLE processing.plans ADD COLUMN IF NOT EXISTS queued_at timestamptz;
-ALTER TABLE processing.plans ADD COLUMN IF NOT EXISTS request_deadline timestamptz;
-CREATE INDEX IF NOT EXISTS plans_waiting ON processing.plans(state, queued_at);
 CREATE TABLE IF NOT EXISTS processing.jobs (
     id text PRIMARY KEY,
     owner text NOT NULL,
     request_key text NOT NULL,
-    plan_id text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     expires_at timestamptz NOT NULL,
@@ -97,20 +80,6 @@ CREATE TABLE IF NOT EXISTS processing.inputs (
 CREATE INDEX IF NOT EXISTS inputs_expiry ON processing.inputs(expires_at);
 INSERT INTO processing.schema_version VALUES (5) ON CONFLICT DO NOTHING;
 
--- The existing owner-scoped SSE connection also hints at plan state changes.
--- Results stay in the database and are fetched through authorized HTTP reads.
-CREATE OR REPLACE FUNCTION processing.notify_plan_change() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    IF NEW.state IS DISTINCT FROM OLD.state THEN
-        PERFORM pg_notify('eolab_processing_job_changes', NEW.owner);
-    END IF;
-    RETURN NEW;
-END;
-$$;
-DROP TRIGGER IF EXISTS processing_plan_change ON processing.plans;
-CREATE TRIGGER processing_plan_change AFTER UPDATE OF state ON processing.plans
-FOR EACH ROW EXECUTE FUNCTION processing.notify_plan_change();
 INSERT INTO processing.schema_version VALUES (6) ON CONFLICT DO NOTHING;
 
 -- Job input storage and session turns are separate from native execution limits.
@@ -142,7 +111,6 @@ CREATE INDEX IF NOT EXISTS jobs_owner_started ON processing.jobs(owner, started_
 INSERT INTO processing.schema_version VALUES (7) ON CONFLICT DO NOTHING;
 
 -- Direct calculation jobs carry input identity without an external plan record.
-ALTER TABLE processing.jobs ALTER COLUMN plan_id DROP NOT NULL;
 ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS request_hash text;
 ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS preparation jsonb;
 INSERT INTO processing.schema_version VALUES (8) ON CONFLICT DO NOTHING;
@@ -153,3 +121,9 @@ DROP TRIGGER IF EXISTS processing_claim_protocol ON processing.jobs;
 DROP FUNCTION IF EXISTS processing.require_claim_protocol();
 ALTER TABLE processing.jobs DROP COLUMN IF EXISTS minimum_claim_version;
 INSERT INTO processing.schema_version VALUES (9) ON CONFLICT DO NOTHING;
+
+-- Preparation belongs to jobs; retire the independent plan queue and records.
+DROP TABLE IF EXISTS processing.plans;
+DROP FUNCTION IF EXISTS processing.notify_plan_change();
+ALTER TABLE processing.jobs DROP COLUMN IF EXISTS plan_id;
+INSERT INTO processing.schema_version VALUES (10) ON CONFLICT DO NOTHING;

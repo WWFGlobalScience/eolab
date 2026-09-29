@@ -3,7 +3,6 @@
 from eolab_app.catalog_selection import CatalogSelection, ResolvedCatalogSelection
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
-from datetime import datetime
 
 from pydantic import (
     BaseModel,
@@ -17,11 +16,9 @@ from pydantic import (
 from eolab_app.processing.models import (
     Artifact,
     JobListResponse,
-    JobPlanLimits,
     JobProgressResponse,
     JobResponse,
     JobResultResponse,
-    OpaqueId,
     ProcessingLimits,
 )
 from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
@@ -29,14 +26,14 @@ from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
 OPERATION_VERSION = "raster.clip.v1"
 
 
-class ClipPlanRequest(CatalogRasterRequest):
+class ClipInputs(CatalogRasterRequest):
     """A catalog raster and exactly one explicit, lifecycle-valid clip area."""
 
     selectedBounds: Wgs84Bounds | None = None
     catalogSelection: CatalogSelection | None = None
 
     @model_validator(mode="after")
-    def require_explicit_area(self) -> "ClipPlanRequest":
+    def require_explicit_area(self) -> "ClipInputs":
         """Require one area; omission must never become a whole-raster export.
 
         Returns:
@@ -48,6 +45,22 @@ class ClipPlanRequest(CatalogRasterRequest):
         if (self.selectedBounds is None) == (self.catalogSelection is None):
             raise ValueError("Choose exactly one histogram box or catalog selection")
         return self
+
+
+class ClipJobRequest(ClipInputs):
+    """Raster and area to clip, with a stable key for retrying one submission."""
+
+    requestId: Annotated[
+        str, Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    ]
+
+
+class UnpreparedClip(BaseModel):
+    """Saved clip inputs awaiting metadata inspection by the job worker."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    operation: Literal["raster.clip.v1"] = OPERATION_VERSION
+    request: ClipInputs
 
 
 class ClipArea(BaseModel):
@@ -146,23 +159,7 @@ class ClipAreaSummary(BaseModel):
     """Browser-safe area description without copying geometry into every poll."""
 
     kind: Literal["bounds", "catalogSelection", "aoi"]
-    bounds: tuple[float, float, float, float]
-
-
-class ClipPlanResponse(BaseModel):
-    """Versioned, reviewable native-grid plan returned before job admission."""
-
-    planId: OpaqueId
-    queueSeconds: float = Field(default=0, ge=0)
-    operation: Literal["raster.clip.v1"]
-    source: CatalogRasterRequest
-    area: ClipAreaSummary
-    grid: ClipGrid
-    expiresAt: datetime
-    format: Literal["COG"]
-    resolution: Literal["native"]
-    allTouched: Literal[True]
-    limits: JobPlanLimits
+    bounds: tuple[float, float, float, float] | None
 
 
 class ClipResultResponse(JobResultResponse):
@@ -175,7 +172,15 @@ class ClipProgressResponse(JobProgressResponse):
     """Add bounded native block progress and supported clip execution phases."""
 
     phase: (
-        Literal["clipping", "creating_cog", "validating", "checksumming", "ready"]
+        Literal[
+            "preparing",
+            "calculating",
+            "clipping",
+            "creating_cog",
+            "validating",
+            "checksumming",
+            "ready",
+        ]
         | None
     ) = None
     completedBlocks: int | None = None
@@ -191,6 +196,7 @@ class ClipJobResponse(JobResponse):
     area: ClipAreaSummary | None
     progress: ClipProgressResponse
     result: ClipResultResponse | None
+    preparation: dict[str, float] | None = None
 
 
 # The listing reuses the common envelope; adding a supported operation can extend

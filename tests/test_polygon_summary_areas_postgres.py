@@ -1,10 +1,11 @@
 """Polygon summary inputs through real HTTP routes, workers and PostgreSQL."""
 
 import asyncio
+from uuid import uuid4
 from typing import Any
 from fastapi.testclient import TestClient
 from test_processing_jobs import boundary, store, HEADERS
-from test_processing_calculations import plan_calculation, submit_calculation
+from test_processing_calculations import calculation_inputs, submit_calculation
 from test_polygon_summary_areas import rectangle
 
 
@@ -25,14 +26,14 @@ def test_polygon_upload_ownership_release_and_cached_reuse(
     uploaded = client.post(endpoint, json=body, headers=HEADERS)
     assert uploaded.status_code == 200, uploaded.text
     reference = uploaded.json()["polygonArea"]
-    plan = plan_calculation(client, polygonArea=reference)
+    plan = calculation_inputs(client, polygonArea=reference)
     first = submit_calculation(client, plan)
     with TestClient(app, base_url="https://testserver") as other:
         from test_processing_calculations import ENDPOINT, request_body
 
         response = other.post(
-            ENDPOINT + "/plan",
-            json=request_body(polygonArea=reference),
+            ENDPOINT,
+            json={**request_body(polygonArea=reference), "requestId": uuid4().hex},
             headers=HEADERS,
         )
         assert response.status_code == 409
@@ -56,12 +57,12 @@ def test_polygon_upload_ownership_release_and_cached_reuse(
     with TestClient(app, base_url="https://testserver") as other:
         own = other.post(endpoint, json=body, headers=HEADERS).json()["polygonArea"]
         assert own["id"] != reference["id"] and own["sha256"] == reference["sha256"]
-        plan = plan_calculation(other, polygonArea=own)
-        assert plan["cacheHit"] is True
+        plan = calculation_inputs(other, polygonArea=own)
         second = submit_calculation(other, plan)
         assert asyncio.run(worker.run_once())
         result = other.get(f"/api/processing/jobs/{second['jobId']}").json()
         assert result["status"] == "ready", result
+        assert result["preparation"]["cacheHit"] is True
         assert result["result"]["rows"] == finished["result"]["rows"]
         assert other.get(finished["result"]["url"]).status_code == 404
 
@@ -89,7 +90,9 @@ def test_polygon_input_expiration_capacity_and_changed_geometry(
     invalid = {**first, "sha256": changed["sha256"]}
     assert (
         client.post(
-            ENDPOINT + "/plan", headers=HEADERS, json=request_body(polygonArea=invalid)
+            ENDPOINT,
+            headers=HEADERS,
+            json={**request_body(polygonArea=invalid), "requestId": uuid4().hex},
         ).status_code
         == 409
     )
@@ -100,7 +103,9 @@ def test_polygon_input_expiration_capacity_and_changed_geometry(
         )
     assert (
         client.post(
-            ENDPOINT + "/plan", headers=HEADERS, json=request_body(polygonArea=first)
+            ENDPOINT,
+            headers=HEADERS,
+            json={**request_body(polygonArea=first), "requestId": uuid4().hex},
         ).status_code
         == 409
     )
@@ -153,10 +158,7 @@ def test_polygon_upload_has_its_own_body_limit(boundary: Any, store: Any) -> Non
         ).status_code
         == 200
     )
-    assert (
-        client.post(ENDPOINT + "/plan", headers=headers, content=body).status_code
-        == 413
-    )
+    assert client.post(ENDPOINT, headers=headers, content=body).status_code == 413
     assert (
         client.post(
             "/api/processing/polygon-areas",

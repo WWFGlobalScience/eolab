@@ -24,7 +24,7 @@ export function describeClipArea(area) {
     if (!area) return "No sampling area selected. Choose a box or catalog vector.";
     if (area.kind === "wholeRaster") return "Whole raster";
     if (area.kind === "polygonArea") return "Shared layer polygons";
-    if (area.kind === "catalogSelection" && !Array.isArray(area.bounds)) return "Catalog vector selection; review will show its geographic bounds.";
+    if (area.kind === "catalogSelection" && !Array.isArray(area.bounds)) return "Catalog vector selection; geographic bounds appear after preparation.";
     const values = area.selectedBounds
         ? [area.selectedBounds.west, area.selectedBounds.south, area.selectedBounds.east, area.selectedBounds.north]
         : area.bounds;
@@ -35,10 +35,11 @@ export function describeClipArea(area) {
 /** Describe measured blocks or a named phase, without invented percentages. @param {Object} job Server job snapshot. @return {string} User-facing progress. */
 export function describeJobProgress(job) {
     if (job.status !== "running") return ({ queued: "Queued", cancelling: "Cancelling…", ready: "Ready",
-        failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted — review a new job to retry",
+        failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted — submit a new job to retry",
         expired: "Expired — run again to download", deleted: "Deleted" })[job.status] ?? job.status;
     const progress = job.progress;
-    if (progress.phase === "preparing") return "Preparing calculation…";
+    if (progress.phase === "preparing") return job.operation === "raster.clip.v1" ? "Preparing clip…" : "Preparing calculation…";
+    if (progress.phase === "calculating" && job.operation === "raster.clip.v1") return "Starting clip…";
     if (progress.phase === "calculating") return `Calculating · ${progress.completedBlocks ?? 0} of ${progress.totalBlocks ?? "?"} native source blocks`;
     if (progress.phase === "preparing_selected_polygons") return "Reading and projecting selected polygons…";
     if (progress.phase === "preparing_polygon_mask") return "Creating the polygon mask…";

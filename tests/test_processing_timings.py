@@ -17,63 +17,15 @@ from eolab_app.processing.aggregate_models import (
     AggregateExecutionTiming,
     AggregateJobResponse,
     AggregatePlanRequest,
-    AggregatePlanResponse,
-    AggregatePlanTiming,
+    UnpreparedCalculation,
+    CalculationPreparation,
 )
 from eolab_app.processing.artifacts import LocalJobArtifacts
 from eolab_app.processing.clip_models import RasterClipLimits
-from eolab_app.processing.service import ProcessingService, public_job
+from eolab_app.processing.service import public_job
 from eolab_app.processing.worker import ProcessingWorker
 from eolab_app.raster.source_identity import RasterSourceIdentity
 from test_raster_clips import SOURCE, write_source
-
-
-def configure_planning_store(store: Mock) -> None:
-    """Provide in-memory plan progress for tests measuring real native processes.
-
-    Args:
-        store: Mock storage; PostgreSQL queue semantics are tested separately.
-    """
-    records = {}
-
-    def enqueue(identifier: str, owner: str, request: dict[str, Any]) -> bool:
-        """Accept a fresh timing-fixture request and initialize its progress.
-
-        Args:
-            identifier: Opaque plan ID.
-            owner: Session hash.
-            request: Validated inputs.
-
-        Returns:
-            True for this new request.
-        """
-        records[identifier] = {"state": "checking", "result": None, "error": None}
-        return True
-
-    def settle(
-        identifier: str,
-        owner: str,
-        result: dict[str, Any] | None,
-        error: dict[str, Any] | None,
-    ) -> None:
-        """Publish the timing test's completed result or failure.
-
-        Args:
-            identifier: Opaque plan ID.
-            owner: Session hash.
-            result: Completed public plan.
-            error: Optional sanitized failure.
-        """
-        records[identifier] = {
-            "state": "failed" if error else "ready",
-            "result": result,
-            "error": error,
-        }
-
-    store.enqueue_plan.side_effect = enqueue
-    store.get_planning.side_effect = lambda identifier, owner: records[identifier]
-    store.claim_native_plan.return_value = True
-    store.settle_planning.side_effect = settle
 
 
 def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
@@ -88,33 +40,24 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
     )
     authorizer = SimpleNamespace(authorize=AsyncMock(return_value=authorized))
     store = Mock()
-    configure_planning_store(store)
     store.get_cached_calculation_results.return_value = {}
     identifier = "a" * 32
-    store.reserve_plan.return_value = identifier
-    store.finish_plan.return_value = {
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5)
-    }
     limits = RasterClipLimits(free_space_floor=0)
     artifacts = LocalJobArtifacts(tmp_path / "artifacts")
     artifacts.initialize()
-    service = ProcessingService(authorizer, None, store, artifacts, limits)
     request = AggregatePlanRequest(
         sources={"a": SOURCE},
         wholeRaster=True,
         calculations=[{"label": "Mean", "expression": "mean(a)"}],
     )
-    plan = AggregatePlanResponse.model_validate(
-        asyncio.run(service.plan_raster_calculation("owner", request))
-    )
-    assert plan.timing is not None and plan.timing.nativeProcessSeconds > 0
-    prepared = store.finish_plan.call_args.args[2]
     claimed = datetime.now(timezone.utc)
     row = {
         "id": identifier,
         "attempt_id": "b" * 32,
-        "spec": prepared.specification,
-        "reserved_bytes": prepared.reserved_bytes,
+        "spec": UnpreparedCalculation(request=request).model_dump(
+            mode="json", by_alias=True
+        ),
+        "reserved_bytes": 0,
         "created_at": claimed - timedelta(seconds=2),
         "updated_at": claimed,
         "expires_at": claimed + timedelta(hours=1),
@@ -123,6 +66,7 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
         "progress": {},
         "error": None,
     }
+    configure_prepared_job_store(store, row)
     store.claim.return_value = row
     store.heartbeat.return_value = True
     store.finish.return_value = True
@@ -165,12 +109,7 @@ def test_stage_contract_rejects_invalid_durations(bad: float) -> None:
         bad: Invalid duration under test.
     """
     with pytest.raises(ValidationError):
-        AggregatePlanTiming(
-            reservationSeconds=bad,
-            preparationSeconds=0,
-            nativeProcessSeconds=0,
-            finalizationSeconds=0,
-        )
+        CalculationPreparation(seconds=bad, cacheHit=False)
     with pytest.raises(ValidationError):
         AggregateExecutionTiming(
             queueSeconds=bad,
@@ -178,3 +117,36 @@ def test_stage_contract_rejects_invalid_durations(bad: float) -> None:
             nativeProcessSeconds=0,
             publicationSeconds=0,
         )
+
+
+def configure_prepared_job_store(store: Mock, row: dict[str, Any]) -> None:
+    """Record worker preparation on the claimed fixture job.
+
+    Args:
+        store: Isolated lifecycle port; SQL fencing is tested with PostgreSQL.
+        row: Mutable job that will receive prepared inputs and timing metadata.
+    """
+
+    def save(
+        identifier: str, attempt: str, prepared: Any, details: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return the fields a successful storage reservation publishes.
+
+        Args:
+            identifier: Claimed job ID.
+            attempt: Current attempt ID.
+            prepared: Validated specification, summary and disk reservation.
+            details: Public preparation timings.
+
+        Returns:
+            Updated job row for execution.
+        """
+        return {
+            **row,
+            "spec": prepared.specification,
+            "summary": prepared.summary,
+            "reserved_bytes": prepared.reserved_bytes,
+            "preparation": details,
+        }
+
+    store.save_prepared_job.side_effect = save

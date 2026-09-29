@@ -4,15 +4,6 @@ import { normalizeCalculationArea, validatePolygonAreaReference } from "./calcul
 import { chunkPixels } from "./calculation-session.js";
 import { ProcessingDiagnostics } from "./diagnostics.js";
 
-/** Browser-only observation of one planning attempt, not persisted on the server.
- * SSE hints can concern any owned plan or job, including the stream's initial hint.
- * @typedef {Object} PlanningObservation
- * @property {number} sseHints Number of hints received while observing this plan.
- * @property {number} sseRefreshes Status reads prompted by an SSE hint.
- * @property {number} timerRefreshes Status reads prompted by the two-second fallback.
- * @property {"submission"|"recovery"|"sse"|"timer"} readyResponse What prompted the response that first reported ready.
- */
-
 /** Browser-safe HTTP failure; transport failures remain ordinary errors. */
 export class ProcessingRequestError extends Error {
     /** @param {string} message User-facing detail. @param {number} status HTTP status.
@@ -27,10 +18,10 @@ export class ProcessingRequestError extends Error {
     }
     /** Whether capacity, rather than the calculation's inputs, prevented admission.
      * Storage exhaustion and unknown errors require attention instead of automatic retry.
-     * @return {boolean} True only for a classified temporary queue/plan limit.
+     * @return {boolean} True only for a classified temporary job queue limit.
      */
     get isCapacityRejection() {
-        return this.status === 429 && ["plan_queue_full", "plan_record_capacity", "owner_queue_full", "queue_full"].includes(this.code);
+        return this.status === 429 && ["owner_queue_full", "queue_full"].includes(this.code);
     }
 }
 
@@ -134,7 +125,7 @@ function validateJob(job) {
     if (job.preparation != null) {
         validateStages(job.preparation, ["seconds"]);
         validateProcessTiming(job.preparation.process);
-        if (typeof job.preparation.cacheHit !== "boolean") throw new Error("Processing returned invalid preparation cache metadata.");
+        if (job.operation === "raster.aggregate.v1" && typeof job.preparation.cacheHit !== "boolean") throw new Error("Processing returned invalid preparation cache metadata.");
     }
     if (job.result) {
         processingDownloadUrl(job.result.url, job.jobId, "result");
@@ -257,151 +248,27 @@ export class ProcessingApiClient {
         return response.jobs.map(validateJob);
     }
 
-    /**
-     * Review a catalog raster and explicit immutable area, without starting work.
-     * @param {{collectionId:string,itemId:string}} source Catalog identity.
-     * @param {Object} area Selected rectangle or immutable catalog descriptor.
-     * @param {AbortSignal} signal Cancels superseded planning.
-     * @param {function(string):void} [onProgress] Receives checking/queued/planning status.
-     * @return {Promise<Object>} Native-grid estimate and expiring plan.
+    /** Submit complete clip inputs with a stable retry key.
+     * @param {Object} submission Captured catalog source, explicit area and requestId.
+     * @return {Promise<Object>} Owned queued job; the worker supplies its grid later.
+     * @throws {Error} If inputs, admission or the returned job are invalid.
      */
-    async planClip(source, area, signal, onProgress) {
-        const selected = normalizeRasterSamplingArea(area);
-        if (selected.kind === "wholeRaster") throw new Error("Select a box or catalog vector first.");
-        if (![source.collectionId, source.itemId].every(value => typeof value === "string" && value.length > 0)) {
-            throw new TypeError("A Catalog raster is required.");
-        }
-        await this.ensureSession();
-        const plan = await this.preparePlan("raster-clips", {
-            collectionId: source.collectionId, itemId: source.itemId,
-            ...(selected.kind === "selectedArea"
-                ? { selectedBounds: selected.selectedBounds }
-                : { catalogSelection: selected.catalogSelection }),
-        }, signal, onProgress);
-        opaqueId(plan.planId);
-        validateGrid(plan.grid);
-        if (!Number.isFinite(Date.parse(plan.expiresAt)) || !Number.isSafeInteger(plan.grid.estimatedRawBytes) ||
-            plan.grid.estimatedRawBytes < 1 || !["bounds", "catalogSelection", "aoi"].includes(plan.area?.kind) ||
-            !Array.isArray(plan.area.bounds) || plan.area.bounds.length !== 4 || !plan.area.bounds.every(Number.isFinite)) {
-            throw new Error("Processing returned an invalid clip estimate.");
-        }
-        return plan;
-    }
-
-    /** Submit or safely retry one reviewed plan. @param {Object} submission Stable planId/requestId. @return {Promise<Object>} Owned job. */
     async submitClip(submission) {
+        const {source, requestId} = submission;
+        const selected = normalizeRasterSamplingArea(submission.area);
+        if (!["selectedArea", "catalogSelection"].includes(selected.kind)) throw new Error("Select a box or catalog vector first.");
         await this.ensureSession();
-        return validateJob(await this.request("/raster-clips", "POST", submission));
+        return validateJob(await this.request("/raster-clips", "POST", {
+            collectionId: source.collectionId, itemId: source.itemId, requestId,
+            ...(selected.kind === "selectedArea" ? {selectedBounds: selected.selectedBounds}
+                : {catalogSelection: selected.catalogSelection}),
+        }));
     }
 
     /** Validate expressions without opening a raster. @param {Object[]} calculations Named expressions. @param {AbortSignal} signal Superseded edit. @return {Promise<Object>} Validation. */
     async validateCalculation(calculations, signal) {
         await this.ensureSession();
         return this.request("/raster-calculations/validate", "POST", { alias: "a", calculations }, signal);
-    }
-
-    /** Prepare an estimate, automatically waiting for space in the planning queue.
-     * A request whose server queue deadline expires is released before a fresh
-     * attempt. Actual calculation/planning errors are reported without retry.
-     * @param {"raster-clips"|"raster-calculations"} operation Planning endpoint.
-     * @param {Object} body Validated source, area and expressions.
-     * @param {AbortSignal|undefined} signal Cancels waiting and admitted planning.
-     * @param {function(string):void|undefined} onProgress Planning or capacity-wait status.
-     * @return {Promise<Object>} Completed estimate, ready for explicit submission.
-     * @throws {Error} If planning fails for a non-capacity reason or the caller cancels.
-     */
-    async preparePlan(operation, body, signal, onProgress) {
-        for (let attempt = 0; ; attempt++) {
-            try { return await this.submitAndObservePlan(operation, body, signal, onProgress); }
-            catch (error) {
-                if (!(error instanceof ProcessingRequestError) || error.code !== "plan_queue_timeout") throw error;
-                onProgress?.("waiting-capacity");
-                await waitBeforeCapacityRetry(error, attempt, signal);
-            }
-        }
-    }
-
-    /** Submit and observe one queued plan using a stable ID and existing SSE hints.
-     * A cancelled or uncertain admission is deleted by ID, including when DELETE
-     * reaches the server before POST. Server deadlines bound work after tab closure.
-     * @param {"raster-clips"|"raster-calculations"} operation Planning endpoint.
-     * @param {Object} body Validated source, area and expressions.
-     * @param {AbortSignal|undefined} signal Superseded request.
-     * @param {function(string):void|undefined} onProgress Planning stage, including waiting-capacity before admission.
-     * @return {Promise<Object>} Completed operation plan, with browser-only
-     * planningObservation counters for this attempt and the response that found it ready.
-     * @throws {Error} If admission, observation or planning fails, or the caller cancels.
-     */
-    async submitAndObservePlan(operation, body, signal, onProgress) {
-        signal?.throwIfAborted();
-        const id = crypto.randomUUID().replaceAll("-", "");
-        /** @type {PlanningObservation} */
-        const observation = {sseHints: 0, sseRefreshes: 0, timerRefreshes: 0, readyResponse: "submission"};
-        let notified = false;
-        let wake = null;
-        const changed = () => { observation.sseHints++; notified = true; wake?.("sse"); };
-        const cancelled = () => { wake?.("cancelled"); };
-        const close = this.watchJobs(changed);
-        signal?.addEventListener("abort", cancelled);
-        let discardOnExit = true;
-        try {
-            let snapshot;
-            try {
-                // Do not abandon admission when the UI changes: recover or delete
-                // its stable ID even if its response is lost behind a proxy.
-                for (let attempt = 0; ; attempt++) {
-                    signal?.throwIfAborted();
-                    discardOnExit = true;
-                    try {
-                        snapshot = await this.request(`/${operation}/plans/${id}`, "POST", body, AbortSignal.timeout(10000));
-                        break;
-                    } catch (error) {
-                        if (!(error instanceof ProcessingRequestError) || !error.isCapacityRejection) throw error;
-                        discardOnExit = false; // No admitted plan to delete while waiting.
-                        onProgress?.("waiting-capacity");
-                        await waitBeforeCapacityRetry(error, attempt, signal);
-                    }
-                }
-            } catch (error) {
-                if (!discardOnExit) throw error;
-                if (error instanceof ProcessingRequestError && error.status < 500 && error.status !== 408) {
-                    discardOnExit = false; // Definitive admission rejection created no work.
-                    throw error;
-                }
-                observation.readyResponse = "recovery";
-                snapshot = await this.request(`/plans/${id}`, "GET", undefined, AbortSignal.timeout(10000));
-            }
-            while (true) {
-                signal?.throwIfAborted();
-                if (snapshot?.planId !== id || !["checking", "queued", "planning", "cancelling", "ready", "failed", "cancelled"].includes(snapshot.status)) {
-                    throw new Error("Processing returned invalid planning progress.");
-                }
-                if (snapshot.status === "ready") {
-                    if (snapshot.result?.planId !== id) throw new Error("Processing returned an invalid completed plan.");
-                    discardOnExit = false;
-                    return {...snapshot.result, planningObservation: observation};
-                }
-                if (["failed", "cancelled", "cancelling"].includes(snapshot.status)) {
-                    throw new ProcessingRequestError(snapshot.error?.detail ?? "Planning was cancelled.", 422,
-                        snapshot.error?.code ?? "plan_cancelled");
-                }
-                onProgress?.(snapshot.status);
-                const trigger = notified ? "sse" : await new Promise(resolve => {
-                    const timer = setTimeout(() => { wake = null; resolve("timer"); }, 2000);
-                    wake = reason => { clearTimeout(timer); wake = null; resolve(reason); };
-                });
-                notified = false;
-                signal?.throwIfAborted();
-                observation.readyResponse = trigger;
-                if (trigger === "sse") observation.sseRefreshes++;
-                else observation.timerRefreshes++;
-                snapshot = await this.request(`/plans/${id}`, "GET", undefined, signal);
-            }
-        } finally {
-            close?.();
-            signal?.removeEventListener("abort", cancelled);
-            if (discardOnExit) await this.request(`/plans/${id}`, "DELETE", undefined, AbortSignal.timeout(10000));
-        }
     }
 
     /** Upload exact polygons once and receive a private, expiring calculation reference.
@@ -429,15 +296,15 @@ export class ProcessingApiClient {
         return this.request(`/polygon-areas/${opaqueId(id)}`, "DELETE");
     }
 
-    /** Queue complete calculation inputs, or recover a previous plan-based submission.
-     * @param {Object} submission Source, area, formulas and requestId; legacy recovery uses planId and requestId.
+    /** Queue complete calculation inputs for preparation and execution.
+     * @param {Object} submission Source, area, formulas and stable requestId.
      * @return {Promise<Object>} Owned job with preparation details once the worker produces them.
      * @throws {ProcessingRequestError|Error} If admission fails or the response is invalid.
      */
     async submitCalculation(submission) {
         await this.ensureSession();
-        const area = submission.planId ? null : normalizeCalculationArea(submission.area);
-        const body = submission.planId ? submission : {
+        const area = normalizeCalculationArea(submission.area);
+        const body = {
             requestId: submission.requestId,
             sources: {a: {collectionId: submission.source.collectionId, itemId: submission.source.itemId}},
             calculations: submission.calculations,
@@ -453,12 +320,6 @@ export class ProcessingApiClient {
     async getJob(id) {
         await this.ensureSession();
         return validateJob(await this.request(`/jobs/${opaqueId(id)}`));
-    }
-
-    /** Release used or replaced review state; accepted jobs keep their snapshots. @param {string} id Plan ID. @return {Promise<Object>} Idempotent acknowledgement. */
-    async discardPlan(id) {
-        await this.ensureSession();
-        return this.request(`/plans/${opaqueId(id)}`, "DELETE");
     }
 
     /** Cancel an owned active job. @param {string} id Job ID. @return {Promise<Object>} Updated job. */
@@ -478,15 +339,14 @@ export class ProcessingApiClient {
      * Retain bounded browser timings and numeric server durations, without bodies
      * or credentials. HTTP completion does not imply that a job is ready.
      * @param {string} path Owned endpoint suffix. @param {string} [method="GET"] HTTP method.
-     * @param {Object|undefined} body JSON input. @param {AbortSignal|undefined} signal Planning cancellation.
+     * @param {Object|undefined} body JSON input. @param {AbortSignal|undefined} signal Request cancellation.
      * @return {Promise<Object>} Parsed response.
      * @throws {ProcessingRequestError|Error} HTTP rejection, failed transport, or unreadable JSON.
      */
     async request(path, method = "GET", body, signal) {
         const requestNumber = ++this.requestSequence;
         const identity = path.match(/^\/jobs\/([a-f0-9]{32})(?:\/|$)/);
-        const plan = path.match(/\/plans\/([a-f0-9]{32})$/);
-        const fields = {requestNumber, method, path, jobId: identity?.[1], planId: plan?.[1] ?? body?.planId,
+        const fields = {requestNumber, method, path, jobId: identity?.[1],
             shared: path === "/jobs", inFlight: ++this.requestsInFlight};
         const startedAtMs = this.diagnostics.record("http-start", fields);
         let headersAtMs, response, serverTiming = {};

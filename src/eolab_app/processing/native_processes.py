@@ -1,4 +1,4 @@
-"""Processing-owned configuration of its planning and execution process lanes."""
+"""Configure the worker's native process for raster preparation and execution."""
 
 from eolab_app.execution.reusable_process import ReusableProcess
 from eolab_app.bounded_vector import summary_process
@@ -10,8 +10,8 @@ from eolab_app.processing.raster_clip import clip_process_target
 def create_native_process(limits: ProcessingLimits) -> ReusableProcess:
     """Prepare one lane for both supported operations without admitting any work.
 
-    Used separately by API planning and the dedicated execution worker. Existing
-    database reservations still determine when each lane may execute a request.
+    The dedicated worker uses this process for preparation and execution after
+    claiming a job from the database queue.
 
     Args:
         limits: Existing startup/planning deadline policy.

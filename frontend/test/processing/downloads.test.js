@@ -20,8 +20,7 @@ function fixture(overrides = {}) {
     const data = new Map();
     const storage = new PendingSubmissionStorage({ getItem: key => data.get(key), setItem: (key,value) => data.set(key,value), removeItem: key => data.delete(key) });
     const requests = [];
-    const api = { listJobs: async () => [], planClip: async (s,a) => { requests.push([s,a]); return structuredClone(plan); },
-        discardPlan: async () => ({discarded:true}),
+    const api = { listJobs: async () => [],
         submitClip: async value => { requests.push(value); return structuredClone(job); },
         cancelJob: async value => requests.push(["cancel",value]), deleteJob: async value => requests.push(["delete",value]), ...overrides };
     let context = { sources: [structuredClone(source)], area: structuredClone(box) };
@@ -33,14 +32,14 @@ function fixture(overrides = {}) {
     return { controller, api, view, storage, requests, timers, options, data, get context() { return context; }, setContext(value) { context = value; } };
 }
 
-test("review freezes the selected source and box independently of later map changes", async () => {
+test("submission freezes the selected source and box independently of later map changes", async () => {
     const h = fixture(); h.controller.open();
     h.context.area.selectedBounds.west = 60;
     h.context.sources[0].label = "Changed";
-    await h.controller.review();
-    assert.equal(h.requests[0][1].selectedBounds.west, 77);
-    assert.equal(h.requests[0][0].label, "Human footprint");
-    assert.ok(Object.isFrozen(h.requests[0][1].selectedBounds));
+    await h.controller.submit();
+    assert.equal(h.requests[0].area.selectedBounds.west, 77);
+    assert.equal(h.requests[0].source.label, "Human footprint");
+    assert.ok(Object.isFrozen(h.requests[0].area.selectedBounds));
     await h.controller.submit();
     h.controller.open(source, { ...box, selectedBounds: { west: 1, south: 2, east: 3, north: 4 } });
     assert.deepEqual(h.view.state.jobs[0].area.bounds, [77,22,78,23]);
@@ -48,50 +47,29 @@ test("review freezes the selected source and box independently of later map chan
 
 test("whole-raster context never becomes an implicit clip export", async () => {
     const h=fixture(); h.setContext({sources:[source],area:{kind:"wholeRaster"}});
-    h.controller.open(); await h.controller.review();
+    h.controller.open();
     assert.equal(h.requests.length,0); assert.equal(h.view.state.area,null);
     h.controller.open(source,{kind:"catalogSelection",catalogSelection:CATALOG_SELECTION});
-    await h.controller.review();
-    assert.deepEqual(h.requests[0][1],{kind:"catalogSelection",catalogSelection:CATALOG_SELECTION});
+    await h.controller.submit();
+    assert.deepEqual(h.requests[0].area,{kind:"catalogSelection",catalogSelection:CATALOG_SELECTION});
 });
 
-test("new catalog intent invalidates review while an accepted job preserves its area", async () => {
+test("new catalog intent replaces the selection while an accepted job preserves its area", async () => {
     const h=fixture(); h.controller.open(source,{kind:"catalogSelection",catalogSelection:CATALOG_SELECTION});
-    await h.controller.review(); assert.ok(h.view.state.plan);
     const changed={...CATALOG_SELECTION,sourceSignature:"b".repeat(64)};
     h.controller.open(source,{kind:"catalogSelection",catalogSelection:changed});
-    assert.equal(h.view.state.plan,null);
-    await h.controller.review(); await h.controller.submit();
+    await h.controller.submit();
     const accepted=structuredClone(h.view.state.jobs[0]);
     h.controller.open(source,box);
     assert.deepEqual(h.view.state.jobs[0],accepted);
 });
 
-test("late planning results cannot replace a newer selection", async () => {
-    let resolve; let signal;
-    const h = fixture({ planClip: (_s,_a,s) => { signal=s; return new Promise(r => { resolve=r; }); } });
-    h.controller.open(); const pending = h.controller.review();
-    h.controller.selectSource(0); assert.ok(signal.aborted);
-    resolve(plan); await pending; assert.equal(h.view.state.plan, null);
-});
 
-test("repeated reviews release the replaced estimate before reserving another", async () => {
-    const events = [];
-    const h = fixture({
-        planClip: async () => { events.push("plan"); return structuredClone(plan); },
-        discardPlan: async value => { events.push(`discard:${value}`); },
-    });
-    h.controller.open(); await h.controller.review(); await h.controller.review();
-    assert.deepEqual(events, ["plan", `discard:${id}`, "plan"]);
-    await h.controller.submit();
-    assert.equal(events.at(-1), `discard:${id}`);
-    assert.equal(h.view.state.plan, null);
-});
 
-test("uncertain submission survives reload and retries the original plan/key", async () => {
+test("uncertain submission survives reload and retries the original inputs/key", async () => {
     const h = fixture({ submitClip: async value => { h.requests.push(value); throw new Error("Network disconnected"); } });
-    h.controller.open(); await h.controller.review(); await h.controller.submit();
-    const saved = h.storage.read(); assert.equal(saved.planId, id);
+    h.controller.open(); await h.controller.submit();
+    const saved = h.storage.read(); assert.deepEqual(saved.source, source); assert.deepEqual(saved.area, box);
     h.controller.open(source, null); assert.deepEqual(h.storage.read(), saved);
     const recovered = new DownloadsController({ ...h.options, api: { ...h.api, listJobs: async () => [job], submitClip: async value => { h.requests.push(value); return job; } } });
     await recovered.start();
@@ -101,22 +79,14 @@ test("uncertain submission survives reload and retries the original plan/key", a
 
 test("definitive capacity rejection releases intent; server error retains it", async () => {
     const h = fixture({ submitClip: async () => { throw new ProcessingRequestError("Storage busy", 429, "storage_full"); } });
-    h.controller.open(); await h.controller.review(); await h.controller.submit();
-    assert.equal(h.storage.read(), null); assert.equal(h.view.state.plan, null);
+    h.controller.open(); await h.controller.submit();
+    assert.equal(h.storage.read(), null);
     assert.match(h.view.state.message, /Storage busy/);
     h.api.submitClip = async () => { throw new ProcessingRequestError("Restarting", 503); };
-    await h.controller.review(); await h.controller.submit();
+    await h.controller.submit();
     assert.ok(h.storage.read());
 });
 
-test("expired estimates and unavailable recovery storage never dispatch a job", async () => {
-    const h = fixture(); h.controller.open(); await h.controller.review();
-    h.view.state.plan.expiresAt = "2000-01-01T00:00:00Z";
-    await h.controller.submit(); assert.equal(h.requests.length, 1);
-    h.controller.storage = new PendingSubmissionStorage(null);
-    await h.controller.review(); await h.controller.submit(); assert.equal(h.requests.length, 2);
-    assert.match(h.view.state.message, /recovery/);
-});
 
 test("polling recovers owned jobs without any map layers and lifecycle buttons call the API", async () => {
     const h = fixture({ listJobs: async () => [job] });
@@ -139,26 +109,25 @@ test("an older job listing cannot erase a newly accepted clip", async () => {
     let finishList;
     const h = fixture({ listJobs: () => new Promise(resolve => { finishList = resolve; }) });
     const listing = h.controller.refresh();
-    h.controller.open(); await h.controller.review(); await h.controller.submit();
+    h.controller.open(); await h.controller.submit();
     finishList([]); await listing;
     assert.equal(h.view.state.jobs[0].jobId, id);
     assert.equal(h.timers.at(-1)[1], 2000);
 });
 
-test("session cookie is established before planning and only catalog identity/explicit area is sent", async () => {
+test("session cookie is established before submission and only catalog identity/explicit area is sent", async () => {
     const requests=[];
     const api = new ProcessingApiClient(async (url,options) => {
         requests.push([url,options]);
-        const planId = url.split("/").at(-1);
         return new Response(JSON.stringify(url.endsWith("/jobs") ? { jobs: [] }
-            : {planId, status:"ready", result:{...plan,planId}, error:null}));
+            : job));
     });
-    await Promise.all([api.planClip({ ...source, path: "private" }, box), api.listJobs()]);
+    await Promise.all([api.submitClip({source: { ...source, path: "private" }, area: box, requestId: "request-1234567890"}), api.listJobs()]);
     assert.equal(requests[0][0], "/api/processing/jobs");
-    const sent = requests.find(([url]) => url.includes("/raster-clips/plans/"))[1];
-    assert.deepEqual(JSON.parse(sent.body), { collectionId: source.collectionId, itemId: source.itemId, selectedBounds: box.selectedBounds });
+    const sent = requests.find(([url]) => url.endsWith("/raster-clips"))[1];
+    assert.deepEqual(JSON.parse(sent.body), { collectionId: source.collectionId, itemId: source.itemId, selectedBounds: box.selectedBounds, requestId: "request-1234567890" });
     assert.equal(sent.headers["X-EOLab-Processing"], "1"); assert.equal(sent.credentials, "same-origin");
-    await assert.rejects(api.planClip(source,{ kind:"wholeRaster" }), /Select a box/);
+    await assert.rejects(api.submitClip({source, area:{kind:"wholeRaster"}}), /Select a box/);
 });
 
 test("API preserves actionable no-overlap and capacity errors", async () => {
@@ -174,19 +143,20 @@ test("download navigation is limited to direct owned artifact endpoints", () => 
     }
 });
 
-test("DOM review and job cards show grid, real progress, direct links and independent actions", async () => {
+test("clip form and job cards show grid, real progress, direct links and independent actions", async () => {
     const h = fixture();
     const doc = new FakeRasterControlDocument(); const view = new DownloadsView(doc);
-    const actions=[]; view.bind({ onOpen() {}, onClose() {}, onSource() {}, onArea() {}, onReview() {}, onCreate() {}, onRetrySubmission() {}, onRefresh() {}, onEditArea() {}, onCancel: id => actions.push(id), onDelete: id => actions.push(id) });
-    h.controller.open(); await h.controller.review();
+    const actions=[]; view.bind({ onOpen() {}, onClose() {}, onSource() {}, onArea() {}, onCreate() {}, onRetrySubmission() {}, onRefresh() {}, onEditArea() {}, onCancel: id => actions.push(id), onDelete: id => actions.push(id) });
+    h.controller.open();
     view.render(h.view.state);
     const text = element => element.textContent + element.children.map(text).join(" ");
-    assert.match(text(doc.querySelector("#downloads-plan")), /100 × 120 pixels/);
-    assert.match(text(doc.querySelector("#downloads-plan")), /EPSG:3857/);
+    assert.equal(doc.querySelector("#downloads-create").disabled, false);
     h.view.state.jobs = [{ ...job, status:"ready", expiresAt: plan.expiresAt,
         result: { url:`/api/processing/jobs/${id}/result`, provenanceUrl:`/api/processing/jobs/${id}/provenance`, bytes:100, filename:"clip.tif" } }];
     view.render(h.view.state);
     const card = doc.querySelector("#downloads-jobs").children[0];
+    assert.match(text(card), /100 × 120 pixels/);
+    assert.match(text(card), /EPSG:3857/);
     const link = card.children.find(child => child.textContent === "Download COG");
     assert.equal(link.href, `/api/processing/jobs/${id}/result`);
     card.children.at(-1).dispatchEvent(new Event("click")); assert.deepEqual(actions,[id]);
@@ -195,6 +165,8 @@ test("DOM review and job cards show grid, real progress, direct links and indepe
     view.render({ ...h.view.state, jobs: [{ ...job, status: "running" }] });
     assert.equal(doc.querySelector("#map-inspection-more-summary").textContent, "More · 1 working");
     assert.equal(describeJobProgress({ ...job, status:"running", progress:{phase:"clipping",completedBlocks:3,totalBlocks:10} }),"Clipping · 3 of 10 source blocks");
+    assert.equal(describeJobProgress({ ...job, status:"running", progress:{phase:"preparing"} }), "Preparing clip…");
+    assert.equal(describeJobProgress({ ...job, status:"running", progress:{phase:"calculating"} }), "Starting clip…");
     assert.match(describeJobProgress({ ...job, status:"running", progress:{phase:"creating_cog"} }),/Preparing download/);
     view.unbind();
 });

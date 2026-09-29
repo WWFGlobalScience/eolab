@@ -36,12 +36,9 @@ export class DownloadsController {
         clock = globalThis, requestId = () => globalThis.crypto.randomUUID() }) {
         Object.assign(this, { api, view, storage, getContext, onOpen, clock, requestId });
         this.state = { sources: [], source: null, area: null, selectedArea: null,
-            areaChoice: "selection", plan: null, jobs: [],
-            busy: false, message: "", jobMessage: "", pending: storage.read(),
+            areaChoice: "selection", jobs: [],
+            message: "", jobMessage: "", pending: storage.read(),
             submitting: false, jobActions: new Set() };
-        this.planSequence = 0;
-        this.planAbort = null;
-        this.plansToRelease = new Set();
         this.destroyed = false;
         this.ownsJobs = !jobs;
         this.jobs = jobs ?? new ProcessingJobs(api, clock);
@@ -54,7 +51,7 @@ export class DownloadsController {
             onOpen: () => this.open(), onClose,
             onSource: (index) => this.selectSource(index),
             onArea: (choice) => this.selectArea(choice),
-            onEditArea, onReview: () => void this.review(),
+            onEditArea,
             onCreate: () => void this.submit(),
             onRetrySubmission: () => void this.submit(),
             onRefresh: () => void this.refresh(),
@@ -80,7 +77,7 @@ export class DownloadsController {
     open(source = null, area) {
         if (!this.state.pending && !this.state.submitting) {
             const context = this.getContext();
-            this.invalidatePlan();
+            this.state.message = "";
             this.state.sources = context.sources.map(snapshotSource);
             if (source && !this.state.sources.some(item => item.collectionId === source.collectionId && item.itemId === source.itemId)) {
                 this.state.sources.unshift(snapshotSource(source));
@@ -94,31 +91,10 @@ export class DownloadsController {
         this.render();
     }
 
-    /** Invalidate only an unsubmitted plan. @return {void} */
-    invalidatePlan() {
-        this.planSequence += 1;
-        this.planAbort?.abort();
-        if (this.state.plan) this.plansToRelease.add(this.state.plan.planId);
-        this.state.plan = null;
-        this.state.busy = false;
-        this.state.message = "";
-    }
-
-    /** Release replaced reviews before reserving another plan record.
-     * @return {Promise<void>} Acknowledged releases; failed IDs remain for retry.
-     * @throws {Error} If Processing cannot confirm a release.
-     */
-    async releasePlans() {
-        for (const id of this.plansToRelease) {
-            await this.api.discardPlan(id);
-            this.plansToRelease.delete(id);
-        }
-    }
-
     /** Select one offered catalog source. @param {number} index Source option index. @return {void} */
     selectSource(index) {
         if (this.state.pending || this.state.submitting) return;
-        this.invalidatePlan();
+        this.state.message = "";
         this.state.source = this.state.sources[index] ?? null;
         this.render();
     }
@@ -126,59 +102,20 @@ export class DownloadsController {
     /** Select the captured box or catalog-vector selection. @param {string} choice Area option. @return {void} */
     selectArea(choice) {
         if (this.state.pending || this.state.submitting) return;
-        this.invalidatePlan();
+        this.state.message = "";
         this.state.areaChoice = choice;
         this.state.area = choice === "selection" ? this.state.selectedArea
             : null;
         this.render();
     }
 
-    /** Request a native-grid estimate for the captured intent. @return {Promise<void>} Review completion. */
-    async review() {
-        if (!this.state.source || !this.state.area || this.state.pending || this.state.submitting) return;
-        this.invalidatePlan();
-        const sequence = this.planSequence;
-        this.planAbort = new AbortController();
-        this.state.busy = true;
-        this.render();
-        try {
-            if (this.plansToRelease.size) await this.releasePlans();
-            if (sequence !== this.planSequence || this.destroyed) return;
-            const plan = await this.api.planClip(this.state.source, this.state.area, this.planAbort.signal, status => {
-                if (sequence !== this.planSequence || this.destroyed) return;
-                this.state.message = status === "waiting-capacity" ? "Waiting for server capacity; retrying automatically…"
-                    : status === "queued" ? "Waiting to check clip size…" : "Checking clip size…";
-                this.render();
-            });
-            if (sequence === this.planSequence && !this.destroyed) {
-                this.state.plan = plan;
-                this.state.message = "";
-            } else {
-                this.plansToRelease.add(plan.planId);
-                await this.releasePlans();
-            }
-        } catch (error) {
-            if (sequence === this.planSequence && !this.destroyed && error.name !== "AbortError") this.state.message = error.message;
-        } finally {
-            if (sequence === this.planSequence && !this.destroyed) {
-                this.state.busy = false;
-                this.render();
-            }
-        }
-    }
-
     /** Submit once; persist and reuse the same key on uncertain responses or reload. @return {Promise<void>} Acceptance or recoverable error. */
     async submit() {
         if (this.state.submitting || this.destroyed) return;
         if (!this.state.pending) {
-            if (!this.state.plan) return;
-            if (Date.parse(this.state.plan.expiresAt) <= Date.now()) {
-                this.invalidatePlan();
-                this.state.message = "This estimate expired. Review the clip again before creating it.";
-                this.render();
-                return;
-            }
-            const pending = { planId: this.state.plan.planId, requestId: this.requestId(), label: this.state.source.label.slice(0, 512) };
+            if (!this.state.source || !this.state.area) return;
+            const pending = { source: this.state.source, area: this.state.area,
+                requestId: this.requestId(), label: this.state.source.label.slice(0, 512) };
             try { this.storage.write(pending); } catch (error) {
                 this.state.message = `Cannot save download recovery information: ${error.message}`;
                 this.render();
@@ -189,26 +126,19 @@ export class DownloadsController {
         this.state.submitting = true;
         this.state.message = "";
         this.render();
-        const { planId, requestId } = this.state.pending;
         try {
-            const job = await this.api.submitClip({ planId, requestId });
+            const job = await this.api.submitClip(this.state.pending);
             this.jobs.accept(job);
-            this.plansToRelease.add(planId);
-            this.state.plan = null;
             this.storage.clear();
             this.state.pending = null;
             this.state.message = "Clip accepted. Its raster and area are fixed; you can keep exploring the map.";
-            await this.releasePlans().catch(error => {
-                this.state.message += ` Unused plan cleanup needs retry: ${error.message}`;
-            });
         } catch (error) {
             // A definitive rejection creates no job. Server/transport failures can
             // occur after commit and must keep their original idempotency identity.
-            if (error instanceof ProcessingRequestError && error.status >= 400 && error.status < 500 && error.status !== 408) {
+            if (error instanceof ProcessingRequestError && error.status >= 400 && error.status < 500 && error.status !== 408 && !error.isCapacityRejection) {
                 this.storage.clear();
                 this.state.pending = null;
-                this.state.plan = null;
-                this.state.message = `${error.message} Review again when the problem is resolved.`;
+                this.state.message = `${error.message} Create the clip again when the problem is resolved.`;
             } else {
                 this.state.message = `Submission not confirmed: ${error.message} Retry the same request to recover it safely.`;
             }
@@ -246,8 +176,7 @@ export class DownloadsController {
     /** Release browser work without cancelling accepted server jobs. @return {void} */
     destroy() {
         this.destroyed = true;
-        this.invalidatePlan();
-        void this.releasePlans().catch(() => {});
+        this.state.message = "";
         this.unsubscribe();
         if (this.ownsJobs) this.jobs.destroy();
         this.view.unbind();
