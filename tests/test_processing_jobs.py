@@ -130,6 +130,7 @@ def boundary(tmp_path: Path, store: PostgresJobStore) -> Any:
         StacRasterCatalog(catalog_client, "http://catalog"),
         MountedRasterResolver(tmp_path),
     )
+
     async def measure_selection(selection: CatalogSelection) -> dict[str, Any]:
         """Measure fixture polygons at Processing's injected Vector boundary.
 
@@ -759,3 +760,54 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
     # Psycopg asynchronous connections require a selector loop on Windows too.
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
         runner.run(scenario())
+
+
+@pytest.mark.parametrize("version_offset", [-1, 1], ids=["upgrade", "rollback"])
+def test_claim_fails_incompatible_queued_jobs(
+    store: PostgresJobStore, monkeypatch: pytest.MonkeyPatch, version_offset: int
+) -> None:
+    """Invalidate another release's queued inputs without changing active or ready jobs.
+
+    Args:
+        store: Disposable real PostgreSQL adapter.
+        monkeypatch: Simulate a writer using an older or newer job format.
+        version_offset: Difference between stored and current job format.
+    """
+    import eolab_app.processing.job_store as store_module
+
+    prepared = PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096)
+    with monkeypatch.context() as other_release:
+        other_release.setattr(
+            store_module,
+            "JOB_FORMAT_VERSION",
+            store_module.JOB_FORMAT_VERSION + version_offset,
+        )
+        completed = store.submit("owner", None, "completed-request", prepared, "a" * 64)
+        claimed = store.claim()
+        assert claimed["id"] == completed["id"]
+        assert store.finish(
+            claimed["id"], claimed["attempt_id"], Artifact(1, "checksum", "result.csv")
+        )
+        active = store.submit("owner", None, "running-request", prepared, "a" * 64)
+        assert store.claim()["id"] == active["id"]
+        obsolete = store.submit("owner", None, "obsolete-request", prepared, "a" * 64)
+
+    compatible = store.submit("owner", None, "compatible-request", prepared, "a" * 64)
+    assert store.claim() is None  # The active attempt still owns execution.
+    failed = store.get(obsolete["id"], "owner")
+    assert failed["status"] == "failed"
+    assert failed["error"]["code"] == "incompatible_job_format"
+    assert "Submit a new job" in failed["error"]["detail"]
+    assert failed["reserved_bytes"] == 0 and failed["spec"] is None
+    assert store.find_request("owner", "obsolete-request")["status"] == "failed"
+    with psycopg.connect(store.conninfo) as conn:
+        assert conn.execute(
+            "SELECT input_bytes FROM processing.jobs WHERE id=%s", (obsolete["id"],)
+        ).fetchone() == (0,)
+    assert store.get(completed["id"], "owner")["status"] == "ready"
+    assert store.get(active["id"], "owner")["status"] == "running"
+    store.cancel(active["id"], "owner")
+    running = store.get(active["id"], "owner")
+    assert store.finish(active["id"], running["attempt_id"], None)
+    assert store.claim()["id"] == compatible["id"]
+    assert store.get(obsolete["id"], "owner")["updated_at"] == failed["updated_at"]

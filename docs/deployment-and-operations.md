@@ -324,10 +324,28 @@ monitor host/volume free space. Processing also requires a 2 GiB free-space floo
 Deleting this volume loses result files even if their database records remain.
 Back up persistent database and result storage together when results must be kept.
 
-Deploy the app and Processing worker together. Current Catalog-vector jobs require
-worker claim protocol 5; older workers cannot claim them. Before rolling back to
-code that cannot read these job formats, finish or cancel the affected jobs and
-remove them through the supported API. Do not drop compatibility database triggers.
+Deploy the app and Processing worker together, stopping the old containers first.
+Jobs carry one exact format version. Before claiming work, the worker marks queued
+jobs from any other format as failed with a resubmit message and releases their
+unused reservations. This also invalidates newer queued jobs after a rollback to
+a release using this policy. Compatible jobs, running jobs and completed results
+are not invalidated by this check.
+
+Releases predating this policy cannot perform that check. Before rolling back to
+one of those releases, stop the app and worker and invalidate queued work in the
+Processing database (then start the older release):
+
+```sql
+UPDATE processing.jobs
+SET status = 'failed', spec = NULL, summary = '{}'::jsonb,
+    reserved_bytes = 0, updated_at = clock_timestamp(),
+    error = '{"code":"incompatible_job_format","detail":"Application rolled back. Submit a new job to retry."}'::jsonb
+WHERE status = 'queued';
+```
+
+This intentionally discards pending calculations; users must resubmit them.
+It does not delete completed results or source data.
+
 An old unsubmitted upload plan can report `legacy_selection_plan`; choose a Catalog
 vector and make a new plan. Completed results retain their usual expiry.
 
@@ -350,8 +368,7 @@ publishes `progress.phase: preparing`, then stores the prepared `grid` and
 and the existing SSE hints expose these updates. Before preparation, `grid` and
 `preparation` are null. Cancellation uses the same job ID throughout. Cached
 results still enter the job queue, but skip native preparation and calculation.
-Deploy API, worker and frontend together: these input-only jobs require worker
-claim protocol 9, so older workers leave them queued.
+Deploy API, worker and frontend together; see the rollback procedure above.
 
 Raster clip planning and legacy raster calculation clients share a FIFO queue with one native planner.
 The current limits admit 32 unfinished requests, retain 128 plan records, and

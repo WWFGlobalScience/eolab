@@ -32,6 +32,9 @@ from eolab_app.processing.models import (
 # Keep it stable across releases so overlapping workers acquire the same lock.
 # Other components using this database must allocate a different advisory key.
 PROCESSING_ADVISORY_LOCK_ID = 7_610_329
+# Bump when stored job inputs become incompatible. Workers fail queued jobs
+# from every other format, including newer formats encountered after rollback.
+JOB_FORMAT_VERSION = 1
 LOGGER = logging.getLogger(__name__)
 UNFINISHED = ("queued", "running", "cancelling")
 PUBLIC_COLUMNS = (
@@ -664,7 +667,7 @@ class PostgresJobStore:
                     429,
                 )
             cursor.execute(
-                "INSERT INTO processing.jobs(id,owner,request_key,plan_id,expires_at,status,spec,reserved_bytes,summary,operation,minimum_claim_version,input_bytes,request_hash) VALUES (%s,%s,%s,%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                "INSERT INTO processing.jobs(id,owner,request_key,plan_id,expires_at,status,spec,reserved_bytes,summary,operation,job_format_version,input_bytes,request_hash) VALUES (%s,%s,%s,%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (
                     uuid4().hex,
                     owner,
@@ -675,7 +678,7 @@ class PostgresJobStore:
                     expected.reserved_bytes,
                     Jsonb(expected.summary),
                     expected.operation,
-                    expected.minimum_claim_version,
+                    JOB_FORMAT_VERSION,
                     count["new_input_bytes"],
                     request_hash,
                 ),
@@ -874,13 +877,10 @@ class PostgresJobStore:
         Crash recovery waits through the previous hard deadline plus exit grace.
         A lost DB connection cannot cause a second native child to start while
         the old child could still be running under its supervisor deadline.
-        Claim protocol 3 adds fractional ellipsoidal area calculations. The
-        existing database trigger fences workers supporting earlier protocols.
-        Protocol 5 adds direct catalog-selection jobs without embedded geometry.
-        Protocol 7 adds jobs retaining cached values without mask disk reservations;
-        older workers must not execute those jobs as fresh raster calculations.
-        Protocol 9 adds input-only summary jobs whose worker must prepare the
-        raster grid and reserve disk space before calculating.
+        Queued jobs from another job-format version fail with a resubmit message
+        before selection. This applies equally to upgrades and rollbacks; their
+        unused input and disk reservations are released. Running jobs and finished
+        results retain their existing lifecycle.
 
         Returns:
             Claimed job, or None when execution is busy or no supported job waits.
@@ -890,7 +890,21 @@ class PostgresJobStore:
         """
 
         with self._transaction(locked=True) as cursor:
-            cursor.execute("SET LOCAL eolab.processing_claim_version = '9'")
+            cursor.execute(
+                "UPDATE processing.jobs SET status='failed',error=%s,"
+                "spec=NULL,summary='{}'::jsonb,preparation=NULL,progress='{}'::jsonb,"
+                "reserved_bytes=0,updated_at=clock_timestamp() "
+                "WHERE status='queued' AND job_format_version<>%s",
+                (
+                    Jsonb(
+                        {
+                            "code": "incompatible_job_format",
+                            "detail": "This queued job belongs to an incompatible application version. Submit a new job to retry.",
+                        }
+                    ),
+                    JOB_FORMAT_VERSION,
+                ),
+            )
             cursor.execute(
                 "UPDATE processing.jobs SET status='interrupted',error=%s,updated_at=now() WHERE status IN ('running','cancelling') AND deadline_at<now()",
                 (
@@ -910,7 +924,7 @@ class PostgresJobStore:
             cursor.execute(
                 "SELECT waiting.id FROM ("
                 "SELECT DISTINCT ON (owner) id,owner,created_at FROM processing.jobs "
-                "WHERE status='queued' AND minimum_claim_version<=9 "
+                "WHERE status='queued' "
                 "ORDER BY owner,created_at,id) waiting "
                 "LEFT JOIN LATERAL (SELECT started_at FROM processing.jobs history "
                 "WHERE history.owner=waiting.owner AND started_at IS NOT NULL "

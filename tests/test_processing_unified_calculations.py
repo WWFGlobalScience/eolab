@@ -45,16 +45,6 @@ def test_summary_prepares_and_calculates_without_a_plan_request(
         assert connection.execute(
             "SELECT count(*) FROM processing.plans"
         ).fetchone() == (0,)
-        assert connection.execute(
-            "SELECT minimum_claim_version FROM processing.jobs"
-        ).fetchone() == (9,)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        with psycopg.connect(store.conninfo) as connection:
-            connection.execute("SET LOCAL eolab.processing_claim_version = '8'")
-            connection.execute(
-                "UPDATE processing.jobs SET status='running' WHERE id=%s",
-                (job["jobId"],),
-            )
     assert asyncio.run(worker.run_once())
     completed = client.get(f"/api/processing/jobs/{job['jobId']}").json()
     assert completed["status"] == "ready", completed

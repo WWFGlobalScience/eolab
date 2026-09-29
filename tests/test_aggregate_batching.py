@@ -290,13 +290,15 @@ def test_memory_planning_and_execution_without_grid_recheck(
             make_spec(path, ["sum(a)"], target_chunk_pixels=4194304)
         assert error.value.code == "expression_memory_limit"
         spec = make_spec(path, ["sum(a)"], target_chunk_pixels=65536)
-    assert prepare_aggregate_job(spec, LIMITS).minimum_claim_version == 4
+    assert prepare_aggregate_job(spec, LIMITS).specification == spec.model_dump(
+        mode="json", by_alias=True
+    )
     original = make_spec(path, ["sum(a)"])
     old_json = original.model_dump(mode="json", by_alias=True)
     old_json["grid"].pop("execution")
     old = AggregateSpec.model_validate(old_json)
     assert old.model_dump(mode="json", by_alias=True) == old_json
-    assert prepare_aggregate_job(old, LIMITS).minimum_claim_version == 2
+    assert prepare_aggregate_job(old, LIMITS).specification == old_json
 
     def unexpected_grid_recheck(*args: Any, **kwargs: Any) -> None:
         """Fail if execution rebuilds a previously planned grid.

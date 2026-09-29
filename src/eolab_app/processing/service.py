@@ -108,7 +108,6 @@ def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
         },
         reserved_bytes=spec.grid.reservedBytes,
         operation=spec.operation,
-        minimum_claim_version=5 if spec.area.kind == "catalogSelection" else 1,
     )
 
 
@@ -877,7 +876,6 @@ class ProcessingService:
                     summary=summary,
                     reserved_bytes=0,
                     operation=queued.operation,
-                    minimum_claim_version=9,
                 ),
                 request_hash,
             )
