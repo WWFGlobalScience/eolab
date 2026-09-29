@@ -411,7 +411,6 @@ def test_cache_hit_skips_planning_and_pins_values(
     retained = AggregateSpec.model_validate(prepared.specification)
     assert retained.cachedRows[0].value == "42"
     assert prepared.reserved_bytes == service.aggregate_limits.result_reservation_bytes
-    assert prepared.minimum_claim_version == 7
 
     # Expiry/eviction after preparation cannot turn a cache hit into raster work.
     store.get_cached_calculation_results.return_value = {}

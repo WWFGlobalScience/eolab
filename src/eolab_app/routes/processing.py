@@ -34,6 +34,7 @@ from eolab_app.processing.clip_models import (
 )
 from eolab_app.processing.aggregate_models import (
     AggregateJobResponse,
+    AggregateJobRequest,
     AggregatePlanRequest,
     AggregatePlanResponse,
     AggregateValidationRequest,
@@ -527,20 +528,27 @@ def create_processing_router(service: ProcessingService) -> APIRouter:
         openapi_extra=MUTATION_SCHEMA,
     )
     async def submit_raster_calculation(
-        body: JobSubmitRequest, request: Request, response: Response
+        body: AggregateJobRequest | JobSubmitRequest,
+        request: Request,
+        response: Response,
     ) -> dict[str, Any]:
-        """Accept a reviewed calculation through shared idempotent admission.
+        """Queue calculation inputs, or accept a prepared plan from an older client.
 
         Args:
-            body: Reviewed plan and client request identifiers.
+            body: Source, area, formulas and retry key; alternatively a legacy plan ID and key.
             request: Same-origin owner context.
             response: Private cookie and job location headers.
 
         Returns:
             Accepted owned calculation job.
+
+        Raises:
+            HTTPException: For invalid inputs, conflicting retries or exhausted capacity.
         """
         job = await _result(
-            service.submit_raster_calculation(_owner(request, response), body)
+            service.submit_calculation_inputs(_owner(request, response), body)
+            if isinstance(body, AggregateJobRequest)
+            else service.submit_raster_calculation(_owner(request, response), body)
         )
         response.headers["Location"] = f"/api/processing/jobs/{job['jobId']}"
         return job

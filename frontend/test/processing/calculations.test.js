@@ -13,15 +13,6 @@ const grid = { width: 100, height: 100, crs: "EPSG:3857", dtype: "float32", tran
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return { promise, resolve, reject }; };
 const flush = async () => { for (let i=0;i<30;i++) await Promise.resolve(); };
 
-/** Wrap a completed plan in the asynchronous API snapshot.
- * @param {string} url Client-ID planning URL. @param {Object} result Completed plan fields.
- * @return {Object} Ready planning snapshot.
- */
-function readyPlanResponse(url, result) {
-    const planId = url.split("/").at(-1);
-    return { planId, status: "ready", result: { ...result, planId }, error: null };
-}
-
 test("the executor does not import the statistics controller or its view", () => {
     const source = readFileSync(new URL("../../src/processing/calculation-executor.js", import.meta.url), "utf8");
     assert.doesNotMatch(source, /(?:from\s*|import\s*\()\s*["'][^"']*summary-statistics-(?:controller|view)/);
@@ -44,7 +35,7 @@ test("job queue capacity waits automatically, keeps the request key, and can be 
             h.controller.stop(); await flush();
             assert.equal(h.storage.read(),null);
             assert.equal(h.server.size,0);
-            assert.ok(h.requests.some(([kind])=>kind==="discard"));
+            assert.equal(h.requests.some(([kind])=>kind==="plan"||kind==="discard"),false);
         }
         context.mock.timers.tick(6000); await flush();
         assert.equal(attempts.length,cancel?1:2);
@@ -53,22 +44,7 @@ test("job queue capacity waits automatically, keeps the request key, and can be 
     }
 });
 
-test("a plan expiring during capacity wait is replanned through the caller's confirmation policy",async context=>{
-    context.mock.timers.enable({apis:["setTimeout"]});
-    const h=fixture(), submit=h.api.submitCalculation;
-    let attempts=0;
-    h.api.submitCalculation=async request=>{
-        attempts++;
-        if(attempts===1) throw new ProcessingRequestError("Queue full",429,"queue_full");
-        if(attempts===2) throw new ProcessingRequestError("Plan expired",409,"plan_unavailable");
-        return submit(request);
-    };
-    await h.run(true);context.mock.timers.tick(6000);await flush();
-    assert.equal(attempts,3);
-    assert.equal(h.requests.filter(([kind])=>kind==="plan").length,2);
-    await h.finish();assert.equal(h.controller.snapshot.admission,"ready");
-    h.controller.destroy();h.jobs.destroy();
-});
+
 
 test("cancellation during an in-flight submission still obtains and cancels an accepted job",async()=>{
     const h=fixture(), submit=h.api.submitCalculation, response=deferred();
@@ -90,7 +66,7 @@ test("a lost response after a capacity retry preserves the original recoverable 
     };
     await h.run(true);context.mock.timers.tick(6000);await flush();
     assert.equal(h.controller.snapshot.recoverable,true);
-    assert.deepEqual(h.storage.read().pending,attempts[0]);
+    assert.equal(h.storage.read().pending.requestId,attempts[0].requestId);
     await h.controller.retry();await flush();
     assert.equal(attempts.length,3);
     assert.ok(attempts.every(request=>JSON.stringify(request)===JSON.stringify(attempts[0])));
@@ -118,9 +94,10 @@ function fixture(overrides = {}, data = new Map()) {
         },
         submitCalculation: async submission => {
             requests.push(["submit",submission]);
-            const intent = plans.get(submission.planId) ?? {source,area:box(77),calculations:[{label:"Mean",expression:"mean(a)"}]};
-            const jobId = submission.planId;
-            const job = {jobId,operation:"raster.aggregate.v1",status:"running", sources:{a:intent.source},calculations:intent.calculations,
+            const intent = submission.planId ? plans.get(submission.planId) ?? {source,area:box(77),calculations:[{label:"Mean",expression:"mean(a)"}]} : submission;
+            const existing=[...server.values()].find(job=>job.requestId===submission.requestId); if(existing)return existing;
+            const jobId = submission.planId ?? String(++id).padStart(32,"0");
+            const job = {jobId,requestId:submission.requestId,operation:"raster.aggregate.v1",status:"running", sources:{a:intent.source},calculations:intent.calculations,
                 grid,area:{kind:"bounds",bounds:[intent.area.selectedBounds?.west ?? 0,22,(intent.area.selectedBounds?.west ?? 0)+1,23]},progress:{phase:"calculating",completedBlocks:0,totalBlocks:4},result:null};
             server.set(jobId,job); return job;
         },
@@ -131,22 +108,17 @@ function fixture(overrides = {}, data = new Map()) {
     const jobs = new ProcessingJobs(api,clock);
     const view = {}; const snapshots = [];
     const activity = [];
-    let submitPrepared = false;
-    let context = null;
     const options = {api,jobs,storage,onChange: state => {
         view.state=state; snapshots.push(state);
-        if (submitPrepared && state.isIdle && state.phase !== "error" && state.plan) controller.submit(state.plan.planId, context);
     },
         onActivity: area=>activity.push(area),requestId:()=>`request-${String(id).padStart(16,"0")}`};
     const controller = new CalculationExecutor(options);
     view.state=controller.snapshot;
     const intent = change => ({source,area:box(77),calculations:[{label:"Mean",expression:"mean(a)"}],...change});
     const execute = (calculation, automatic = false) => {
-        submitPrepared = true; context = Object.freeze({ automatic });
-        controller.prepare(calculation);
+        controller.submit(calculation, Object.freeze({automatic}));
     };
     const click = west => { controller.stop(); execute(intent({area:box(west)}), true); };
-    const review = async () => { submitPrepared = false; controller.prepare(intent()); await flush(); };
     const tick = async delay => { const due=[...timers.entries()].filter(([,item])=>item.delay===delay); for(const [key,item]of due){timers.delete(key);item.fn();}await flush(); };
     const finish = async (status="ready",value="12.5") => {
         const old=server.get(controller.snapshot.currentJob.jobId);
@@ -154,7 +126,7 @@ function fixture(overrides = {}, data = new Map()) {
         await jobs.refresh(); await flush();
     };
     const run = async automatic => { execute(intent(),automatic); await flush(); };
-    return {controller,api,jobs,storage,view,requests,server,plans,tick,finish,run,activity,data,options,click,review,intent,snapshots,execute};
+    return {controller,api,jobs,storage,view,requests,server,plans,tick,finish,run,activity,data,options,click,intent,snapshots,execute};
 }
 
 test("execution snapshots remain busy through cancellation and replacement admission", async () => {
@@ -205,9 +177,9 @@ test("failed submission retains exclusive admission until explicit recovery", as
     assert.equal(h.controller.snapshot.admission, "ready");
 });
 
-test("intent is copied before asynchronous planning and no editor validation is invoked", async () => {
-    const h = fixture(); const pending = deferred(); const plan = h.api.planCalculation;
-    h.api.planCalculation = async intent => { await pending.promise; return plan(intent); };
+test("intent is copied before asynchronous submission and no editor validation is invoked", async () => {
+    const h = fixture(); const pending = deferred(); const submit = h.api.submitCalculation;
+    h.api.submitCalculation = async intent => { await pending.promise; return submit(intent); };
     const input = h.intent();
     h.execute(input);
     input.calculations[0].expression = "sum(a)";
@@ -216,6 +188,26 @@ test("intent is copied before asynchronous planning and no editor validation is 
     assert.equal(h.requests.some(([kind]) => kind === "validate"), false);
     assert.equal(h.controller.snapshot.unfinishedCalculation.calculation.calculations[0].expression, "mean(a)");
     assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area, box(77));
+});
+
+test("an unavailable saved job waits for explicit recovery rather than refreshing in a loop", async () => {
+    const h = fixture();
+    await h.run(true);
+    h.controller.destroy();
+    h.jobs.jobs = [];
+    h.server.clear();
+    let reads = 0;
+    h.api.getJob = async () => { reads++; throw Error("Job unavailable"); };
+    const recovered = new CalculationExecutor(h.options);
+    await recovered.start();
+    await flush();
+    assert.equal(recovered.snapshot.recoverable, true);
+    assert.match(recovered.snapshot.message, /Job unavailable/);
+    const attempts = reads;
+    await flush();
+    assert.equal(reads, attempts);
+    assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 1);
+    recovered.destroy(); h.jobs.destroy();
 });
 
 test("failed cancellation keeps the accepted job exclusive until recovery acknowledges it", async () => {
@@ -249,12 +241,12 @@ test("explicit cancellation of an uncertain submission is persisted before retry
     assert.equal(h.controller.snapshot.completedJob, null);
 });
 
-test("repeating identical preparation during size checking admits only one job", async () => {
-    const response = deferred(); const h = fixture(); const original = h.api.planCalculation;
-    h.api.planCalculation = async intent => { const plan = await original(intent); await response.promise; return plan; };
+test("repeating identical inputs during submission admits only one job", async () => {
+    const response = deferred(); const h = fixture(); const original = h.api.submitCalculation;
+    h.api.submitCalculation = async intent => { const job = await original(intent); await response.promise; return job; };
     h.execute(h.intent()); h.execute(h.intent());
     response.resolve(); await flush();
-    assert.equal(h.requests.filter(r => r[0] === "plan").length, 1);
+    assert.equal(h.requests.filter(r => r[0] === "plan").length, 0);
     assert.equal(h.requests.filter(r => r[0] === "submit").length, 1);
     assert.equal(h.controller.snapshot.unfinishedCalculation.context.automatic, false);
 
@@ -281,98 +273,15 @@ test("replacement requests cancel old work and retain only the latest area until
     await h.finish();assert.deepEqual(h.view.state.completedCalculation.area,box(79));
 });
 
-test("a stale plan resolving after a newer box never submits and does not strand the latest box", async () => {
-    const h=fixture();await h.run(true);await h.finish();
-    const old=deferred();let signal;
-    const original=h.api.planCalculation;
-    h.api.planCalculation=(intent,s)=>{signal=s;return old.promise;};
-    h.click(78);await h.tick(650);
-    h.api.planCalculation=original;h.click(79);await h.tick(650);
-    assert.equal(signal?.aborted, true);old.resolve({planId:"z".repeat(32)});await flush();
-    assert.equal(h.requests.filter(r=>r[0]==="submit").length,2);
-    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
-});
 
-test("superseded planning admission recovers its client identity and cancels before replacement", async () => {
-    const h = fixture(); const response = deferred(); const calls = []; let busy = false;
-    const client = new ProcessingApiClient(async (url, options) => {
-        if (url.endsWith('/jobs')) return {ok:true,json:async()=>({jobs:[]})};
-        calls.push([url, options]);
-        if (options.method === 'DELETE') return {ok:true,json:async()=>({discarded:true})};
-        if (busy) return {ok:false,status:429,json:async()=>({detail:{code:'plan_capacity',message:'Job planning is busy'}})};
-        busy = true;
-        // The server remains busy even if fetch rejects on a local abort.
-        const aborted = new Promise((_, reject) => options.signal?.addEventListener('abort',
-            () => reject(new DOMException('Superseded', 'AbortError')), {once:true}));
-        return Promise.race([response.promise, aborted]);
-    });
-    h.api.planCalculation = client.planCalculation.bind(client);
-    h.api.discardPlan = client.discardPlan.bind(client);
-    h.execute(h.intent(),true); await flush();
-    for (const west of [78,79,80]) { h.click(west); await h.tick(650); }
-    assert.equal(calls.filter(([url,options])=>url.includes('/plans/') && options.method === 'POST').length, 1,
-        'a browser abort must not free the server planning lane');
-    assert.equal(h.controller.snapshot.admission !== "retry", true);
-    const oldUrl = calls[0][0]; const oldId = oldUrl.split('/').at(-1); busy = false;
-    response.resolve({ok:true,json:async()=>readyPlanResponse(oldUrl,{grid,operation:'raster.aggregate.v1',expiresAt:'2099-01-01T00:00:00Z'})});
-    // Subsequent planning uses the normal fixture once the old HTTP response drains.
-    h.api.planCalculation = async intent => {
-        assert.ok(calls.some(([url,options])=>url.endsWith(oldId)&&options.method==='DELETE'));
-        h.plans.set('f'.repeat(32),intent);
-        return {planId:'f'.repeat(32),grid,expiresAt:'2099-01-01T00:00:00Z'};
-    };
-    await flush();
-    assert.equal(h.requests.filter(r=>r[0]==='submit').length,1);
-    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(80));
-});
 
-test("completed plan release is acknowledged before a replacement uses the last owner slot", async () => {
-    const h = fixture(); const release = deferred(); let occupied = true; let planCalls = 0;
-    const client = new ProcessingApiClient(async (url, options) => {
-        if (url.endsWith('/jobs')) return {ok:true,json:async()=>({jobs:[]})};
-        if (options.method === 'DELETE') {
-            await release.promise; occupied = false;
-            return {ok:true,json:async()=>({discarded:true})};
-        }
-        planCalls++;
-        if (occupied) return {ok:false,status:429,json:async()=>({detail:{code:'plan_capacity',message:'Too many plans'}})};
-        return {ok:true,json:async()=>readyPlanResponse(url,{grid,operation:'raster.aggregate.v1',expiresAt:'2099-01-01T00:00:00Z'})};
-    });
-    await h.review();
-    h.api.planCalculation = client.planCalculation.bind(client);
-    h.api.discardPlan = client.discardPlan.bind(client);
-    h.click(79); await h.tick(650);
-    assert.equal(planCalls,0,'cleanup must finish before allocating another plan');
-    release.resolve(); await flush();
-    assert.equal(planCalls,1); assert.equal(h.controller.snapshot.admission !== "retry",true);
-    assert.equal(h.requests.filter(r=>r[0]==='submit').length,1);
-});
 
-test("failed unused-plan cleanup is retained and retried before explicit replacement", async () => {
-    const h = fixture(); await h.review();
-    const original = h.api.discardPlan; let fail = true;
-    h.api.discardPlan = async id => { if(fail)throw new Error('Release connection lost'); return original(id); };
-    h.click(78); await h.tick(650);
-    assert.equal(h.controller.snapshot.admission,"retry");
-    assert.equal(h.requests.filter(r=>r[0]==='plan').length,1);
-    assert.match(h.view.state.message,/Release connection lost/);
-    fail=false;h.click(79);await h.tick(650);
-    assert.equal(h.controller.snapshot.admission !== "retry",true);
-    assert.equal(h.requests.filter(r=>r[0]==='submit').length,1);
-    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area,box(79));
-});
 
-test("destroy releases completed and late planning results without submitting", async () => {
-    for (const pending of [false,true]) {
-        const response=deferred(); const h=fixture();
-        if(pending)h.api.planCalculation=()=>response.promise;
-        await h.review();h.controller.destroy();
-        if(pending)response.resolve({planId:'d'.repeat(32)});
-        await flush();
-        assert.equal(h.requests.filter(r=>r[0]==='discard').length,1);
-        assert.equal(h.requests.filter(r=>r[0]==='submit').length,0);
-    }
-});
+
+
+
+
+
 
 test("click during submission cancels its eventual accepted job before admitting a replacement", async () => {
     const h=fixture();const acceptance=deferred();const original=h.api.submitCalculation;
@@ -393,7 +302,7 @@ test("uncertain submission persists its key and superseded cancellation through 
     h.controller.stop();
     const recovered=new CalculationExecutor({...h.options,onChange:()=>{}});await recovered.start();await flush();
     const submissions=h.requests.filter(r=>r[0]==="submit");assert.deepEqual(submissions[0][1],submissions[1][1]);
-    assert.equal(recovered.snapshot.unfinishedCalculation.cancelRequested,true);assert.equal(h.server.get(saved.pending.planId).status,"cancelling");
+    assert.equal(recovered.snapshot.unfinishedCalculation.cancelRequested,true);assert.equal([...h.server.values()].find(job=>job.requestId===saved.pending.requestId).status,"cancelling");
 });
 
 
@@ -410,7 +319,7 @@ test("a completed superseded job cannot replace the prior visible result", async
 
 test("capacity refusal pauses follow and errors preserve the last visible result", async () => {
     const h=fixture();await h.run(true);await h.finish();const result=h.view.state.completedJob;
-    h.api.planCalculation=async()=>{throw new ProcessingRequestError("Native work limit",422);};
+    h.api.submitCalculation=async()=>{throw new ProcessingRequestError("Native work limit",422);};
     h.click(79);await h.tick(650);
     assert.equal(h.view.state.phase,"error");assert.equal(h.controller.snapshot.admission,"retry");
     assert.equal(h.view.state.completedJob,result);assert.match(h.view.state.message,/Native work limit/);
@@ -429,26 +338,18 @@ for (const [kind, code, message] of [
         const client = new ProcessingApiClient(async url => url.endsWith("/jobs")
             ? { ok: true, json: async () => ({ jobs: [] }) }
             : { ok: false, status: 413, json: async () => ({ detail: { code, message } }) });
-        h.api.planCalculation = client.planCalculation.bind(client);
+        h.api.submitCalculation = client.submitCalculation.bind(client);
         h.click(79);
         await h.tick(650);
 
         assert.equal(h.controller.snapshot.admission, "retry");
-        assert.equal(h.view.state.message, `${message} Click Calculate or select a new sampling box to retry.`);
+        assert.equal(h.view.state.message, `${message} Click Calculate to retry.`);
         assert.equal(h.view.state.completedJob, previous);
         assert.equal(h.requests.filter(request => request[0] === "submit").length, 1);
     });
 }
 
-test("expired estimates refresh automatically and unavailable storage refuses submission", async () => {
-    const h=fixture();await h.review();h.view.state.plan.expiresAt="2000-01-01";
-    await h.execute(h.intent());await flush();
-    assert.equal(h.requests.filter(r=>r[0]==="plan").length,2);
-    assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
-    await h.finish();
-    h.controller.storage=new CalculationSessionStorage(null);await h.execute(h.intent());await flush();
-    assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);assert.match(h.view.state.message,/storage/);
-});
+
 
 test("shared job polling coalesces concurrent editors and protects accepted jobs", async () => {
     const response=deferred();const h=fixture({listJobs:()=>response.promise});
@@ -471,97 +372,33 @@ test("calculation API serializes identities, explicit scopes, and useful validat
     assert.equal(calls[1][1].headers["X-EOLab-Processing"],"1");
 });
 
-test("stopping planning releases its late result and settles the execution lane", async () => {
-    const response=deferred();const h=fixture({planCalculation:()=>response.promise});
-    await h.review();h.controller.stop();
-    response.resolve({planId:"x".repeat(32)});await flush();
-    assert.equal(h.view.state.phase,"idle");assert.equal(h.view.state.plan,null);assert.equal(h.view.state.isIdle,true);
-});
+
 
 
 
 test("a used review is released after acceptance; failed release is recoverable without resubmitting", async () => {
     const h=fixture({discardPlan:async()=>{throw new Error("Connection lost");}});
-    await h.run(false);assert.equal(h.view.state.recoverable,true);
+    h.storage.write({intent:h.intent(),context:{automatic:false},cancelRequested:false,jobId:null,pending:{planId:"a".repeat(32),requestId:"r".repeat(32)}});
+    h.controller.destroy();
+    h.controller=new CalculationExecutor(h.options);await h.controller.start();await flush();assert.equal(h.controller.snapshot.recoverable,true);
     assert.ok(h.storage.read().releasePlanId);assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
     h.api.discardPlan=async()=>({discarded:true});void h.controller.retry();await flush();
     assert.equal(h.storage.read().releasePlanId,null);
     assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
 });
 
-test("card confirmation reuses only an unexpired plan for the complete reviewed intent", async () => {
-    const changes = [
-        {},
-        { source: {...source,itemId:"other"} },
-        { area:box(80) },
-        { area:{kind:"catalogSelection",catalogSelection:CATALOG_SELECTION} },
-        { calculations:[{label:"Mean",expression:"mean(a + 1)"}] },
-        { calculations:[{label:"Renamed",expression:"mean(a)"}] },
-        { calculations:[{label:"Mean",expression:"mean(a)"},{label:"Min",expression:"min(a)"}] },
-        { targetChunkPixels:1048576 },
-    ];
-    for (const change of changes) {
-        const h=fixture();await h.review();
-        const reviewed=h.controller.snapshot.plan;
-        h.execute({...h.intent(),...change});await flush();
-        const reused=Object.keys(change).length===0;
-        assert.equal(h.requests.filter(r=>r[0]==="plan").length,reused?1:2);
-        assert.equal(h.storage.read().pending,null);
-        await h.finish(); assert.equal(h.controller.snapshot.completedTimings.planReused,reused);
-        assert.equal(h.requests.find(r=>r[0]==="submit")[1].planId===reviewed.planId,reused);
-        assert.ok(h.requests.some(r=>r[0]==="discard"&&r[1]===reviewed.planId));
-    }
-    const h=fixture();await h.review();
-    const expired=h.controller.snapshot.plan;expired.expiresAt="2000-01-01";
-    h.execute(h.intent());await flush();
-    assert.equal(h.requests.filter(r=>r[0]==="plan").length,2);
-    await h.finish(); assert.equal(h.controller.snapshot.completedTimings.planReused,false);
-    assert.ok(h.requests.findIndex(r=>r[0]==="discard"&&r[1]===expired.planId)<h.requests.findIndex(r=>r[0]==="submit"));
-});
 
-test("server rejection of a reused plan does not submit a replacement or accept stale work", async () => {
-    const h=fixture();await h.review();
-    h.api.submitCalculation=async()=>{throw new ProcessingRequestError("The raster changed. Create a new plan.",409);};
-    h.execute(h.intent());await flush();
-    assert.equal(h.requests.filter(r=>r[0]==="plan").length,1);
-    assert.equal(h.controller.snapshot.unfinishedCalculation,null);
-    assert.equal(h.controller.snapshot.admission,"retry");
-    assert.match(h.view.state.message,/raster changed/);
-});
 
-test("preparation never submits; stale and repeated submit instructions cannot create jobs", async () => {
-    const h = fixture();
-    h.controller.prepare(h.intent()); await flush();
-    const first = h.controller.snapshot.plan;
-    assert.equal(h.requests.some(([kind]) => kind === "submit"), false);
-    assert.deepEqual(h.controller.snapshot.plannedCalculation.area, box(77));
-    h.controller.prepare(h.intent({ area: box(80) })); await flush();
-    const second = h.controller.snapshot.plan;
-    h.controller.submit(first.planId); await flush();
-    assert.equal(h.requests.some(([kind]) => kind === "submit"), false);
-    h.controller.submit(second.planId); h.controller.submit(second.planId); await flush();
-    assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 1);
-    assert.deepEqual(h.controller.snapshot.unfinishedCalculation.calculation.area, box(80));
-});
 
-test("expired prepared plans require a new caller decision before submission", async () => {
-    const h = fixture();
-    h.controller.prepare(h.intent()); await flush();
-    const expired = h.controller.snapshot.plan;
-    expired.expiresAt = "2000-01-01";
-    h.controller.submit(expired.planId); await flush();
-    assert.equal(h.requests.filter(([kind]) => kind === "plan").length, 2);
-    assert.equal(h.requests.some(([kind]) => kind === "submit"), false);
-    assert.ok(h.requests.some(([kind, id]) => kind === "discard" && id === expired.planId));
-    h.controller.submit(h.controller.snapshot.plan.planId); await flush();
-    assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 1);
-});
+
+
+
+
 
 test("caller metadata survives the legacy storage format without choosing reload cancellation", async () => {
     const h = fixture();
-    h.controller.prepare(h.intent()); await flush();
     const context = { automatic: true };
-    h.controller.submit(h.controller.snapshot.plan.planId, context); await flush();
+    h.controller.submit(h.intent(), context); await flush();
     context.automatic = false;
     const stored = JSON.parse([...h.data.values()][0]);
     assert.equal(stored.automatic, true);
@@ -589,14 +426,14 @@ test("polygon uploads use owned transport and recovery stores only their small r
     const api = new ProcessingApiClient(async (url, options) => {
         requests.push({url, ...options});
         const response = url.endsWith("/jobs") ? {jobs:[]} : url.endsWith("/polygon-areas") && options.method === "POST"
-            ? {polygonArea,bbox:[0,0,1,1],matched:1} : url.includes("/plans/")
-                ? readyPlanResponse(url,{operation:"raster.aggregate.v1",grid,expiresAt:"2099-01-01T00:00:00Z"}) : {deleted:true};
+            ? {polygonArea,bbox:[0,0,1,1],matched:1} : url.endsWith("/raster-calculations")
+                ? {jobId:"d".repeat(32),operation:"raster.aggregate.v1",status:"queued",sources:{a:source},calculations:[{label:"Mean",expression:"mean(a)"}],area:{kind:"polygons",bounds:[0,0,1,1]},grid:null,progress:{},result:null} : {deleted:true};
         return new Response(JSON.stringify(response), {status:200,headers:{"Content-Type":"application/json"}});
     });
     const polygons = [{type:"Polygon",coordinates:[[[0,0],[1,0],[1,1],[0,0]]]}];
     await api.uploadPolygonArea(polygons);
     const h = fixture(); const intent = h.intent({area:{kind:"polygonArea",polygonArea}});
-    await api.planCalculation(intent);
+    await api.submitCalculation({...intent,requestId:"r".repeat(32)});
     await api.discardPolygonArea(polygonArea.id);
     assert.equal(requests[0].url,"/api/processing/jobs");
     assert.deepEqual(JSON.parse(requests[1].body),{polygons});
@@ -609,5 +446,5 @@ test("polygon uploads use owned transport and recovery stores only their small r
     h.storage.write({intent,jobId:"d".repeat(32),pending:null,cancelRequested:false});
     assert.deepEqual(h.storage.read().intent.area,intent.area);
     assert.ok([...h.data.values()][0].length<1000);
-    await assert.rejects(api.planCalculation({...intent,area:{...intent.area,polygons}}),/Invalid polygon calculation area/);
+    await assert.rejects(api.submitCalculation({...intent,requestId:"r".repeat(32),area:{...intent.area,polygons}}),/Invalid polygon calculation area/);
 });

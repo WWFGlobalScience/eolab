@@ -1,488 +1,266 @@
-/** Track one submitted calculation at a time, saving enough state to resume after reload. */
+/** Submit and observe a calculation whose preparation and execution share one job. */
 import { ACTIVE_JOB_STATES } from "./jobs.js";
 import { ProcessingRequestError, waitBeforeCapacityRetry } from "./api.js";
 import { calculationIntent } from "./calculation-session.js";
-
-/** Compare calculation settings without relying on object identity.
- * @param {Object|null} value Raster, area and formula settings.
- * @return {string} Serialized comparison key.
- */
-function identity(value) { return JSON.stringify(value); }
+import { describeJobProgress } from "./presentation.js";
 
 /**
- * Progress sent to the statistics controller. The saved submission and scheduler
- * fields stay private. The snapshot and unfinished-calculation description are
- * frozen; consumers also treat the enclosed job and plan API values as read-only.
  * @typedef {Object} CalculationExecutionSnapshot
- * @property {boolean} isIdle No calculation or API step remains in progress. This can follow
- * success, cancellation, failure, or a plan waiting for confirmation; it does not mean success.
- * @property {"busy"|"retry"|"ready"} admission Busy includes cancellation/recovery;
- * retry requires an explicit new request after failure; ready permits work.
- * @property {{calculation:Readonly<Object>,context:Readonly<Object>|null,cancelRequested:boolean}|null} unfinishedCalculation
- * Description of a submission still being tracked in this tab. Used to restore cards
- * after reload, including lost submission responses. Null when nothing needs resuming.
- * @property {boolean} recoverable A saved submission needs Recover / retry after an API or storage failure.
- * @property {string} phase Execution phase, independent of editor validation.
- * @property {string} message Execution feedback.
- * @property {Object|null} plan Prepared server plan awaiting a submit instruction.
- * @property {Readonly<Object>|null} plannedCalculation Settings that produced the prepared plan.
- * @property {Object|null} currentJob Job being tracked, including its ID, status and progress.
- * @property {Object|null} completedJob Last successfully completed job, retained during replacement.
- * Contains jobId/status/source metadata; its result property contains values and export URLs.
- * @property {Readonly<Object>|null} completedCalculation Calculation settings that produced completedJob.
- * @property {Object|null} completedTimings Planning/submission timestamps in browser-clock milliseconds
- * plus server planning measurements, planning-notification counters, cleanup and
- * result-delivery diagnostics. Consumers compute elapsed durations using the same
- * browser clock. Reused plans omit planning-notification counters.
- * @property {ReadonlyArray<Object>} jobs Calculation history from the shared observer.
- * @property {string} historyError Shared history retrieval error.
+ * @property {boolean} isIdle No submission, cancellation or replacement remains.
+ * @property {"busy"|"retry"|"ready"} admission Whether another calculation can proceed.
+ * @property {Object|null} unfinishedCalculation Inputs, caller context and cancellation intent.
+ * @property {boolean} recoverable A saved submission requires retry after a failure.
+ * @property {string} phase Job phase or local submission state.
+ * @property {string} message Progress or error description.
+ * @property {Object|null} currentJob Job including prepared grid and estimates when available.
+ * @property {Object|null} completedJob Last successful job.
+ * @property {Object|null} completedCalculation Inputs for the last successful job.
+ * @property {Object|null} completedTimings Submission and result-observation measurements.
+ * @property {ReadonlyArray<Object>} jobs Summary history.
+ * @property {string} historyError History retrieval error.
  */
 
-/** Submit and track calculations, cancel replacements, and resume saved submissions after reload. */
+/** Preserve submission identity and cancellation across browser reloads. */
 export class CalculationExecutor {
-    /** Latest progress, confirmation plan and completed job for the status callback. @type {Object} */
-    #executionStatus;
-    /** Session-stored submission, kept until completion/cancellation is confirmed.
-     * Includes the request key even when the submission response was lost. @type {Object|null}
-     */
-    #savedSubmission;
-    /** Newest calculation waiting for planning or for an older job to stop. @type {Object|null} */
-    #pendingCalculation = null;
-    /** An asynchronous execution step is already running; prevent overlapping API actions. @type {boolean} */
-    #isAdvancing = false;
-    /** A failed step needs an explicit retry or, when no job remains, a new request. @type {boolean} */
+    #status;
+    #saved;
+    #pending = null;
+    #advancing = false;
     #retryRequired = false;
-    /** Calculation matching the prepared plan. @type {Readonly<Object>|null} */
-    #plannedCalculation = null;
-    /** Timing of the prepared plan, carried into submission. @type {Object|null} */
-    #planTiming = null;
-    /** Cancels a capacity wait, never an in-flight submission with an uncertain outcome. @type {AbortController|null} */
     #capacityWait = null;
+    #observationChanged = false;
 
-    /** Connect execution providers without an editor or DOM dependency.
-     * @param {Object} dependencies Execution dependencies.
-     * @param {import("./api.js").ProcessingApiClient} dependencies.api Processing transport.
-     * @param {import("./jobs.js").ProcessingJobs} dependencies.jobs Shared job observer.
-     * @param {import("./calculation-session.js").CalculationSessionStorage} dependencies.storage Saves unfinished submissions across reloads in this tab.
-     * @param {function(CalculationExecutionSnapshot):void} dependencies.onChange Updates the owning statistics controller with execution progress.
-     * @param {function(Object|null):void} [dependencies.onActivity] Sends the working sampling area (or null) to composition for its activity indicator.
-     * @param {function():string} [dependencies.requestId] Idempotency key factory.
-     * @param {function():number} [dependencies.now] Monotonic timestamp in milliseconds, normally performance.now().
+    /** Connect transport, job observation and per-caller recovery storage.
+     * @param {Object} options Providers.
+     * @param {Object} options.api Processing API client.
+     * @param {Object} options.jobs Shared job observer.
+     * @param {Object} options.storage Per-caller session storage.
+     * @param {(snapshot:CalculationExecutionSnapshot)=>void} options.onChange Progress consumer.
+     * @param {(area:Object|null)=>void} [options.onActivity] Working-area callback.
+     * @param {()=>string} [options.requestId] Submission key factory.
+     * @param {()=>number} [options.now] Monotonic clock in milliseconds.
      */
-    constructor({ api, jobs, storage, onChange, onActivity = () => {},
-        requestId = () => crypto.randomUUID(),
-        now = () => performance.now() }) {
-        Object.assign(this, { api, jobs, storage, onChange, onActivity, requestId, now });
-        this.#executionStatus = { plan: null, phase: "idle", message: "",
-            completedJob: null, completedCalculation: null, completedTimings: null, currentJob: null, jobs: [], historyError: "" };
-        this.#savedSubmission = storage.read();
-        this.plansToRelease = new Set();
+    constructor({api, jobs, storage, onChange, onActivity = () => {},
+        requestId = () => crypto.randomUUID(), now = () => performance.now()}) {
+        Object.assign(this, {api, jobs, storage, onChange, onActivity, requestId, now});
+        this.#status = {phase: "idle", message: "", currentJob: null, completedJob: null,
+            completedCalculation: null, completedTimings: null, jobs: [], historyError: ""};
+        this.#saved = storage.read();
         this.destroyed = false;
         this.unsubscribe = jobs.subscribe(() => this.#receiveJobs());
     }
 
-    /** Read calculation progress and whether work remains.
-     * @return {CalculationExecutionSnapshot} Current execution snapshot.
-     */
+    /** Read progress and admission state together. @return {CalculationExecutionSnapshot} Current snapshot. */
     get snapshot() {
-        const isIdle = !this.#savedSubmission && !this.#pendingCalculation && !this.#isAdvancing &&
-            (this.#retryRequired || this.plansToRelease.size === 0);
-        // Session storage names the calculation settings "intent".
-        const unfinishedCalculation = this.#savedSubmission ? Object.freeze({ calculation: this.#savedSubmission.intent,
-            context: this.#savedSubmission.context, cancelRequested: this.#savedSubmission.cancelRequested }) : null;
-        return Object.freeze({ ...this.#executionStatus, jobs: Object.freeze([...this.#executionStatus.jobs]),
-            isIdle, admission: !isIdle ? "busy" : this.#retryRequired ? "retry" : "ready",
-            unfinishedCalculation, plannedCalculation: this.#plannedCalculation, recoverable: !!this.#savedSubmission && this.#retryRequired });
+        const isIdle = !this.#saved && !this.#pending && !this.#advancing;
+        return Object.freeze({...this.#status, jobs: Object.freeze([...this.#status.jobs]), isIdle,
+            admission: !isIdle ? "busy" : this.#retryRequired ? "retry" : "ready",
+            recoverable: !!this.#saved && this.#retryRequired,
+            unfinishedCalculation: this.#saved ? Object.freeze({calculation: this.#saved.intent,
+                context: this.#saved.context, cancelRequested: this.#saved.cancelRequested}) : null});
     }
 
-    /** Retry a failed step using the saved submission or pending plan-release IDs.
-     * Called by Recover / retry; a lost submission response keeps its request key.
-     * @return {Promise<void>} Current progress without creating a new calculation request.
-     */
-    async retry() { this.#retryRequired = false; await this.#advanceExecution(); }
-
-    /** Resume observing the job or submission recovered from session storage.
-     * The caller requests any cancellation before start; recovery itself does not choose a policy.
-     * @return {Promise<void>} Initial job refresh and any submission/cancellation steps.
-     */
+    /** Resume saved work or recover an uncertain submission. @return {Promise<void>} Initial observation and actions. */
     async start() {
-        if (this.#savedSubmission) {
-            const { jobId } = this.#savedSubmission;
-            if (jobId) this.jobs.tracked.add(jobId);
-            try { this.storage.write(this.#savedSubmission); }
-            catch (error) { this.#executionStatus.message = error.message; this.#retryRequired = true; this.#notifyListeners(); }
-        }
+        if (this.#saved?.jobId) this.jobs.tracked.add(this.#saved.jobId);
         await this.jobs.refresh();
-        await this.#advanceExecution();
+        await this.#advance();
     }
 
-    /** Drop a requested calculation that has not reached submission yet.
-     * The statistics controller calls this when the area or execution settings
-     * change. Stop and replacement requests also use it to discard older work.
-     * Release unused plans. Submitted work continues until the caller invokes stop().
-     * @return {void}
-     */
-    discardPendingCalculation() {
-        const target = this.#pendingCalculation;
-        target?.abort?.abort();
-        this.#pendingCalculation = null;
-        this.#queuePlanRelease();
-        if (target?.plan) this.plansToRelease.add(target.plan.planId);
-        if (!this.#savedSubmission) this.#executionStatus.phase = "idle";
-        if (this.plansToRelease.size) void this.#advanceExecution();
-    }
+    /** Retry using the original request key. @return {Promise<void>} Currently available lifecycle actions. */
+    async retry() { this.#retryRequired = false; await this.#advance(); }
 
-    /** Save the cancellation request before contacting the server.
-     * Saving it in session storage lets reload continue the cancellation. If a
-     * submission response was lost, repeat that submission with the same request
-     * key to obtain its job ID, then cancel that job rather than creating another.
-     * A storage failure is reported; the in-memory cancellation still proceeds.
-     * @return {void}
-     */
-    #requestCancellation() {
-        if (!this.#savedSubmission) return;
-        this.#savedSubmission.cancelRequested = true;
-        this.#capacityWait?.abort();
-        try { this.storage.write(this.#savedSubmission); }
-        catch (error) { this.#executionStatus.message = error.message; }
-        void this.#advanceExecution();
-    }
+    /** Forget an unsent replacement; stop() cancels accepted work. @return {void} */
+    discardPendingCalculation() { this.#pending = null; }
 
-    /** Remove the prepared plan and queue its server release.
-     * Keep its ID in plansToRelease so a failed DELETE can be retried. This method
-     * only queues cleanup; releasePlans() performs the request and removes the ID
-     * after success. Called when that calculation changes or the executor closes.
-     * @return {void}
+    /** Submit complete inputs; the worker prepares and executes without another browser instruction.
+     * @param {Object} calculation Raster, selected area and named formulas.
+     * @param {Object|null} [context=null] Caller-owned recovery metadata.
+     * @return {void} Progress is delivered through onChange.
+     * @throws {TypeError} If the calculation inputs violate the browser contract.
      */
-    #queuePlanRelease() {
-        const plan = this.#executionStatus.plan;
-        this.#executionStatus.plan = null;
-        this.#plannedCalculation = null;
-        this.#planTiming = null;
-        if (plan) this.plansToRelease.add(plan.planId);
-    }
-
-    /** Ask Processing to discard every queued unused plan before planning again.
-     * Keep a plan ID until its DELETE succeeds so failure cannot silently lose cleanup.
-     * @return {Promise<void>} Completion after every queued release is acknowledged.
-     * @throws {Error} If Processing cannot acknowledge a plan release.
-     */
-    async #releasePlans() {
-        while (this.plansToRelease.size) {
-            const id = this.plansToRelease.values().next().value;
-            await this.api.discardPlan(id);
-            this.plansToRelease.delete(id);
-        }
-    }
-
-    /** Prepare a calculation without submitting a job; replace older pending work.
-     * Copy validated settings and reuse only a matching, unexpired plan. The caller
-     * decides whether to submit the returned plan or wait for user confirmation.
-     * A different calculation waits for cancellation of any submitted predecessor.
-     * @param {Object} calculation Raster, area, formulas and optional targetChunkPixels.
-     * @return {void} Progress and the prepared plan arrive through onChange.
-     * @throws {TypeError} If calculation settings violate the input contract.
-     */
-    prepare(calculation) {
+    submit(calculation, context = null) {
         if (this.destroyed) return;
-        const snapshot = calculationIntent(calculation);
-        if (this.#retryRequired && this.#savedSubmission) { this.discardPendingCalculation(); this.#notifyListeners(); return; }
-        if ((this.#pendingCalculation && identity(this.#pendingCalculation.intent) === identity(snapshot)) ||
-            (this.#savedSubmission && !this.#savedSubmission.cancelRequested && identity(this.#savedSubmission.intent) === identity(snapshot))) return;
-        const plan = this.#executionStatus.plan && identity(snapshot) === identity(this.#plannedCalculation) ? this.#executionStatus.plan : null;
-        if (plan) this.#executionStatus.plan = null;
-        this.discardPendingCalculation();
+        const intent = calculationIntent(calculation);
+        if (this.#retryRequired && this.#saved) return;
+        if ([this.#pending, this.#saved].some(item => item && !item.cancelRequested &&
+            JSON.stringify(item.intent) === JSON.stringify(intent))) return;
+        this.#pending = {intent, context: context && Object.freeze({...context})};
         this.#retryRequired = false;
-        this.#pendingCalculation = { intent: snapshot, plan, abort: new AbortController() };
-        this.#requestCancellation();
-        this.#executionStatus.phase = "waiting";
-        this.#executionStatus.message = "Preparing calculation…";
-        this.#notifyListeners();
-        void this.#advanceExecution();
+        if (this.#saved) this.#cancelSaved();
+        void this.#advance();
     }
 
-    /** Submit the currently prepared plan on the caller's explicit instruction.
-     * Stale plan IDs do nothing. Expired plans are prepared again and returned to
-     * the caller for a new decision; they are never submitted without that decision.
-     * Persist the request key before transport so a lost response cannot duplicate work.
-     * @param {string} planId ID from the current plan snapshot.
-     * @param {Readonly<Object>|null} [context=null] Caller-owned recovery metadata; execution never interprets it.
-     * @return {void} Submission progress or a storage error arrives through onChange.
-     */
-    submit(planId, context = null) {
-        const plan = this.#executionStatus.plan;
-        if (this.destroyed || !plan || !this.snapshot.isIdle || this.#retryRequired || plan?.planId !== planId) return;
-        if (Date.parse(plan.expiresAt) <= Date.now()) { this.prepare(this.#plannedCalculation); return; }
-        const record = { intent: this.#plannedCalculation, context: context && Object.freeze({ ...context }), cancelRequested: false,
-            pending: { planId, requestId: this.requestId() }, jobId: null };
-        try { this.storage.write(record); }
-        catch (error) {
-            this.#retryRequired = true;
-            this.#executionStatus.phase = "error";
-            this.#executionStatus.message = error.message;
-            this.#queuePlanRelease();
-            this.#notifyListeners();
-            return;
-        }
-        this.#savedSubmission = record;
-        this.trace = this.#planTiming;
-        this.#executionStatus.plan = null;
-        this.#plannedCalculation = null;
-        this.#planTiming = null;
-        void this.#advanceExecution();
+    /** Record cancellation before contacting the server. @return {void} */
+    #cancelSaved() {
+        if (!this.#saved) return;
+        this.#saved.cancelRequested = true;
+        this.#capacityWait?.abort();
+        try { this.storage.write(this.#saved); }
+        catch (error) { this.#status.message = error.message; }
     }
 
-    /** Cancel pending and submitted work; preserve cancellation across reloads. @return {void} */
+    /** Cancel current work and discard its pending replacement. @return {void} */
     stop() {
-        this.discardPendingCalculation();
-        this.#requestCancellation();
-        if (!this.#savedSubmission) this.#executionStatus.message = "Calculation cancelled.";
-        this.#notifyListeners();
+        this.#pending = null;
+        this.#cancelSaved();
+        if (!this.#saved) this.#status.message = "Calculation cancelled.";
+        void this.#advance();
+        this.#notify();
     }
 
-    /** Submit the saved request, waiting automatically when the server queue is full.
-     * Retain the same request key through retries and lost responses. A known
-     * rejection proves there is no job to cancel; cancellation can then discard
-     * the unused plan immediately. If the plan expires while waiting, prepare it
-     * again and return it to the caller's existing confirmation policy.
-     * @return {Promise<Object|null>} Accepted job, or null after cancellation/replanning.
-     * @throws {Error} Non-capacity failures; uncertain submissions remain recoverable.
+    /** Retry capacity rejections with the same submission key.
+     * @return {Promise<Object|null>} Accepted job or null after a known rejection and cancellation.
+     * @throws {Error} If admission fails or its outcome remains uncertain.
      */
     async #submitWhenCapacityAvailable() {
-        const saved = this.#savedSubmission;
+        const saved = this.#saved;
         for (let attempt = 0; ; attempt++) {
             try {
                 if (this.trace) this.trace.submissionAttempts = attempt + 1;
-                return await this.api.submitCalculation(saved.pending);
-            }
-            catch (error) {
+                return await this.api.submitCalculation(saved.pending.planId ? saved.pending :
+                    {...saved.intent, requestId: saved.pending.requestId});
+            } catch (error) {
                 if (error instanceof ProcessingRequestError && error.isCapacityRejection) {
-                    const capacityWaitCancellation = this.#capacityWait = new AbortController();
-                    if (saved.cancelRequested || this.destroyed) capacityWaitCancellation.abort();
-                    this.#executionStatus.phase = "waiting";
-                    this.#executionStatus.message = "Waiting for server capacity; retrying automatically…";
-                    this.#notifyListeners();
-                    const waitStarted = this.now();
-                    try { await waitBeforeCapacityRetry(error, attempt, capacityWaitCancellation.signal); continue; }
+                    const wait = this.#capacityWait = new AbortController();
+                    if (saved.cancelRequested || this.destroyed) wait.abort();
+                    this.#status.phase = "waiting";
+                    this.#status.message = "Waiting for server capacity; retrying automatically…";
+                    this.#notify();
+                    const started = this.now();
+                    try { await waitBeforeCapacityRetry(error, attempt, wait.signal); continue; }
                     catch (cancelled) { if (cancelled.name !== "AbortError") throw cancelled; }
                     finally {
-                        if (this.trace) this.trace.capacityWaitSeconds = (this.trace.capacityWaitSeconds ?? 0) + (this.now() - waitStarted) / 1000;
+                        if (this.trace) this.trace.capacityWaitSeconds = (this.trace.capacityWaitSeconds ?? 0) + (this.now()-started)/1000;
                         this.#capacityWait = null;
                     }
                 } else if (!(error instanceof ProcessingRequestError) || error.status < 400 || error.status >= 500 || error.status === 408) {
-                    throw error; // The request might already have created a job.
+                    throw error;
                 }
-                this.plansToRelease.add(saved.pending.planId);
                 this.storage.clear();
-                this.#savedSubmission = null;
-                if (saved.cancelRequested || this.destroyed) {
-                    this.#executionStatus.phase = "idle";
-                    this.#executionStatus.message = "Calculation cancelled.";
-                    return null;
-                }
-                if (error.code === "plan_unavailable") {
-                    this.#pendingCalculation = { intent: saved.intent, plan: null, abort: new AbortController() };
-                    return null;
-                }
+                this.#saved = null;
+                if (saved.cancelRequested || this.destroyed) return null;
                 throw error;
             }
         }
     }
 
-    /**
-     * Advance the calculation through planning, submission, cancellation and completion.
-     * These are the fixed job lifecycle operations, not user-defined processing steps.
-     * Session storage preserves unfinished submission details across reloads.
-     * Reusing a request key after a lost response prevents duplicate jobs. Waiting
-     * until cancellation finishes prevents the replacement from overlapping the
-     * old job. Return while a job runs; the shared job observer calls back later.
-     * @return {Promise<void>} Completion of the API operations that can proceed now.
+    /** Advance submission and cancellation; observation resumes running jobs.
+     * @return {Promise<void>} Completion of currently available actions.
      */
-    async #advanceExecution() {
-        if (this.#isAdvancing || this.destroyed || this.#retryRequired) return;
-        this.#isAdvancing = true;
+    async #advance() {
+        if (this.#advancing || this.destroyed || this.#retryRequired) return;
+        this.#advancing = true;
+        this.#observationChanged = false;
         try {
-            if (this.plansToRelease.size) {
-                this.#executionStatus.phase = "releasing";
-                this.#executionStatus.message = "Releasing the previous calculation check…";
-                this.#notifyListeners();
-                await this.#releasePlans();
-                if (!this.#savedSubmission) { this.#executionStatus.phase = "idle"; this.#executionStatus.message = ""; }
+            if (!this.#saved && this.#pending) {
+                const record = {...this.#pending, cancelRequested: false, pending: {requestId: this.requestId()}, jobId: null};
+                this.storage.write(record);
+                this.#saved = record;
+                this.#pending = null;
+                this.trace = {submissionStartedAtMs: this.now()};
             }
-            if (this.#savedSubmission?.pending) {
-                this.#executionStatus.phase = "submitting";
-                this.#executionStatus.message = "Confirming calculation submission…";
-                this.#notifyListeners();
-                let job;
-                try {
-                    if (this.trace) this.trace.submissionStartedAtMs = this.now();
-                    job = await this.#submitWhenCapacityAvailable();
-                    if (this.trace) this.trace.submissionFinishedAtMs = this.now();
-                }
-                catch (error) {
-                    this.trace = null; // A lost response prevents measuring the complete submission interval.
-                    throw error;
-                }
+            if (this.#saved?.pending) {
+                this.#status.phase = "submitting";
+                this.#status.message = "Submitting calculation…";
+                this.#notify();
+                const job = await this.#submitWhenCapacityAvailable();
                 if (!job) return;
-                if (this.trace) {
-                    this.trace.planId = this.#savedSubmission.pending.planId;
-                    this.trace.jobId = job.jobId;
-                }
-                if (job.status === "ready") this.api.diagnostics?.record("ready-received", {jobId: job.jobId, trigger: "submission"});
-                this.#savedSubmission.jobId = job.jobId;
-                this.#savedSubmission.releasePlanId = this.#savedSubmission.pending.planId;
-                this.#savedSubmission.pending = null;
-                this.storage.write(this.#savedSubmission);
+                if (this.trace) { this.trace.submissionFinishedAtMs = this.now(); this.trace.jobId = job.jobId; }
+                this.#saved.jobId = job.jobId;
+                // Recover old tabs without changing their pending plan-based requests.
+                this.#saved.releasePlanId = this.#saved.pending.planId ?? null;
+                this.#saved.pending = null;
+                this.storage.write(this.#saved);
                 this.jobs.tracked.add(job.jobId);
                 this.jobs.accept(job);
             }
-            if (this.#savedSubmission?.releasePlanId) {
-                if (this.trace) this.trace.cleanupStartedAtMs = this.now();
-                await this.api.discardPlan(this.#savedSubmission.releasePlanId);
-                if (this.trace) this.trace.cleanupFinishedAtMs = this.now();
-                this.#savedSubmission.releasePlanId = null;
-                this.storage.write(this.#savedSubmission);
+            if (this.#saved?.releasePlanId) {
+                await this.api.discardPlan(this.#saved.releasePlanId);
+                this.#saved.releasePlanId = null;
+                this.storage.write(this.#saved);
             }
-            if (this.#savedSubmission?.jobId) {
-                const job = this.jobs.jobs.find(item => item.jobId === this.#savedSubmission.jobId);
-                if (!job) { await this.jobs.refresh(); return; }
-                this.#executionStatus.currentJob = job;
-                if (ACTIVE_JOB_STATES.has(job.status)) {
-                    this.#executionStatus.phase = this.#savedSubmission.cancelRequested ? "cancelling" : job.status;
-                    this.#executionStatus.message = this.#savedSubmission.cancelRequested ? "Cancelling calculation…" : "";
-                    if (this.#savedSubmission.cancelRequested && job.status !== "cancelling") await this.jobs.action(job.jobId, "cancel");
-                    return;
-                }
-                if (job.status === "ready" && !this.#savedSubmission.cancelRequested) {
-                    if (this.trace) {
-                        this.trace.executorReadyAtMs = this.now();
-                        this.trace.deliveryDiagnostics = this.api.diagnostics?.snapshot(this.trace.submissionStartedAtMs,
-                            this.trace.planId, job.jobId);
-                    }
-                    this.#executionStatus.completedJob = job; this.#executionStatus.completedCalculation = this.#savedSubmission.intent;
-                    this.#executionStatus.completedTimings = this.trace ?? null;
-                    this.#executionStatus.message = "Calculation complete.";
-                } else if (["failed", "interrupted"].includes(job.status) && !this.#savedSubmission.cancelRequested) {
-                    this.#executionStatus.message = job.error?.detail ?? "Calculation interrupted. Click Calculate to try again.";
-                } else if (this.#savedSubmission.cancelRequested || job.status === "cancelled") {
-                    this.#executionStatus.message = this.#pendingCalculation ? "Waiting for the latest sampling box…" : "Calculation cancelled.";
-                }
-                this.jobs.tracked.delete(job.jobId);
-                this.storage.clear(); this.#savedSubmission = null; this.#executionStatus.currentJob = null;
-                this.trace = null;
-                this.#executionStatus.phase = "idle";
+            if (!this.#saved?.jobId) return;
+            let job = this.jobs.jobs.find(item => item.jobId === this.#saved.jobId);
+            if (!job) {
+                await this.jobs.refresh();
+                job = this.jobs.jobs.find(item => item.jobId === this.#saved.jobId);
+                if (!job) throw new Error(this.jobs.error || "The saved calculation could not be retrieved.");
             }
-            if (!this.#pendingCalculation) return;
-            const target = this.#pendingCalculation;
-            this.#executionStatus.phase = "planning";
-            this.#executionStatus.message = "Preparing calculation…";
-            this.#notifyListeners();
-            if (target.plan && Date.parse(target.plan.expiresAt) <= Date.now()) {
-                this.plansToRelease.add(target.plan.planId);
-                target.plan = null;
-                await this.#releasePlans();
-            }
-            if (target !== this.#pendingCalculation || this.destroyed) return;
-            let plan;
-            // Monotonic browser timestamps in milliseconds, not dates or durations.
-            const planningStartedAtMs = this.now();
-            const planReused = !!target.plan;
-            try { plan = target.plan ?? await this.api.planCalculation(target.intent, target.abort.signal, status => {
-                if (target !== this.#pendingCalculation || this.destroyed) return;
-                this.#executionStatus.phase = ["queued", "waiting-capacity"].includes(status) ? "waiting" : "planning";
-                this.#executionStatus.message = status === "waiting-capacity" ? "Waiting for server capacity; retrying automatically…"
-                    : status === "queued" ? "Waiting to check calculation size…" : "Checking calculation size…";
-                this.#notifyListeners();
-            }); }
-            catch (error) { if (target !== this.#pendingCalculation || error.name === "AbortError") return; throw error; }
-            const planningFinishedAtMs = this.now();
-            if (target !== this.#pendingCalculation || this.destroyed) {
-                this.plansToRelease.add(plan.planId);
-                await this.#releasePlans();
+            this.#status.currentJob = job;
+            if (ACTIVE_JOB_STATES.has(job.status)) {
+                this.#status.phase = this.#saved.cancelRequested ? "cancelling" : job.progress?.phase ?? job.status;
+                this.#status.message = this.#saved.cancelRequested ? "Cancelling calculation…" : describeJobProgress(job);
+                if (this.#saved.cancelRequested && job.status !== "cancelling") await this.jobs.action(job.jobId, "cancel");
                 return;
             }
-            target.plan = plan;
-            this.#executionStatus.plan = plan;
-            this.#plannedCalculation = target.intent;
-            this.#planTiming = { planningStartedAtMs, planningFinishedAtMs, planReused, serverPlan: plan.timing ?? null,
-                planningObservation: planReused ? null : plan.planningObservation ?? null };
-            this.#pendingCalculation = null;
-            this.#executionStatus.phase = "idle";
-            this.#executionStatus.message = "Calculation prepared.";
+            if (job.status === "ready" && !this.#saved.cancelRequested) {
+                if (this.trace) {
+                    this.trace.executorReadyAtMs = this.now();
+                    this.trace.deliveryDiagnostics = this.api.diagnostics?.snapshot(this.trace.submissionStartedAtMs, null, job.jobId);
+                }
+                this.#status.completedJob = job;
+                this.#status.completedCalculation = this.#saved.intent;
+                this.#status.completedTimings = this.trace ?? null;
+                this.#status.message = "Calculation complete.";
+            } else this.#status.message = this.#saved.cancelRequested || job.status === "cancelled"
+                ? "Calculation cancelled." : job.error?.detail ?? "Calculation interrupted. Calculate to try again.";
+            this.jobs.tracked.delete(job.jobId);
+            this.storage.clear();
+            this.#saved = null;
+            this.trace = null;
+            this.#status.currentJob = null;
+            this.#status.phase = "idle";
         } catch (error) {
             this.#retryRequired = true;
-            if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
-            this.#pendingCalculation = null;
-            this.#executionStatus.phase = "error";
-            this.#executionStatus.message = `${error.message}${this.#savedSubmission ? " Recover / retry to confirm or cancel the same job safely." : " Click Calculate or select a new sampling box to retry."}`;
+            this.trace = null;
+            this.#pending = null;
+            this.#status.phase = "error";
+            this.#status.message = `${error.message}${this.#saved ? " Recover / retry to confirm or cancel the same job safely." : " Click Calculate to retry."}`;
         } finally {
-            if (this.destroyed) await this.#releasePlans().catch(() => {});
-            this.#isAdvancing = false;
-            this.#notifyListeners();
-            // Finish the old plan request and its cleanup before processing a replacement.
-            if (!this.#retryRequired && !this.destroyed && !this.#savedSubmission &&
-                (this.#pendingCalculation || this.plansToRelease.size)) {
-                queueMicrotask(() => void this.#advanceExecution());
-            }
+            this.#advancing = false;
+            this.#notify();
+            if (((!this.#saved && this.#pending) || this.#observationChanged) && !this.#retryRequired && !this.destroyed)
+                queueMicrotask(() => void this.#advance());
         }
-        if (this.#savedSubmission?.pending && !this.#retryRequired) await this.#advanceExecution();
-        else if (this.#pendingCalculation && !this.#retryRequired) await this.#advanceExecution();
     }
 
-    /** Consume shared progress without replacing current result with an older job. @return {void} */
+    /** Apply job history and continue this caller's observed work. @return {void} */
     #receiveJobs() {
-        this.#executionStatus.jobs = this.jobs.jobs.filter(job => job.operation === "raster.aggregate.v1");
-        this.#executionStatus.historyError = this.jobs.error;
-        if (this.#executionStatus.completedJob) {
-            this.#executionStatus.completedJob = this.jobs.jobs.find(job => job.jobId === this.#executionStatus.completedJob.jobId) ?? this.#executionStatus.completedJob;
+        this.#status.jobs = this.jobs.jobs.filter(job => job.operation === "raster.aggregate.v1");
+        this.#status.historyError = this.jobs.error;
+        if (this.#status.completedJob) this.#status.completedJob = this.jobs.jobs.find(job =>
+            job.jobId === this.#status.completedJob.jobId) ?? this.#status.completedJob;
+        if (this.#saved?.jobId) {
+            if (this.#advancing) this.#observationChanged = true;
+            else void this.#advance();
         }
-        if (this.#savedSubmission?.jobId) {
-            this.#executionStatus.currentJob = this.jobs.jobs.find(job => job.jobId === this.#savedSubmission.jobId) ?? this.#executionStatus.currentJob;
-            if (!this.#isAdvancing) void this.#advanceExecution();
-        }
-        this.#notifyListeners();
+        this.#notify();
     }
 
-    /** Cancel or delete a job selected in History & exports.
-     * Cancelling this executor's current job also clears its pending replacement.
-     * Other actions go through the shared job observer, which refreshes history.
-     * Request failures are reported through the execution status callback.
-     * @param {string} id Processing job ID selected by the user.
-     * @param {"cancel"|"delete"} action Cancel running work or delete its retained result.
-     * @return {Promise<void>} Completion of the requested action or error reporting.
+    /** Cancel or delete a job from history.
+     * @param {string} id Job ID. @param {"cancel"|"delete"} action Requested action.
+     * @return {Promise<void>} Completion or displayed failure.
      */
     async jobAction(id, action) {
-        if (id === this.#savedSubmission?.jobId && action === "cancel") { this.stop(); return; }
+        if (id === this.#saved?.jobId && action === "cancel") { this.stop(); return; }
         try { await this.jobs.action(id, action); }
-        catch (error) { this.#executionStatus.message = error.message; this.#notifyListeners(); }
+        catch (error) { this.#status.message = error.message; this.#notify(); }
     }
 
-    /** Send progress to the statistics controller and the working area to composition.
-     * onChange receives status, outstanding work and the last completed job together.
-     * onActivity receives the submitted calculation's area while work is active, or
-     * null after cancellation/error/completion. Composition uses it for the map's
-     * working indicator; this method neither draws the map nor sends an HTTP request.
-     * @return {void}
-     */
-    #notifyListeners() {
+    /** Publish progress and working-area activity. @return {void} */
+    #notify() {
         if (this.destroyed) return;
         this.onChange(this.snapshot);
-        const active = this.#savedSubmission && !this.#savedSubmission.cancelRequested && !this.#retryRequired;
-        this.onActivity(active ? this.#savedSubmission.intent.area : null);
+        this.onActivity(this.#saved && !this.#saved.cancelRequested && !this.#retryRequired ? this.#saved.intent.area : null);
     }
 
-    /** Stop local observation and release unused plans when the controller is destroyed.
-     * Submitted jobs and their session-storage records remain available after reload.
-     * @return {void}
-     */
+    /** Detach observation; accepted jobs remain recoverable after reload. @return {void} */
     destroy() {
         this.destroyed = true;
         this.#capacityWait?.abort();
-        this.#pendingCalculation?.abort?.abort();
-        this.#queuePlanRelease();
-        if (this.#pendingCalculation?.plan) this.plansToRelease.add(this.#pendingCalculation.plan.planId);
-        this.#pendingCalculation = null;
-        this.unsubscribe(); this.onActivity(null);
-        if (!this.#isAdvancing) void this.#releasePlans().catch(() => {});
+        this.#pending = null;
+        this.unsubscribe();
+        this.onActivity(null);
     }
 }

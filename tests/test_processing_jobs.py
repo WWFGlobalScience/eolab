@@ -130,6 +130,7 @@ def boundary(tmp_path: Path, store: PostgresJobStore) -> Any:
         StacRasterCatalog(catalog_client, "http://catalog"),
         MountedRasterResolver(tmp_path),
     )
+
     async def measure_selection(selection: CatalogSelection) -> dict[str, Any]:
         """Measure fixture polygons at Processing's injected Vector boundary.
 
@@ -662,6 +663,14 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
     monkeypatch.delenv("GEOSERVER_INTERNAL_URL", raising=False)
     monkeypatch.setattr(composition, "PostgresJobStore", lambda limits: store)
 
+    pending = store.submit(
+        "owner",
+        None,
+        "before-restart",
+        PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096),
+        "a" * 64,
+    )
+
     def unexpected(*args: Any, **kwargs: Any) -> None:
         """Fail if worker composition constructs an unrelated feature.
 
@@ -682,6 +691,9 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
         assert worker.limits.max_waiting_jobs == 61
         assert worker.limits.max_owner_waiting_jobs == 17
         assert isinstance(wakeup, composition.PostgresJobWakeup)
+        assert store.get(pending["id"], "owner")["status"] == "interrupted"
+        await worker.cleanup()
+        assert store.get(pending["id"], "owner")["reserved_bytes"] == 0
         assert not await worker.run_once()
 
     monkeypatch.setattr(composition, "create_app", unexpected)
@@ -759,3 +771,63 @@ def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeyp
     # Psycopg asynchronous connections require a selector loop on Windows too.
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
         runner.run(scenario())
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "cancelling"])
+def test_worker_restart_interrupts_unfinished_jobs(
+    store: PostgresJobStore, status: str
+) -> None:
+    """Discard unfinished work while preserving results, cache and late-write fences.
+
+    Args:
+        store: Disposable real PostgreSQL adapter.
+        status: Unfinished state retained from the stopped worker.
+    """
+    prepared = PreparedJobPlan({"operation": "test.v1"}, {"label": "Test"}, 4096)
+    completed = store.submit("owner", None, "completed-request", prepared, "a" * 64)
+    claimed = store.claim()
+    assert claimed["id"] == completed["id"]
+    cached = {"b" * 64: {"value": "1"}}
+    assert store.finish(
+        claimed["id"],
+        claimed["attempt_id"],
+        Artifact(1, "checksum", "result.csv"),
+        reusable_results=cached,
+    )
+    ready = store.get(completed["id"], "owner")
+    pending = store.submit(
+        "other-owner", None, "unfinished-request", prepared, "a" * 64
+    )
+    if status != "queued":
+        pending = store.claim()
+        if status == "cancelling":
+            store.cancel(pending["id"], "other-owner")
+
+    assert store.interrupt_unfinished_jobs_on_restart() == 1
+    interrupted = store.get(pending["id"], "other-owner")
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["error"]["code"] == "worker_restarted"
+    assert "Submit a new job" in interrupted["error"]["detail"]
+    assert (
+        store.find_request("other-owner", "unfinished-request")["status"]
+        == "interrupted"
+    )
+    # Retain reservations until attempt files have been removed by normal cleanup.
+    assert interrupted["reserved_bytes"] == 4096
+    assert pending["id"] in {row["id"] for row in store.cleanup_candidates()}
+    if status != "queued":
+        assert not store.heartbeat(pending["id"], pending["attempt_id"], {})
+        assert not store.finish(
+            pending["id"], pending["attempt_id"], Artifact(1, "late", "late.csv")
+        )
+    store.cleaned(pending["id"])
+    assert store.get(pending["id"], "other-owner")["reserved_bytes"] == 0
+    with psycopg.connect(store.conninfo) as conn:
+        assert conn.execute(
+            "SELECT input_bytes,spec FROM processing.jobs WHERE id=%s", (pending["id"],)
+        ).fetchone() == (0, None)
+    assert store.get(completed["id"], "owner") == ready
+    assert store.get_cached_calculation_results(list(cached)) == cached
+    assert store.interrupt_unfinished_jobs_on_restart() == 0
+    fresh = store.submit("owner", None, "fresh-request", prepared, "a" * 64)
+    assert store.claim()["id"] == fresh["id"]

@@ -18,7 +18,9 @@ from eolab_app.execution.reusable_process import ReusableProcess, run_process
 from eolab_app.processing.models import Artifact, ProcessingError
 from eolab_app.processing.clip_models import ClipSpec, RasterClipLimits
 from eolab_app.processing.aggregate_models import (
+    AggregateArea,
     AggregateSpec,
+    UnpreparedCalculation,
     RasterAggregateLimits,
     AggregateExecutionTiming,
 )
@@ -30,7 +32,10 @@ from eolab_app.processing.calculation_cache import (
     calculation_result_cache_keys,
     restore_cached_calculation_rows,
     prepare_calculation_values_for_cache,
+    restore_cached_calculation_plan,
 )
+from eolab_app.processing.calculation_preparation import prepare_aggregate_job
+from eolab_app.bounded_vector import summary_process, READ_SECONDS
 from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import JobArtifactStore, JobStore, JobWakeup
 from eolab_app.processing.raster_clip import clip_process_target
@@ -61,6 +66,7 @@ class ProcessingWorker:
             artifacts: Confined scratch and atomic result-file storage.
             limits: Deployment-wide bounded processing policy.
             native: Lifecycle-managed execution lane supplied by composition.
+            areas: Catalog vector reader used to resolve filtered calculation areas.
         """
         self.areas = areas
         self.authorizer = authorizer
@@ -69,6 +75,122 @@ class ProcessingWorker:
         self.limits = limits
         self.native = native
         self.aggregate_limits = RasterAggregateLimits.with_lifecycle(limits)
+
+    async def _prepare_calculation(self, row: dict[str, Any]) -> None:
+        """Prepare queued summary inputs and publish their estimates on the same job.
+
+        Args:
+            row: Claimed job, updated in place with its prepared inputs and reservation.
+
+        Raises:
+            ProcessingError: For unavailable sources, rejected resource estimates,
+                cancellation or insufficient storage.
+            TimeoutError: If preparation exceeds its separate time limit.
+        """
+        started = time.perf_counter()
+        queued = UnpreparedCalculation.model_validate(row["spec"])
+        request = queued.request
+        async with asyncio.timeout(self.limits.plan_timeout_seconds):
+            alive = await asyncio.to_thread(
+                self.jobs.heartbeat,
+                row["id"],
+                row["attempt_id"],
+                {"phase": "preparing"},
+            )
+            if not alive:
+                raise ProcessingError(
+                    "job_cancelled", "Calculation stopped before preparation.", 409
+                )
+            alias, source = next(iter(request.sources.items()))
+            authorized = await self.authorizer.authorize(source)
+            signature = tuple(authorized.source_signature.to_catalog())
+            resolved = None
+            if request.catalogSelection:
+                if self.areas is None:
+                    raise ProcessingError(
+                        "selection_unavailable",
+                        "Vector selection reader is unavailable.",
+                        409,
+                    )
+                resolved = await self.areas.resolve_for_sampling(
+                    request.catalogSelection
+                )
+            cached = await asyncio.to_thread(
+                self.jobs.get_cached_calculation_results,
+                calculation_result_cache_keys(request, signature),
+            )
+            spec = restore_cached_calculation_plan(
+                request, signature, cached, queued.polygonArea
+            )
+            outcome = None
+            if spec is None:
+                if queued.polygonArea:
+                    area = queued.polygonArea
+                elif request.wholeRaster:
+                    area = AggregateArea(kind="wholeRaster")
+                elif request.selectedBounds:
+                    bounds = request.selectedBounds
+                    area = AggregateArea(
+                        kind="bounds",
+                        bounds=(bounds.west, bounds.south, bounds.east, bounds.north),
+                    )
+                else:
+                    measured = await run_process(
+                        summary_process, (resolved,), READ_SECONDS, self.native
+                    )
+                    success, summary = measured.value
+                    if not success:
+                        raise ProcessingError("selection_unavailable", summary, 409)
+                    area = AggregateArea(
+                        kind="catalogSelection",
+                        bounds=summary["bbox"],
+                        catalogSelection=request.catalogSelection,
+                        resolved=resolved,
+                    )
+                outcome = await run_process(
+                    aggregate_process_target,
+                    (
+                        "plan",
+                        (
+                            authorized.source_path,
+                            area,
+                            request.calculations,
+                            alias,
+                            self.aggregate_limits,
+                            request.targetChunkPixels,
+                        ),
+                    ),
+                    self.limits.plan_timeout_seconds,
+                    self.native,
+                )
+                status, grid = outcome.value
+                if status != "ok":
+                    raise ProcessingError(*grid)
+                if resolved is not None:
+                    await self.areas.resolve_for_sampling(request.catalogSelection)
+                spec = AggregateSpec(
+                    sources=request.sources,
+                    sourceSignature=signature,
+                    calculations=request.calculations,
+                    area=area,
+                    grid=grid,
+                )
+            updated = await asyncio.to_thread(
+                self.jobs.save_prepared_job,
+                row["id"],
+                row["attempt_id"],
+                prepare_aggregate_job(spec, self.aggregate_limits),
+                {
+                    "seconds": time.perf_counter() - started,
+                    "cacheHit": spec.cachedRows is not None,
+                    "process": (
+                        asdict(outcome.timing) if outcome and outcome.timing else None
+                    ),
+                },
+            )
+            # Preserve the original execution start used for queue timing.
+            updated["updated_at"] = row["updated_at"]
+            row.update(updated)
 
     async def _execute(self, row: dict[str, Any]) -> Artifact:
         """Authorize the inputs, reuse or calculate values, and publish result files.
@@ -84,6 +206,8 @@ class ProcessingWorker:
         """
         started = time.perf_counter()
         operation = row["spec"]["operation"]
+        if operation == "raster.aggregate.v1" and "request" in row["spec"]:
+            await self._prepare_calculation(row)
         if operation == "raster.clip.v1":
             spec = ClipSpec.model_validate(row["spec"])
             source = spec.source
@@ -270,7 +394,7 @@ class ProcessingWorker:
             elif isinstance(error, (RasterFeatureError, SelectionUnavailableError)):
                 detail = {
                     "code": "source_unavailable",
-                    "detail": "The catalog source is unavailable or changed. Create a new plan after checking the layer.",
+                    "detail": "The catalog source is unavailable or changed. Check the layer, then submit the job again.",
                 }
             else:
                 detail = {

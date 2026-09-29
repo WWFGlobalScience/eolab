@@ -209,8 +209,8 @@ def test_calculation_http_lifecycle_mixed_history_and_owned_csv(
     )
 
 
-def test_batched_plan_metrics_and_v3_worker_gate(boundary: Any, store: Any) -> None:
-    """Reviewed batches survive storage, old-worker exclusion, execution and recovery.
+def test_batched_plan_metrics_and_execution(boundary: Any, store: Any) -> None:
+    """Prepared batch metrics survive storage, execution and result publication.
 
     Args:
         boundary: Real API, native worker, source and artifact composition.
@@ -222,24 +222,6 @@ def test_batched_plan_metrics_and_v3_worker_gate(boundary: Any, store: Any) -> N
     assert execution["targetChunkPixels"] == 65536
     assert execution["readWindows"] < plan["grid"]["nativeBlocks"]
     job = submit_calculation(client, plan)
-    with psycopg.connect(store.conninfo) as connection:
-        assert connection.execute(
-            "SELECT minimum_claim_version FROM processing.jobs WHERE id=%s",
-            (job["jobId"],),
-        ).fetchone() == (4,)
-        assert (
-            connection.execute(
-                "SELECT id FROM processing.jobs WHERE status='queued' AND minimum_claim_version<=3"
-            ).fetchall()
-            == []
-        )
-    with pytest.raises(psycopg.errors.CheckViolation):
-        with psycopg.connect(store.conninfo) as connection:
-            connection.execute("SET LOCAL eolab.processing_claim_version = '3'")
-            connection.execute(
-                "UPDATE processing.jobs SET status='running' WHERE id=%s",
-                (job["jobId"],),
-            )
     assert asyncio.run(worker.run_once())
     ready = client.get(f"/api/processing/jobs/{job['jobId']}").json()
     assert ready["status"] == "ready", ready
@@ -344,48 +326,48 @@ def test_catalog_selection_calculates(
         assert ready["result"]["rows"][0]["value"] == "3200"
 
 
-def test_legacy_claim_protocol_cannot_consume_calculations(
+def test_worker_restart_invalidates_legacy_queued_jobs(
     boundary: Any, store: Any
 ) -> None:
-    """Migration blocks legacy claim SQL before work starts, including redeployments.
+    """Migrate old schemas and interrupt their queued jobs before execution.
 
     Args:
-        boundary: Actual planning and worker composition.
+        boundary: Actual HTTP, planning and worker composition.
         store: Disposable PostgreSQL adapter.
     """
     client, worker, *_ = boundary
     job = submit_calculation(client, plan_calculation(client))
-    # An unmodified v1 worker runs a plain queued->running UPDATE.
-    with pytest.raises(psycopg.errors.CheckViolation):
-        with psycopg.connect(store.conninfo) as conn:
-            conn.execute(
-                "UPDATE processing.jobs SET status='running' WHERE id=%s",
-                (job["jobId"],),
-            )
-    assert (
-        client.get(f"/api/processing/jobs/{job['jobId']}").json()["status"] == "queued"
-    )
-    store.migrate()
-    assert asyncio.run(worker.run_once())
-    assert (
-        client.get(f"/api/processing/jobs/{job['jobId']}").json()["status"] == "ready"
-    )
-    clip = submitted(client, planned(client))
     with psycopg.connect(store.conninfo) as conn:
         conn.execute(
-            "UPDATE processing.jobs SET status='running' WHERE id=%s", (clip["jobId"],)
+            "ALTER TABLE processing.jobs ADD COLUMN job_format_version integer NOT NULL DEFAULT 1"
         )
-        conn.rollback()  # Observe legacy admission without leaving an unfenced test job.
-    with psycopg.connect(store.conninfo) as conn:
+        conn.execute(
+            "ALTER TABLE processing.jobs ADD COLUMN minimum_claim_version integer NOT NULL DEFAULT 1"
+        )
         conn.execute("DELETE FROM processing.schema_version WHERE version>1")
         conn.execute(
             "ALTER TABLE processing.schema_version ADD CONSTRAINT schema_version_version_check CHECK(version=1)"
         )
     store.migrate()
+    store.migrate()
+    store.interrupt_unfinished_jobs_on_restart()
+    asyncio.run(worker.cleanup())
+    assert not asyncio.run(worker.run_once())
+    failed = client.get(f"/api/processing/jobs/{job['jobId']}").json()
+    assert failed["status"] == "interrupted"
+    assert failed["error"]["code"] == "worker_restarted"
+    assert failed["sources"] is None
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
             "SELECT version FROM processing.schema_version ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+        ).fetchall() == [(n,) for n in range(1, 10)]
+        assert (
+            conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='processing' "
+                "AND table_name='jobs' AND column_name IN ('minimum_claim_version','job_format_version')"
+            ).fetchone()
+            is None
+        )
 
 
 def paused_calculation(queue: Any, operation: str, arguments: tuple) -> None:

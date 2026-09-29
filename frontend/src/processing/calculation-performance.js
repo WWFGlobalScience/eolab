@@ -30,7 +30,7 @@ export function executionDescription(grid) {
 function deliveryDescription(delivery) {
     if (!delivery) return [];
     const seconds = n => `${n.toFixed(3)} s`;
-    const lines = [`Calculation trace: plan ${delivery.planId ?? "unavailable"}; job ${delivery.jobId ?? "unavailable"}.`,
+    const lines = [`Calculation trace: ${delivery.planId ? `plan ${delivery.planId}; ` : ""}job ${delivery.jobId ?? "unavailable"}.`,
         `Submission attempts: ${delivery.submissionAttempts ?? 1}; capacity backoff: ${seconds(delivery.capacityWaitSeconds ?? 0)} (included in Submission round trip).`];
     if (Number.isFinite(delivery.cleanupFinishedAtMs)) lines.push(
         `Plan cleanup request: ${seconds((delivery.cleanupFinishedAtMs - delivery.cleanupStartedAtMs) / 1000)}. The executor awaits this request before continuing; it can overlap server execution and status refreshes.`);
@@ -64,7 +64,7 @@ function deliveryDescription(delivery) {
     if (serverHints.length) lines.push(`Shared server notification timing: maximum listener receipt → SSE handoff ${seconds(Math.max(...serverHints.map(e => e.listenerToStreamSeconds)))}; maximum reported previous ASGI send ${seconds(Math.max(...serverHints.map(e => e.previousSendSeconds)))}. These are shared, coalesced hints, not timings for this job alone.`);
     lines.push("Database commit → notification receipt is not measured. ASGI handoff does not measure proxy transfer or browser receipt. Durations below overlap; do not add them to total wait.");
     const relevant = events.filter(event => event.kind === "http-finish" &&
-        (event.shared || event.planId === delivery.planId || event.jobId === delivery.jobId));
+        (event.shared || (delivery.planId && event.planId === delivery.planId) || event.jobId === delivery.jobId));
     if (snapshot.partial) lines.push("Trace is partial: the bounded event buffer dropped older activity. Counts below and above cover retained events only.");
     for (const event of relevant.slice(-24)) {
         const server = Object.entries(event.serverTiming).map(([name, value]) => `${name} ${seconds(value)}`).join(", ");
@@ -93,16 +93,19 @@ export function performanceDescription(job, totalWaitSeconds, stages, waitDescri
     ...(job.result?.cacheHit ? ["Reused cached result; no raster pixels were read or calculated for this job."] : executionDescription(job.grid))];
     const seconds = n => `${n.toFixed(3)} s`;
     if (stages) {
-        lines.push(
+        if (Number.isFinite(stages.planningSeconds)) lines.push(
             `Before planning: ${seconds(stages.beforePlanningSeconds)}.`,
             `Planning round trip: ${seconds(stages.planningSeconds)}${stages.planReused ? " (existing plan reused)" : ""}.`,
             `Between planning and submission: ${seconds(stages.beforeSubmissionSeconds)}.`,
+        );
+        else lines.push(`Before submission: ${seconds(stages.beforeSubmissionSeconds)}.`);
+        lines.push(
             `Submission round trip: ${seconds(stages.submissionSeconds)}.`,
             `Submission response → result observed: ${seconds(stages.afterSubmissionSeconds)}.`,
             "These browser stages add up to total wait. Server stages below overlap them; do not add the two groups together.",
         );
         if (Number.isFinite(stages.vectorSelectionSeconds)) lines.push(
-            `Vector selection before calculation: ${seconds(stages.vectorSelectionSeconds)} (included in Before planning). Includes the selection request/response and source preparation; excludes optional display-outline work.`,
+            `Vector selection before calculation: ${seconds(stages.vectorSelectionSeconds)} (included before submission). Includes the selection request/response and source preparation; excludes optional display-outline work.`,
         );
         const plan = stages.serverPlan;
         const observation = stages.planningObservation;
@@ -127,7 +130,7 @@ export function performanceDescription(job, totalWaitSeconds, stages, waitDescri
     if (execution) {
         lines.push(
             `Queue wait: ${seconds(execution.queueSeconds)}.`,
-            `Worker preparation (source authorization and scratch): ${seconds(execution.preparationSeconds)}.`,
+            `Worker preparation (calculation planning, source authorization and scratch): ${seconds(execution.preparationSeconds)}.`,
             `Native process including startup, execution and result transfer: ${seconds(execution.nativeProcessSeconds)}.`,
             `Selection recheck and file publication: ${seconds(execution.publicationSeconds)}.`,
             ...processDescription("Calculation", execution.process),
@@ -140,6 +143,10 @@ export function performanceDescription(job, totalWaitSeconds, stages, waitDescri
             if (other >= 0) lines.push(`Other server scheduling/completion time (estimated remainder): ${seconds(other)}.`);
         }
     }
+    if (job.preparation) lines.push(
+        `Calculation preparation: ${seconds(job.preparation.seconds)}${execution ? " (included in Worker preparation)" : ""}.${job.preparation.cacheHit ? " Reused cached preparation and result." : ""}`,
+        ...processDescription("Preparation", job.preparation.process),
+    );
     if (stages && Number.isFinite(serverElapsed)) {
         const residual = stages.submissionSeconds + stages.afterSubmissionSeconds - serverElapsed;
         if (residual >= 0) lines.push(`Submission admission + result delivery (estimated remainder): ${seconds(residual)}. Includes request handling before queue insertion, completion/response transfer and notification delivery or fallback polling; not a measurement of network time alone.`);

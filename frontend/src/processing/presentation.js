@@ -38,6 +38,7 @@ export function describeJobProgress(job) {
         failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted — review a new job to retry",
         expired: "Expired — run again to download", deleted: "Deleted" })[job.status] ?? job.status;
     const progress = job.progress;
+    if (progress.phase === "preparing") return "Preparing calculation…";
     if (progress.phase === "calculating") return `Calculating · ${progress.completedBlocks ?? 0} of ${progress.totalBlocks ?? "?"} native source blocks`;
     if (progress.phase === "preparing_selected_polygons") return "Reading and projecting selected polygons…";
     if (progress.phase === "preparing_polygon_mask") return "Creating the polygon mask…";

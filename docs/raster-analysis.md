@@ -107,11 +107,11 @@ box remain different areas. Algebraically equivalent formulas and reordered
 filter rules are not automatically considered identical.
 
 Source authorization, queue admission and cancellation still apply. The cache
-lookup runs before polygon-envelope reads and raster size estimation. A hit skips
-those planning steps, the large-calculation confirmation, raster reads and
+lookup runs when the worker claims the job, before polygon-envelope reads and raster size estimation. A hit skips
+those preparation steps, raster reads and
 polygon-mask creation. The small cached values are copied into the prepared job,
-so cache expiry while it waits cannot unexpectedly start a full calculation.
-An uncached request goes through the usual planning and confirmation. When a request groups several formulas, all must be cached; otherwise
+so cache expiry during execution cannot unexpectedly start a full calculation.
+An uncached request prepares and calculates within the same job. When a request groups several formulas, all must be cached; otherwise
 the normal combined calculation runs. Separate deployments with separate
 databases do not share values.
 

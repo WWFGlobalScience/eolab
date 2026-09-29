@@ -27,12 +27,6 @@ def test_polygon_upload_ownership_release_and_cached_reuse(
     reference = uploaded.json()["polygonArea"]
     plan = plan_calculation(client, polygonArea=reference)
     first = submit_calculation(client, plan)
-    with store._transaction() as cursor:
-        cursor.execute(
-            "SELECT minimum_claim_version FROM processing.jobs WHERE id=%s",
-            (first["jobId"],),
-        )
-        assert cursor.fetchone()["minimum_claim_version"] == 8
     with TestClient(app, base_url="https://testserver") as other:
         from test_processing_calculations import ENDPOINT, request_body
 

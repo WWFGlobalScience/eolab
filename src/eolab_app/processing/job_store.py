@@ -29,7 +29,7 @@ from eolab_app.processing.models import (
 # lock namespace. It serializes schema migration and shared admission, job-state,
 # storage, and transfer decisions; it is never held during native execution.
 # The integer is an assigned identifier, not a limit or a generated random value.
-# Keep it stable across releases so overlapping workers acquire the same lock.
+# Keep it stable across releases so all Processing transactions use the same lock.
 # Other components using this database must allocate a different advisory key.
 PROCESSING_ADVISORY_LOCK_ID = 7_610_329
 LOGGER = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ UNFINISHED = ("queued", "running", "cancelling")
 PUBLIC_COLUMNS = (
     "id,owner,request_key,plan_id,created_at,updated_at,expires_at,status,operation,"
     "CASE WHEN spec IS NULL THEN NULL ELSE summary END AS spec,"
-    "reserved_bytes,attempt_id,lease_until,deadline_at,progress,artifact,error"
+    "reserved_bytes,attempt_id,lease_until,deadline_at,progress,preparation,artifact,error,request_hash"
 )
 
 
@@ -97,6 +97,37 @@ class PostgresJobStore:
         sql = files("eolab_app.processing").joinpath("schema.sql").read_text()
         with self._transaction(locked=True) as cursor:
             cursor.execute(sql)
+
+    def interrupt_unfinished_jobs_on_restart(self) -> int:
+        """Discard pending work before the restarted worker consumes new jobs.
+
+        Call once at worker startup, after stopping the previous worker and its
+        native processes. Queued, running and cancelling jobs become interrupted;
+        completed results and cached values are unchanged. Keep attempt files and
+        reservations until the worker's normal cleanup removes them. Existing
+        job notifications tell browsers to read the interrupted status.
+
+        Returns:
+            Number of unfinished jobs interrupted by this restart.
+
+        Raises:
+            ProcessingError: If PostgreSQL cannot update the jobs.
+        """
+        with self._transaction(locked=True) as cursor:
+            cursor.execute(
+                "UPDATE processing.jobs SET status='interrupted',error=%s,"
+                "updated_at=clock_timestamp() "
+                "WHERE status IN ('queued','running','cancelling')",
+                (
+                    Jsonb(
+                        {
+                            "code": "worker_restarted",
+                            "detail": "The application restarted before this job finished. Submit a new job to retry.",
+                        }
+                    ),
+                ),
+            )
+            return cursor.rowcount
 
     def save_input(self, owner: str, checksum: str, payload: dict[str, Any]) -> str:
         """Retain a bounded private input for one day or until its owner releases it.
@@ -557,7 +588,12 @@ class PostgresJobStore:
                     )
 
     def submit(
-        self, owner: str, plan_id: str, request_key: str, expected: PreparedJobPlan
+        self,
+        owner: str,
+        plan_id: str | None,
+        request_key: str,
+        expected: PreparedJobPlan,
+        request_hash: str | None = None,
     ) -> dict[str, Any]:
         """Queue a job within separate session, backlog, record and storage budgets.
 
@@ -567,9 +603,10 @@ class PostgresJobStore:
 
         Args:
             owner: Current session hash.
-            plan_id: Plan revalidated by the application owner.
+            plan_id: Revalidated plan, or None for work prepared inside the job.
             request_key: Client idempotency key.
-            expected: Prepared operation data revalidated immediately before admission.
+            expected: Validated queued inputs and their initial resource reservation.
+            request_hash: Stable input identity for direct submissions; required without a plan.
 
         Returns:
             Existing idempotent or newly queued owned job.
@@ -578,6 +615,8 @@ class PostgresJobStore:
             ProcessingError: If the plan expired or a waiting-job, retained-record,
                 input-storage or artifact-storage budget is exhausted.
         """
+        if plan_id is None and not request_hash:
+            raise ValueError("Direct jobs require a request hash")
         with self._transaction(locked=True) as cursor:
             cursor.execute(
                 "SELECT * FROM processing.jobs WHERE owner=%s AND request_key=%s",
@@ -585,24 +624,28 @@ class PostgresJobStore:
             )
             existing = cursor.fetchone()
             if existing:
-                if existing["plan_id"] != plan_id:
+                if (
+                    existing["plan_id"] != plan_id
+                    or existing.get("request_hash") != request_hash
+                ):
                     raise ProcessingError(
                         "request_conflict",
                         "That request ID already belongs to another plan.",
                         409,
                     )
                 return existing
-            cursor.execute(
-                "SELECT spec FROM processing.plans WHERE id=%s AND owner=%s AND expires_at>now() AND planning_until IS NULL",
-                (plan_id, owner),
-            )
-            plan = cursor.fetchone()
-            if not plan or plan["spec"] != expected.specification:
-                raise ProcessingError(
-                    "plan_unavailable",
-                    "This job plan is no longer available. Create a new plan.",
-                    409,
+            if plan_id is not None:
+                cursor.execute(
+                    "SELECT spec FROM processing.plans WHERE id=%s AND owner=%s AND expires_at>now() AND planning_until IS NULL",
+                    (plan_id, owner),
                 )
+                plan = cursor.fetchone()
+                if not plan or plan["spec"] != expected.specification:
+                    raise ProcessingError(
+                        "plan_unavailable",
+                        "This job plan is no longer available. Create a new plan.",
+                        409,
+                    )
             self._delete_old_job_records(cursor)
             cursor.execute(
                 "SELECT count(*) FILTER (WHERE status='queued') AS waiting, "
@@ -652,7 +695,7 @@ class PostgresJobStore:
                     429,
                 )
             cursor.execute(
-                "INSERT INTO processing.jobs(id,owner,request_key,plan_id,expires_at,status,spec,reserved_bytes,summary,operation,minimum_claim_version,input_bytes) VALUES (%s,%s,%s,%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s) RETURNING *",
+                "INSERT INTO processing.jobs(id,owner,request_key,plan_id,expires_at,status,spec,reserved_bytes,summary,operation,input_bytes,request_hash) VALUES (%s,%s,%s,%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s) RETURNING *",
                 (
                     uuid4().hex,
                     owner,
@@ -663,8 +706,8 @@ class PostgresJobStore:
                     expected.reserved_bytes,
                     Jsonb(expected.summary),
                     expected.operation,
-                    expected.minimum_claim_version,
                     count["new_input_bytes"],
+                    request_hash,
                 ),
             )
             row = cursor.fetchone()
@@ -687,6 +730,77 @@ class PostgresJobStore:
                 self.limits.max_stored_bytes,
             )
             return row
+
+    def save_prepared_job(
+        self,
+        identifier: str,
+        attempt: str,
+        prepared: PreparedJobPlan,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Reserve execution storage and publish prepared inputs for a running job.
+
+        Args:
+            identifier: Running job ID.
+            attempt: Worker attempt that must still own the job.
+            prepared: Validated execution inputs, public summary and disk estimate.
+            details: Bounded public preparation measurements retained until cleanup.
+
+        Returns:
+            Updated job ready for execution, with prepared details visible to its owner.
+
+        Raises:
+            ProcessingError: If ownership was lost, cancellation won, or the new
+                input and disk reservations exceed deployment limits.
+        """
+        with self._transaction(locked=True) as cursor:
+            cursor.execute(
+                "SELECT * FROM processing.jobs WHERE id=%s AND attempt_id=%s "
+                "AND status='running' AND lease_until>now() AND deadline_at>now() FOR UPDATE",
+                (identifier, attempt),
+            )
+            if cursor.fetchone() is None:
+                raise ProcessingError(
+                    "job_cancelled", "Calculation stopped during preparation.", 409
+                )
+            cursor.execute(
+                "SELECT COALESCE(sum(reserved_bytes),0) AS bytes,COALESCE(sum(input_bytes),0) AS inputs "
+                "FROM processing.jobs WHERE id<>%s",
+                (identifier,),
+            )
+            used = cursor.fetchone()
+            cursor.execute(
+                "SELECT octet_length(%s::jsonb::text)+octet_length(%s::jsonb::text) AS bytes",
+                (Jsonb(prepared.specification), Jsonb(prepared.summary)),
+            )
+            if (
+                used["inputs"] + cursor.fetchone()["bytes"]
+                > self.limits.max_job_input_bytes
+            ):
+                raise ProcessingError(
+                    "job_input_capacity",
+                    "Prepared calculation exceeds available input storage.",
+                    429,
+                )
+            if used["bytes"] + prepared.reserved_bytes > self.limits.max_stored_bytes:
+                raise ProcessingError(
+                    "storage_full",
+                    "Not enough temporary storage for this calculation.",
+                    429,
+                )
+            cursor.execute(
+                "UPDATE processing.jobs SET spec=%s,summary=%s,reserved_bytes=%s,preparation=%s,"
+                "progress=%s,updated_at=clock_timestamp() WHERE id=%s RETURNING *",
+                (
+                    Jsonb(prepared.specification),
+                    Jsonb(prepared.summary),
+                    prepared.reserved_bytes,
+                    Jsonb(details),
+                    Jsonb({"phase": "calculating"}),
+                    identifier,
+                ),
+            )
+            return cursor.fetchone()
 
     def get(self, identifier: str, owner: str) -> dict[str, Any]:
         """Read one owned job without exposing another session's existence.
@@ -787,24 +901,18 @@ class PostgresJobStore:
         previous turn. Running jobs are never preempted. Cancellation and failure
         still count as a turn once execution starts.
 
-        Crash recovery waits through the previous hard deadline plus exit grace.
-        A lost DB connection cannot cause a second native child to start while
-        the old child could still be running under its supervisor deadline.
-        Claim protocol 3 adds fractional ellipsoidal area calculations. The
-        existing database trigger fences workers supporting earlier protocols.
-        Protocol 5 adds direct catalog-selection jobs without embedded geometry.
-        Protocol 7 adds jobs retaining cached values without mask disk reservations;
-        older workers must not execute those jobs as fresh raster calculations.
+        While the worker is running, a lost DB connection cannot start a second
+        native child before the current attempt's hard deadline plus exit grace.
+        Worker startup separately interrupts work left by the stopped worker.
 
         Returns:
-            Claimed job, or None when execution is busy or no supported job waits.
+            Claimed job, or None when execution is busy or no job waits.
 
         Raises:
             ProcessingError: If the database cannot complete the claim.
         """
 
         with self._transaction(locked=True) as cursor:
-            cursor.execute("SET LOCAL eolab.processing_claim_version = '8'")
             cursor.execute(
                 "UPDATE processing.jobs SET status='interrupted',error=%s,updated_at=now() WHERE status IN ('running','cancelling') AND deadline_at<now()",
                 (
@@ -824,7 +932,7 @@ class PostgresJobStore:
             cursor.execute(
                 "SELECT waiting.id FROM ("
                 "SELECT DISTINCT ON (owner) id,owner,created_at FROM processing.jobs "
-                "WHERE status='queued' AND minimum_claim_version<=8 "
+                "WHERE status='queued' "
                 "ORDER BY owner,created_at,id) waiting "
                 "LEFT JOIN LATERAL (SELECT started_at FROM processing.jobs history "
                 "WHERE history.owner=waiting.owner AND started_at IS NOT NULL "
@@ -872,8 +980,14 @@ class PostgresJobStore:
         """
         with self._transaction() as cursor:
             cursor.execute(
-                "UPDATE processing.jobs SET lease_until=now()+%s*interval '1 second',progress=%s,updated_at=now() WHERE id=%s AND attempt_id=%s AND status='running' AND lease_until>now() AND deadline_at>now() RETURNING id",
-                (self.limits.lease_seconds, Jsonb(progress), identifier, attempt),
+                "UPDATE processing.jobs SET lease_until=now()+%s*interval '1 second',progress=CASE WHEN %s::jsonb='{}'::jsonb THEN progress ELSE %s::jsonb END,updated_at=now() WHERE id=%s AND attempt_id=%s AND status='running' AND lease_until>now() AND deadline_at>now() RETURNING id",
+                (
+                    self.limits.lease_seconds,
+                    Jsonb(progress),
+                    Jsonb(progress),
+                    identifier,
+                    attempt,
+                ),
             )
             return cursor.fetchone() is not None
 

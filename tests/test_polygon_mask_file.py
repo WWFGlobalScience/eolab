@@ -154,7 +154,6 @@ def test_storage_admission_and_old_job_guard(
     plan = make_spec(source, ["sum(a)"], area)
     limits = RasterAggregateLimits()
     prepared = prepare_aggregate_job(plan, limits)
-    assert prepared.minimum_claim_version == 6
     assert (
         prepared.reserved_bytes
         == limits.result_reservation_bytes

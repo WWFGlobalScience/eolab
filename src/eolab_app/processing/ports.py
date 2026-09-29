@@ -268,8 +268,36 @@ class JobStore(Protocol):
         """
         ...
 
+    def save_prepared_job(
+        self,
+        identifier: str,
+        attempt: str,
+        prepared: PreparedJobPlan,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Publish prepared inputs and reserve execution storage for a live attempt.
+
+        Args:
+            identifier: Running job ID.
+            attempt: Current worker attempt, checked against cancellation and expiry.
+            prepared: Validated execution inputs, summary and required disk bytes.
+            details: Public preparation metadata retained on the job.
+
+        Returns:
+            Updated durable job with calculating progress.
+
+        Raises:
+            ProcessingError: If the attempt cannot proceed or storage is exhausted.
+        """
+        ...
+
     def submit(
-        self, owner: str, plan_id: str, request_key: str, expected: PreparedJobPlan
+        self,
+        owner: str,
+        plan_id: str | None,
+        request_key: str,
+        expected: PreparedJobPlan,
+        request_hash: str | None = None,
     ) -> dict[str, Any]:
         """Queue validated work within waiting-job, record, input and disk budgets.
 
@@ -278,9 +306,10 @@ class JobStore(Protocol):
 
         Args:
             owner: Current session hash.
-            plan_id: Plan revalidated by the application owner.
+            plan_id: Revalidated plan, or None for worker-prepared jobs.
             request_key: Client idempotency key.
-            expected: Prepared operation data revalidated immediately before admission.
+            expected: Validated inputs and initial resource reservation.
+            request_hash: Stable input identity required for direct submissions.
 
         Returns:
             Existing idempotent or newly queued owned job.

@@ -1,4 +1,3 @@
-import { canAutomaticallyCalculate } from "../../src/processing/calculation-policy.js";
 import { CalculationRequests } from "../../src/processing/calculation-requests.js";
 import { CATALOG_SELECTION } from "../../test-support/raster/fixtures.js";
 import assert from "node:assert/strict";
@@ -53,7 +52,7 @@ test("changing the map source name preserves calculated values and pending reque
 });
 
 test("late formula checks and plans cannot submit after leaving the summary panel", async () => {
-    for (const stage of ["validateCalculation", "planCalculation"]) {
+    for (const stage of ["validateCalculation"]) {
         const response = deferred(); const h = fixture(); await h.open();
         const original = h.api[stage];
         h.api[stage] = async value => { const result = await original(value); await response.promise; return result; };
@@ -95,8 +94,8 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}, context 
         discardPlan: async id => { requests.push(["discard",id]); },
         submitCalculation: async submission => {
             requests.push(["submit",submission]);
-            const intent = plans.get(submission.planId);
-            const job = { jobId:submission.planId,operation:"raster.aggregate.v1",status:"running",sources:{a:intent.source},calculations:intent.calculations,
+            const intent = submission.planId ? plans.get(submission.planId) : submission;
+            const job = { jobId:submission.planId ?? String(++jobSerial).padStart(32,"0"),operation:"raster.aggregate.v1",status:"running",sources:{a:intent.source},calculations:intent.calculations,
                 area:{kind:"bounds",bounds:[77,22,78,23]},grid,createdAt:"2026-09-08T00:00:00Z",progress:{phase:"calculating",totalBlocks:4,completedBlocks:0},result:null };
             server.set(job.jobId,job); return job;
         },
@@ -230,18 +229,7 @@ test("selection progress greys previous values and exposes cancellation before p
     assert.equal(h.submits(), 1);
 });
 
-test("late vector plans are released before the newest applied area is submitted", async () => {
-    const h = fixture(); await h.open(); const wait = deferred(), original = h.api.planCalculation;
-    let first = true;
-    h.api.planCalculation = async intent => { const plan = await original(intent); if (first) { first = false; await wait.promise; } return plan; };
-    h.controller.setVectorSamplingArea({ selection: { ...CATALOG_SELECTION, itemId: "first" }, label: "First" }, true); await h.tick();
-    h.controller.setVectorSelectionState({ analysis: true, phase: "reading", message: "Replacement" });
-    h.controller.setVectorSamplingArea({ selection: { ...CATALOG_SELECTION, itemId: "second" }, label: "Second" }, true); await h.tick();
-    assert.equal(h.submits(), 0); wait.resolve(); await flush();
-    assert.equal(h.submits(), 1); assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.area.catalogSelection.itemId, "second");
-    const operations = h.requests.map(row => row[0]);
-    assert.ok(operations.indexOf("discard") < operations.lastIndexOf("plan"));
-});
+
 
 test("a late accepted vector job is cancelled before a replacement runs and cannot publish its value", async () => {
     const h = fixture(); await h.open(); const wait = deferred(), submit = h.api.submitCalculation;
@@ -382,7 +370,7 @@ for (const [code, message] of [["source_work_too_large", "The area needs 1,450 n
         const api = new ProcessingApiClient(async url => url.endsWith("/jobs")
             ? { ok: true, json: async () => ({ jobs: [] }) }
             : { ok: false, status: 413, json: async () => ({ detail: { code, message } }) });
-        h.api.planCalculation = api.planCalculation.bind(api);
+        h.api.submitCalculation = api.submitCalculation.bind(api);
         h.controller.editStatistic(card.id, { expression: "sum(a)" }); await h.tick();
         const row = h.view.cards.get(card.id);
         assert.ok(row.status.textContent.includes(message));
@@ -418,8 +406,8 @@ test("histogram action opens and runs all valid configured cards without Calcula
     await h.tick();
     assert.equal(h.controller.isActive, true);
     assert.equal(h.submits(), 1, "repeat clicks during validation do not duplicate work");
-    assert.equal(h.plans.values().next().value.calculations[0].expression, "mean(a)");
-    assert.deepEqual(h.plans.values().next().value.area, box(80));
+    assert.equal(h.requests.find(([kind])=>kind==="submit")[1].calculations[0].expression, "mean(a)");
+    assert.deepEqual(h.requests.find(([kind])=>kind==="submit")[1].area, box(80));
     assert.equal(invalid.error, true);
     assert.match(h.view.cards.get(invalid.id).status.textContent, /Unknown function bad/);
     await h.finish("ready", ["4"]);
@@ -440,13 +428,11 @@ test("a histogram explicitly replaces a whole-raster scope with its previously s
     h.controller.destroy();
 });
 
-test("explicit histogram actions still submit larger areas through existing server planning", async () => {
+test("an explicit histogram action submits a whole-raster job with automatic updates off", async () => {
     const h = fixture(); await h.open(); h.controller.setAutomatic(false);
-    const plan = h.api.planCalculation;
-    h.api.planCalculation = async intent => ({ ...await plan(intent), grid: { ...grid, nativeBlocks: 1000 } });
     h.controller.open(source, { kind: "wholeRaster" }); h.controller.calculateSelection(true); await h.tick();
     assert.equal(h.submits(), 1);
-    assert.equal(h.requests.filter(([kind]) => kind === "plan").length, 1);
+    assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 1);
     h.controller.destroy();
 });
 
@@ -454,7 +440,7 @@ test("opening with no area prompts for a map click instead of a number or Calcul
     const h = fixture({}, new Map(), {}, { sources: [source], area: null }); await h.open();
     const card = h.controller.state.statistics[0], row = h.view.cards.get(card.id);
     assert.equal(h.submits(), 0);
-    assert.equal(h.requests.some(([kind]) => kind === "plan"), false);
+    assert.equal(h.requests.some(([kind]) => kind === "submit"), false);
     assert.match(row.status.textContent, /^Click the map to calculate/);
     assert.equal(row.status.classList.contains("is-awaiting-map"), true);
     assert.equal(row.run.hidden, true); assert.equal(row.valueActions.hidden, true);
@@ -534,27 +520,24 @@ test("total wait includes debounce, planning, polling and the first result DOM u
 test("one explicit vector calculation includes planning and needs no second confirmation", async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.setVectorSamplingArea({selection:CATALOG_SELECTION,label:"Peru"});await h.tick();
-    h.controller.request(card.id,"manual");await flush();assert.equal(card.manualRequired,false);
+    h.controller.request(card.id,"manual");await flush();
     assert.equal(h.submits(),1);h.elapse(2500);await h.finish();
     assert.equal(card.result.totalWaitSeconds,2.5);
-    assert.equal(h.requests.filter(r=>r[0]==="plan").length,1);
-    assert.equal(card.result.stages.planReused,false);
-    assert.equal(card.result.stages.planningSeconds,0);
+    assert.equal(h.requests.filter(r=>r[0]==="submit").length,1);
+    assert.equal(card.result.stages.planningSeconds,undefined);
 });
 
 test("browser stages add to total and distinguish planning from submission and delivery", async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
-    const plan=h.api.planCalculation,submit=h.api.submitCalculation;
-    h.api.planCalculation=async intent=>{h.elapse(1200);return {...await plan(intent),timing:{reservationSeconds:.1,preparationSeconds:.2,nativeProcessSeconds:.7,finalizationSeconds:.1}};};
+    const submit=h.api.submitCalculation;
     h.api.submitCalculation=async request=>{h.elapse(300);return submit(request);};
     h.controller.calculateSelection();h.elapse(700);await h.tick();h.elapse(4000);await h.finish();
     const s=card.result.stages;
-    assert.equal(s.beforePlanningSeconds,.7);assert.equal(s.planningSeconds,1.2);
+    assert.equal(s.beforeSubmissionSeconds,.7);assert.equal(s.planningSeconds,undefined);
     assert.equal(s.submissionSeconds,.3);assert.equal(s.afterSubmissionSeconds,4);
-    assert.ok(Math.abs(s.beforePlanningSeconds+s.planningSeconds+s.beforeSubmissionSeconds+s.submissionSeconds+s.afterSubmissionSeconds-card.result.totalWaitSeconds)<1e-9);
-    assert.equal(s.serverPlan.nativeProcessSeconds,.7);
+    assert.ok(Math.abs(s.beforeSubmissionSeconds+s.submissionSeconds+s.afterSubmissionSeconds-card.result.totalWaitSeconds)<1e-9);
     const text=node=>[node.textContent,...node.children.map(text)].join(" ");
-    assert.match(text(h.view.cards.get(card.id).detailsBody),/Planning round trip: 1.200 s/);
+    assert.match(text(h.view.cards.get(card.id).detailsBody),/Before submission: 0.700 s/);
     assert.match(text(h.view.cards.get(card.id).detailsBody),/Submission response → result observed: 4.000 s/);
 });
 
@@ -589,9 +572,9 @@ test("vector calculation submits on the first click and invalidates results when
     assert.equal(h.view.vectorAreaControls.hidden,false);
     assert.equal(h.submits(),0);
     h.controller.request(card.id,"manual");await flush();
-    assert.equal(h.submits(),1);assert.equal(card.manualRequired,false);
+    assert.equal(h.submits(),1);
     h.controller.request(card.id,"manual");await flush();assert.equal(h.submits(),1);
-    assert.equal(h.view.cards.get(card.id).size.hidden,true);
+    assert.equal(h.view.cards.get(card.id).size.hidden,false);
     assert.deepEqual(h.controller.executor.snapshot.unfinishedCalculation.calculation.area,{kind:"catalogSelection",catalogSelection:id});
     await h.finish();assert.equal(card.current,true);
     assert.equal(h.view.cards.get(card.id).size.hidden,true);
@@ -645,7 +628,7 @@ test("previous values are marked as being replaced during validation, planning, 
     assert.equal(row.statusRow.hidden,false);
     assert.equal(row.value.textContent,"12.5");
     await h.tick();
-    assert.equal(row.status.textContent,"Calculating…");
+    assert.match(row.status.textContent,/Calculating/);
     await h.finish("ready",["42"]);
     assert.equal(row.root.classList.contains("is-previous"),false);
     assert.equal(row.status.textContent,"");
@@ -790,14 +773,7 @@ test("automatic work pauses on navigation and does not restart merely on return"
     assert.equal(h.requests.filter(r=>r[0]==="cancel").length,1);await h.finish("cancelled");
     h.controller.setActive(true);await h.tick();assert.equal(h.submits(),1);
 });
-test("large and explicit-area jobs require manual confirmation before submission",async()=>{
-    assert.equal(canAutomaticallyCalculate({grid},{area:box(77)}),true);
-    assert.equal(canAutomaticallyCalculate({grid:{...grid,decodedBytes:128*1024*1024}},{area:box(77)}),false);
-    assert.equal(canAutomaticallyCalculate({grid},{area:{kind:"wholeRaster"}}),false);
-    const h=fixture();await h.open();h.controller.chooseArea("whole");await h.tick();const card=h.controller.state.statistics[0];
-    assert.equal(h.submits(),0);assert.equal(card.manualRequired,true);assert.equal(h.view.cards.get(card.id).run.hidden,false);
-    h.controller.request(card.id,"manual");await flush();assert.equal(h.submits(),1);await h.finish();assert.equal(card.current,true);
-});
+
 test("a failed rerun cannot be mistaken for the prior successful job with the same formula",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];h.controller.request(card.id,"manual");await flush();await h.finish();
     h.controller.request(card.id,"manual");await flush();await h.finish("failed");
@@ -833,24 +809,8 @@ test("clearing a queued automatic request prevents a later validation from runni
     h.controller.editStatistic(card.id,{expression:"sum(a)"});h.controller.setActive(false);await h.tick();
     h.controller.setActive(true);await h.tick();assert.equal(h.submits(),0);assert.equal(card.valid,true);
 });
-test("metadata from an obsolete formula is released before planning its replacement",async()=>{
-    const h=fixture();await h.open();const card=h.controller.state.statistics[0];const response=deferred();
-    const original=h.api.planCalculation;let first=true;
-    h.api.planCalculation=async intent=>{const plan=await original(intent);if(first){first=false;await response.promise;}return plan;};
-    h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();
-    h.controller.editStatistic(card.id,{expression:"max(a)"});await h.tick();assert.equal(h.submits(),0);
-    response.resolve();await flush();assert.equal(h.submits(),1);assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.calculations[0].expression,"max(a)");
-    const operations=h.requests.map(r=>r[0]);assert.ok(operations.indexOf("discard")<operations.lastIndexOf("plan"));
-});
-test("unused-plan release failure pauses other automatic cards until an explicit retry",async()=>{
-    const h=fixture();await h.open();h.controller.setAutomatic(false);h.controller.addStatistic("count");await h.tick();
-    const [a,b]=h.controller.state.statistics;h.controller.setAutomatic(true);
-    h.controller.chooseArea("whole");await h.tick();
-    h.api.discardPlan=async()=>{throw Error("Release failed");};
-    h.controller.chooseArea("selection");await h.tick();assert.equal(h.submits(),0);
-    assert.equal(h.controller.executor.snapshot.admission,"retry");assert.equal(a.error,true);
-    h.api.discardPlan=async()=>{};h.controller.request(b.id,"manual");await flush();assert.equal(h.submits(),1);
-});
+
+
 
 test("inspected history refreshes a running job without rewriting the editable cards",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
@@ -876,29 +836,7 @@ test("reload cancels recovered automatic work and never resumes sampling on its 
     assert.equal(h.server.get(id).status,"cancelled");assert.equal(restored.submits(),0);assert.equal(restored.controller.state.statistics[0].result,null);
 });
 
-test("the summary rechecks automatic size policy when a plan expires before submission", async () => {
-    const h = fixture(); await h.open();
-    const originalPlan = h.api.planCalculation;
-    let plans = 0;
-    h.api.planCalculation = async calculation => {
-        const plan = await originalPlan(calculation);
-        return ++plans === 1 ? plan : { ...plan, grid: { ...grid, nativeBlocks: 1000 } };
-    };
-    const submit = h.controller.executor.submit.bind(h.controller.executor);
-    let first = true;
-    h.controller.executor.submit = (id, context) => {
-        if (first) { first = false; h.controller.executor.snapshot.plan.expiresAt = "2000-01-01"; }
-        submit(id, context);
-    };
-    h.controller.calculateSelection(); await h.tick();
-    const card = h.controller.state.statistics[0];
-    assert.equal(plans, 2);
-    assert.equal(h.submits(), 0);
-    assert.equal(card.manualRequired, true);
-    h.controller.request(card.id, "manual"); await flush();
-    assert.equal(plans, 2, "confirmation reuses the refreshed plan");
-    assert.equal(h.submits(), 1);
-});
+
 
 test("the summary cancels a recovered automatic submission whose response was lost", async () => {
     const h = fixture(); await h.open();
@@ -913,7 +851,7 @@ test("the summary cancels a recovered automatic submission whose response was lo
     const submissions = [];
     const restored = fixture({
         listJobs: async () => [...h.server.values()], getJob: async id => h.server.get(id),
-        submitCalculation: async request => { submissions.push(request); return h.server.get(saved.pending.planId); },
+        submitCalculation: async request => { submissions.push(request); return [...h.server.values()][0]; },
         cancelJob: async id => {
             const record = JSON.parse([...h.data.values()][0]);
             assert.equal(record.cancelRequested, true, "the UI persists cancellation before transport");
@@ -921,8 +859,9 @@ test("the summary cancels a recovered automatic submission whose response was lo
         },
     }, h.data);
     await restored.controller.start(); await flush(); await restored.jobs.refresh(); await flush();
-    assert.deepEqual(submissions, [saved.pending]);
-    assert.equal(h.server.get(saved.pending.planId).status, "cancelled");
+    assert.equal(submissions[0].requestId, saved.pending.requestId);
+    assert.deepEqual(submissions[0].area, saved.intent.area);
+    assert.equal([...h.server.values()][0].status, "cancelled");
     assert.equal(restored.controller.state.statistics[0].result, null);
 });
 
@@ -931,7 +870,7 @@ test("batch tuning invalidates the result without running, persists on repeats, 
     h.controller.request(card.id,"manual");await flush();await h.finish();
     const input=h.view.extra["chunk-pixels"];
     input.value="65536";input.dispatchEvent(new Event("change"));await flush();
-    assert.equal(card.current,false);assert.equal(card.plan,null);assert.equal(h.submits(),1);
+    assert.equal(card.current,false);assert.equal(card.preparedJob,null);assert.equal(h.submits(),1);
     assert.equal(card.valid,true);assert.equal(h.view.cards.get(card.id).root.classList.contains("is-previous"),true);
     h.controller.request(card.id,"manual");await flush();
     assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,65536);
@@ -942,7 +881,7 @@ test("batch tuning invalidates the result without running, persists on repeats, 
     input.value="";input.dispatchEvent(new Event("change"));await flush();
     h.controller.request(card.id,"manual");await flush();
     assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,undefined);
-    assert.equal(h.requests.filter(r=>r[0]==="plan").at(-1)[1].targetChunkPixels,undefined);
+    assert.equal(h.requests.filter(r=>r[0]==="submit").at(-1)[1].targetChunkPixels,undefined);
 });
 
 test("recovery preserves accepted batch settings without another submission",async()=>{
@@ -997,7 +936,7 @@ test("vector selection wait contributes once to total and resets for later manua
     await h.tick(); h.elapse(2000); await h.finish();
     assert.equal(card.result.stages.vectorSelectionSeconds, 3);
     assert.ok(card.result.totalWaitSeconds >= 5);
-    assert.ok(card.result.stages.beforePlanningSeconds >= 3);
+    assert.ok(card.result.stages.beforeSubmissionSeconds >= 3);
     h.controller.request(card.id, "manual"); await flush(); h.elapse(1000); await h.finish();
     assert.equal(card.result.totalWaitSeconds, 1);
     assert.equal(card.result.stages.vectorSelectionSeconds, undefined);
@@ -1085,19 +1024,13 @@ test("the API preserves boolean cache metadata and rejects misleading values", a
 });
 
 
-test("cached whole-raster results submit without the large-calculation prompt", async () => {
+test("whole-raster summaries prepare and calculate without a separate confirmation", async () => {
     const h = fixture();
-    const prepare = h.api.planCalculation;
-    h.api.planCalculation = async (...args) => ({...await prepare(...args), cacheHit: true});
     await h.open();
     h.controller.chooseArea("whole");
     await h.tick();
     const card = h.controller.state.statistics[0];
     assert.equal(h.submits(), 1);
-    assert.equal(card.manualRequired, false);
-    assert.equal(canAutomaticallyCalculate(
-        {cacheHit: true, grid: {...grid, decodedBytes: 1e12}},
-        {area: {kind: "catalogSelection"}}), true);
     await h.finish();
     assert.equal(card.current, true);
 });
@@ -1109,7 +1042,7 @@ test("polygon areas use normal summary execution and cancel when their source di
     h.controller.setVectorSamplingArea({ polygonArea, label: "Study areas · 1 of 2 features" }, true);
     await h.tick();
     assert.equal(h.submits(), 1);
-    assert.deepEqual(h.requests.find(([kind]) => kind === "plan")[1].area, {kind:"polygonArea",polygonArea});
+    assert.deepEqual(h.requests.find(([kind]) => kind === "submit")[1].area, {kind:"polygonArea",polygonArea});
     assert.equal(h.controller.state.areaChoice, "vector");
     h.controller.invalidatePolygonArea(polygonArea.id); await flush();
     assert.equal(h.requests.filter(([kind]) => kind === "cancel").length, 1);
@@ -1126,5 +1059,11 @@ test("a new map box replaces an annotation summary without reusing its polygon i
     await h.tick(); await h.finish();
     h.controller.setSelection(box(80)); h.controller.calculateSelection(); await h.tick();
     assert.equal(h.controller.state.areaChoice, "selection");
-    assert.deepEqual(h.requests.filter(([kind]) => kind === "plan").at(-1)[1].area, box(80));
+    assert.deepEqual(h.requests.filter(([kind]) => kind === "submit").at(-1)[1].area, box(80));
+});
+
+test("whole-raster summaries submit once and preparation is observed on that job",async()=>{
+    const h=fixture();await h.open();h.controller.chooseArea("whole");await h.tick();
+    assert.equal(h.submits(),1);assert.equal(h.requests.filter(([kind])=>kind==="plan").length,0);
+    const card=h.controller.state.statistics[0];await h.finish();assert.equal(card.current,true);
 });

@@ -131,6 +131,11 @@ function validateJob(job) {
     if (!["queued", "running", "cancelling", "ready", "failed", "cancelled", "interrupted", "expired", "deleted"].includes(job.status) ||
         !job.progress || typeof job.progress !== "object") throw new Error("Processing returned an invalid job state.");
     if (job.grid) validateGrid(job.grid);
+    if (job.preparation != null) {
+        validateStages(job.preparation, ["seconds"]);
+        validateProcessTiming(job.preparation.process);
+        if (typeof job.preparation.cacheHit !== "boolean") throw new Error("Processing returned invalid preparation cache metadata.");
+    }
     if (job.result) {
         processingDownloadUrl(job.result.url, job.jobId, "result");
         processingDownloadUrl(job.result.provenanceUrl, job.jobId, "provenance");
@@ -295,41 +300,6 @@ export class ProcessingApiClient {
         return this.request("/raster-calculations/validate", "POST", { alias: "a", calculations }, signal);
     }
 
-    /** Prepare cached results or estimate a new calculation.
-     * @param {Object} intent Source, expressions and area.
-     * @param {AbortSignal} signal Superseded request.
-     * @param {function(string):void} [onProgress] Receives checking/queued/planning status.
-     * @return {Promise<Object>} Validated plan with an optional cache-hit flag.
-     * @throws {Error} If the request fails or returned plan metadata is invalid.
-     */
-    async planCalculation(intent, signal, onProgress) {
-        const area = normalizeCalculationArea(intent.area);
-        const targetChunkPixels = chunkPixels(intent.targetChunkPixels);
-        await this.ensureSession();
-        const plan = await this.preparePlan("raster-calculations", {
-            sources: { a: { collectionId: intent.source.collectionId, itemId: intent.source.itemId } },
-            calculations: intent.calculations,
-            ...(targetChunkPixels === null ? {} : { targetChunkPixels }),
-            ...(area.kind === "selectedArea" ? { selectedBounds: area.selectedBounds }
-                : area.kind === "catalogSelection" ? { catalogSelection: area.catalogSelection }
-                : area.kind === "polygonArea" ? { polygonArea: area.polygonArea } : { wholeRaster: true }),
-        }, signal, onProgress);
-        opaqueId(plan.planId);
-        validateGrid(plan.grid);
-        if (plan.cacheHit != null && typeof plan.cacheHit !== "boolean") {
-            throw new Error("Processing returned invalid cache metadata.");
-        }
-        if (plan.operation !== "raster.aggregate.v1" || !Number.isFinite(Date.parse(plan.expiresAt)) ||
-            !Number.isSafeInteger(plan.grid.nativeBlocks) || plan.grid.nativeBlocks < 1 ||
-            !Number.isSafeInteger(plan.grid.decodedBytes) || plan.grid.decodedBytes < 1) {
-            throw new Error("Processing returned an invalid calculation estimate.");
-        }
-        validateStages(plan.timing, ["reservationSeconds", "preparationSeconds", "nativeProcessSeconds", "finalizationSeconds"]);
-        validateProcessTiming(plan.timing?.process);
-        if (plan.timing?.queueSeconds != null) validateStages(plan.timing, ["queueSeconds"]);
-        return plan;
-    }
-
     /** Prepare an estimate, automatically waiting for space in the planning queue.
      * A request whose server queue deadline expires is released before a fresh
      * attempt. Actual calculation/planning errors are reported without retry.
@@ -459,10 +429,24 @@ export class ProcessingApiClient {
         return this.request(`/polygon-areas/${opaqueId(id)}`, "DELETE");
     }
 
-    /** Submit or recover the same calculation. @param {Object} submission Stable IDs. @return {Promise<Object>} Owned job. */
+    /** Queue complete calculation inputs, or recover a previous plan-based submission.
+     * @param {Object} submission Source, area, formulas and requestId; legacy recovery uses planId and requestId.
+     * @return {Promise<Object>} Owned job with preparation details once the worker produces them.
+     * @throws {ProcessingRequestError|Error} If admission fails or the response is invalid.
+     */
     async submitCalculation(submission) {
         await this.ensureSession();
-        return validateJob(await this.request("/raster-calculations", "POST", submission));
+        const area = submission.planId ? null : normalizeCalculationArea(submission.area);
+        const body = submission.planId ? submission : {
+            requestId: submission.requestId,
+            sources: {a: {collectionId: submission.source.collectionId, itemId: submission.source.itemId}},
+            calculations: submission.calculations,
+            ...(chunkPixels(submission.targetChunkPixels) == null ? {} : {targetChunkPixels: submission.targetChunkPixels}),
+            ...(area.kind === "selectedArea" ? {selectedBounds: area.selectedBounds}
+                : area.kind === "catalogSelection" ? {catalogSelection: area.catalogSelection}
+                : area.kind === "polygonArea" ? {polygonArea: area.polygonArea} : {wholeRaster: true}),
+        };
+        return validateJob(await this.request("/raster-calculations", "POST", body));
     }
 
     /** Read a tracked job even if it falls outside recent history. @param {string} id Job ID. @return {Promise<Object>} Owned job. */

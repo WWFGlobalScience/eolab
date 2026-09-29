@@ -35,6 +35,8 @@ from eolab_app.processing.clip_models import (
 )
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
+    AggregateJobRequest,
+    UnpreparedCalculation,
     AggregatePlanRequest,
     AggregatePlanTiming,
     AggregateSpec,
@@ -46,7 +48,7 @@ from eolab_app.processing.calculation_cache import (
 )
 from eolab_app.processing.raster_aggregate import aggregate_process_target
 from eolab_app.processing.polygon_areas import PolygonAreaReference, PolygonSummaryInput
-from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
+from eolab_app.processing.calculation_preparation import prepare_aggregate_job
 from eolab_app.processing.ports import (
     JobArtifactStore,
     JobStore,
@@ -106,48 +108,6 @@ def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
         },
         reserved_bytes=spec.grid.reservedBytes,
         operation=spec.operation,
-        minimum_claim_version=5 if spec.area.kind == "catalogSelection" else 1,
-    )
-
-
-def prepare_aggregate_job(
-    spec: AggregateSpec, limits: RasterAggregateLimits
-) -> PreparedJobPlan:
-    """Build the stored calculation job fields and its disk-space reservation.
-
-    Args:
-        spec: Calculation plan containing the raster, formulas, area and grid.
-        limits: Calculation result and temporary mask reservation policy.
-
-    Returns:
-        Stored job data, display summary, required disk bytes and the minimum
-        worker version that can execute this calculation.
-
-    Raises:
-        ProcessingError: If mask and result reservations exceed the storage limit.
-    """
-    data = spec.model_dump(mode="json", by_alias=True)
-    if spec.area.kind == "polygons":
-        minimum_claim_version = 8
-    elif spec.cachedRows is not None:
-        minimum_claim_version = 7
-    elif spec.area.kind != "wholeRaster":
-        minimum_claim_version = 6
-    elif spec.grid.execution:
-        minimum_claim_version = 4
-    elif spec.grid.groundArea:
-        minimum_claim_version = 3
-    else:
-        minimum_claim_version = 2
-    return PreparedJobPlan(
-        specification=data,
-        summary={
-            **{key: data[key] for key in ("sources", "calculations", "grid")},
-            "area": {"kind": spec.area.kind, "bounds": spec.area.bounds},
-        },
-        reserved_bytes=estimate_calculation_disk_bytes(spec, limits),
-        operation=spec.operation,
-        minimum_claim_version=minimum_claim_version,
     )
 
 
@@ -185,6 +145,8 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
     """
     identifier = row["id"]
     spec = row.get("spec") or {}
+    if "request" in spec:
+        spec = row["summary"]
     status = row["status"]
     if status == "ready" and row["expires_at"] <= datetime.now(timezone.utc):
         status = "expired"
@@ -210,6 +172,7 @@ def public_job(row: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "progress": row["progress"],
+        **({"preparation": row.get("preparation")} if calculation else {}),
         "error": row["error"],
         "result": (
             {
@@ -837,6 +800,86 @@ class ProcessingService:
                 await asyncio.shield(
                     asyncio.to_thread(self.jobs.finish_plan, identifier, owner, None)
                 )
+
+    async def submit_calculation_inputs(
+        self, owner: str, request: AggregateJobRequest
+    ) -> dict[str, Any]:
+        """Queue one calculation with all inputs, before inspecting raster metadata.
+
+        Args:
+            owner: Current browser-session hash.
+            request: Catalog source, selected area, formulas and stable retry key.
+
+        Returns:
+            The accepted job, or the same job after a repeated submission.
+
+        Raises:
+            ProcessingError: For conflicting retries, unavailable polygon inputs,
+                or exhausted queue and input-storage capacity.
+        """
+        inputs = AggregatePlanRequest.model_validate(
+            request.model_dump(exclude={"requestId"}, by_alias=True)
+        )
+        request_hash = hashlib.sha256(
+            json.dumps(
+                inputs.model_dump(mode="json", by_alias=True), sort_keys=True
+            ).encode()
+        ).hexdigest()
+        with measure_request_stage("admissionChecks"):
+            existing = await asyncio.to_thread(
+                self.jobs.find_request, owner, request.requestId
+            )
+            if existing:
+                require_operation(existing, "raster.aggregate.v1")
+                if existing.get("request_hash") != request_hash:
+                    raise ProcessingError(
+                        "request_conflict",
+                        "That request ID has different calculation inputs.",
+                        409,
+                    )
+                return public_job(existing)
+            polygons = (
+                await self.read_polygon_area(owner, inputs.polygonArea)
+                if inputs.polygonArea
+                else None
+            )
+            queued = UnpreparedCalculation(request=inputs, polygonArea=polygons)
+            bounds = inputs.selectedBounds
+            if bounds:
+                area_summary = {
+                    "kind": "bounds",
+                    "bounds": (bounds.west, bounds.south, bounds.east, bounds.north),
+                }
+            elif polygons:
+                area_summary = {"kind": "polygons", "bounds": polygons.bounds}
+            elif inputs.catalogSelection:
+                area_summary = {"kind": "catalogSelection", "bounds": None}
+            else:
+                area_summary = {"kind": "wholeRaster", "bounds": None}
+            summary = {
+                "sources": {
+                    alias: source.model_dump(by_alias=True)
+                    for alias, source in inputs.sources.items()
+                },
+                "calculations": [item.model_dump() for item in inputs.calculations],
+                "grid": None,
+                "area": area_summary,
+            }
+        with measure_request_stage("queueAdmission"):
+            row = await asyncio.to_thread(
+                self.jobs.submit,
+                owner,
+                None,
+                request.requestId,
+                PreparedJobPlan(
+                    specification=queued.model_dump(mode="json", by_alias=True),
+                    summary=summary,
+                    reserved_bytes=0,
+                    operation=queued.operation,
+                ),
+                request_hash,
+            )
+        return public_job(row)
 
     async def submit_raster_calculation(
         self, owner: str, request: JobSubmitRequest

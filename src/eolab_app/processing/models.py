@@ -19,14 +19,12 @@ class PreparedJobPlan:
         summary: Bounded public operation metadata, excluding large input payloads.
         reserved_bytes: Conservative working/result storage reservation in bytes.
         operation: Opaque versioned operation discriminator supplied by its owner.
-        minimum_claim_version: Required worker claim protocol; legacy jobs use 1.
     """
 
     specification: dict[str, object]
     summary: dict[str, object]
     reserved_bytes: int
     operation: str = ""
-    minimum_claim_version: int = 1
 
 
 class JobSubmitRequest(BaseModel):

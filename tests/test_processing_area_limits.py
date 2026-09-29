@@ -1,4 +1,4 @@
-"""New durable selections use small descriptors and remain fenced from old workers."""
+"""Durable catalog selections use small descriptors without stored geometry."""
 
 import json
 import asyncio
@@ -17,7 +17,14 @@ from test_raster_clips import SOURCE
 def test_plan_persists_only_catalog_definition(
     boundary: Any, store: Any, tmp_path: Path, operation: str
 ) -> None:
-    """The database stores no geometry or private paths and requires claim protocol 5."""
+    """Store only the catalog selection descriptor, without geometry or private paths.
+
+    Args:
+        boundary: Real HTTP routes and source authorizers.
+        store: Disposable PostgreSQL adapter.
+        tmp_path: Directory for the source vector fixture.
+        operation: Clip or calculation endpoint to exercise.
+    """
     client, *_ = boundary
     vector = tmp_path / "area.gpkg"
     geometry = {
@@ -53,14 +60,6 @@ def test_plan_persists_only_catalog_definition(
         headers=HEADERS,
     )
     assert accepted.status_code == 202, accepted.text
-    with psycopg.connect(store.conninfo) as connection:
-        assert connection.execute(
-            "SELECT minimum_claim_version FROM processing.jobs"
-        ).fetchone()[0] == (5 if operation == "raster-clips" else 6)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        with psycopg.connect(store.conninfo) as connection:
-            connection.execute("SET LOCAL eolab.processing_claim_version = '4'")
-            connection.execute("UPDATE processing.jobs SET status='running'")
 
 
 @pytest.mark.parametrize(

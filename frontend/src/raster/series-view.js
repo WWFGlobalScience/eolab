@@ -98,7 +98,6 @@ export class RasterSeriesView {
         this.areaControls.hidden = !areaMode;
         this.document.querySelector("#raster-series-mode").value = state.mode ?? "pixel";
         this.retry.hidden = areaMode;
-        if (!areaMode) this.status.classList.remove("raster-series-confirmation");
         this.document.querySelector("#raster-series-value-heading").textContent = areaMode ? "Value" : "Pixel value";
         this.document.querySelector("#raster-series-statistic-heading").hidden = !areaMode;
         this.document.querySelector("#raster-series-plots").hidden = !areaMode;
@@ -217,12 +216,11 @@ export class RasterSeriesView {
         this.document.querySelector("#raster-series-area").value = area.areaChoice;
         this.document.querySelector("#raster-series-add-formula").disabled = area.formulas.length >= 5;
         const calculate = this.document.querySelector("#raster-series-calculate");
-        calculate.disabled = (state.busy && !area.confirmation) || !area.sources.length || (area.areaChoice !== "whole" && !area.area);
+        calculate.disabled = state.busy || !area.sources.length || (area.areaChoice !== "whole" && !area.area);
         calculate.hidden = area.complete && !area.hasErrors;
-        calculate.textContent = area.confirmation ? "Calculate remaining " + (area.sources.length - area.results.size) + " rasters" : "Calculate";
+        calculate.textContent = "Calculate";
         this.document.querySelector("#raster-series-cancel").hidden = !state.busy;
         this.document.querySelector("#raster-series-recover").hidden = !area.recoverable;
-        this.status.classList.toggle("raster-series-confirmation", area.confirmation);
         const performance = this.document.querySelector("#raster-series-performance");
         const completedKey = JSON.stringify([area.elapsedSeconds, [...area.results].map(([key, result]) => [key, result.job?.jobId, result.error])]);
         if (this.performanceKey !== completedKey) {
@@ -240,7 +238,7 @@ export class RasterSeriesView {
             if (area.elapsedSeconds != null) {
                 const total = this.document.createElement("p");
                 total.textContent = "Whole series: " + area.elapsedSeconds.toFixed(3) +
-                    " s from requesting the series to the last result or error, including debounce, validation and any confirmation or recovery pauses.";
+                    " s from requesting the series to the last result or error, including debounce, validation and any recovery pauses.";
                 performance.prepend(total);
             }
         }

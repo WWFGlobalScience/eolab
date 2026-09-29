@@ -324,16 +324,35 @@ monitor host/volume free space. Processing also requires a 2 GiB free-space floo
 Deleting this volume loses result files even if their database records remain.
 Back up persistent database and result storage together when results must be kept.
 
-Deploy the app and Processing worker together. Current Catalog-vector jobs require
-worker claim protocol 5; older workers cannot claim them. Before rolling back to
-code that cannot read these job formats, finish or cancel the affected jobs and
-remove them through the supported API. Do not drop compatibility database triggers.
+Deploy the app and Processing worker together, stopping the old containers first.
+Every Processing worker startup marks all queued, running and cancelling jobs as
+interrupted with a resubmit message before consuming new work. This applies to
+upgrades, rollbacks, same-version redeployments and worker container restarts.
+No job-format version or compatibility check is needed. Completed results and
+cached calculation values survive, subject to their usual expiry. The existing
+worker cleanup removes interrupted attempt files before releasing reservations.
+Never overlap old and new worker containers with this policy.
+
+Releases predating this policy cannot perform the startup reset. Before rolling
+back to one of those releases, stop the app and worker and invalidate unfinished
+work in the Processing database (then start the older release):
+
+```sql
+UPDATE processing.jobs
+SET status = 'interrupted', updated_at = clock_timestamp(),
+    error = '{"code":"worker_restarted","detail":"The application restarted before this job finished. Submit a new job to retry."}'::jsonb
+WHERE status IN ('queued', 'running', 'cancelling');
+```
+
+The older worker's normal cleanup removes those attempts and releases storage.
+This intentionally discards unfinished calculations; users must resubmit them.
+It does not delete completed results or source data.
+
 An old unsubmitted upload plan can report `legacy_selection_plan`; choose a Catalog
 vector and make a new plan. Completed results retain their usual expiry.
 
-A graceful worker stop interrupts its active job. After an abrupt worker failure,
-the queue can wait about ten minutes for the previous execution deadline before
-starting another attempt. Interrupted jobs require a new plan/job; partial results
+A graceful worker stop interrupts its active job. On restart, any other unfinished
+jobs are interrupted too. Interrupted jobs require a new plan/job; partial results
 are not resumed. App health and map exploration can remain available while
 Processing reports its database or storage unavailable.
 
@@ -342,7 +361,17 @@ Allow streaming through the reverse proxy without buffering. Losing that stream
 does not cancel accepted jobs. The stream reconnects periodically; polling still
 recovers updates if streaming is unavailable.
 
-Raster calculation and clip planning share a FIFO queue with one native planner.
+Current raster summary clients submit complete inputs and a stable `requestId`
+to `POST /api/processing/raster-calculations`. The 202 response is the queued job;
+no separate plan request or later execution submission is needed. The worker
+publishes `progress.phase: preparing`, then stores the prepared `grid` and
+`preparation` timing on that job and starts calculating immediately. Job reads
+and the existing SSE hints expose these updates. Before preparation, `grid` and
+`preparation` are null. Cancellation uses the same job ID throughout. Cached
+results still enter the job queue, but skip native preparation and calculation.
+Deploy API, worker and frontend together; see the rollback procedure above.
+
+Raster clip planning and legacy raster calculation clients share a FIFO queue with one native planner.
 The current limits admit 32 unfinished requests, retain 128 plan records, and
 allow each browser session 32 unfinished or ready plans. This admits a burst of
 independent raster plans from one session within the existing global queue;
@@ -357,8 +386,9 @@ checks source access but does not wait for the native planner. Queue waiting has
 its own 60-second limit; active planning retains its 15-second limit. A completed
 estimate is usable for five minutes starting when preparation finishes.
 
-New browser clients submit to `POST /api/processing/raster-calculations/plans/{id}`
-or `/api/processing/raster-clips/plans/{id}`, using a random 32-character lowercase
+Clip clients submit to `POST /api/processing/raster-clips/plans/{id}`.
+`/api/processing/raster-calculations/plans/{id}` remains available for older
+clients and saved pending submissions. These use a random 32-character lowercase
 hex ID. A 202 response contains the current state; `GET /api/processing/plans/{id}`
 returns progress and the completed estimate. Reusing an ID with the same inputs
 recovers an uncertain submission. Changing its inputs returns `plan_conflict`.

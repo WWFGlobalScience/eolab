@@ -233,16 +233,10 @@ def test_cached_area_skips_geometry_work_even_after_entry_expires(
     submitted = submit_calculation(client, plan)
     with psycopg.connect(store.conninfo) as connection:
         row = connection.execute(
-            "SELECT minimum_claim_version, reserved_bytes FROM processing.jobs WHERE id=%s",
+            "SELECT reserved_bytes FROM processing.jobs WHERE id=%s",
             (submitted["jobId"],),
         ).fetchone()
-        assert row == (7, worker.aggregate_limits.result_reservation_bytes)
-        assert (
-            connection.execute(
-                "SELECT id FROM processing.jobs WHERE status='queued' AND minimum_claim_version<=6"
-            ).fetchone()
-            is None
-        )
+        assert row == (worker.aggregate_limits.result_reservation_bytes,)
     assert asyncio.run(worker.run_once())
     ready = client.get(f"/api/processing/jobs/{submitted['jobId']}").json()
     assert ready["status"] == "ready", ready
