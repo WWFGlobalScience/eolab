@@ -39,6 +39,60 @@ test("missing events, unsupported SSE and recovery still poll at two seconds", a
     assert.equal(jobs.jobs[0].status,"ready"); jobs.destroy();
 });
 
+test("a new submission preserves itself without delaying another job's ready result", async () => {
+    const pending = deferred(), timer = clock();
+    const jobs = new ProcessingJobs({listJobs: () => pending.promise}, timer);
+    jobs.accept({jobId: "old-history", status: "ready"});
+    jobs.accept({jobId: "a", status: "running"});
+    const refresh = jobs.refresh();
+    const submitted = {jobId: "b", status: "queued"};
+    jobs.accept(submitted);
+    const ready = {jobId: "a", status: "ready"};
+    pending.resolve([ready]);
+    await refresh;
+    assert.deepEqual(jobs.jobs, [submitted, ready]);
+    // History absent from the next authoritative response is still removed.
+    await jobs.refresh();
+    assert.deepEqual(jobs.jobs, [ready]);
+    jobs.destroy();
+});
+
+for (const action of ["cancel", "delete"]) {
+    test(`${action} protects only the changed job from an older list response`, async () => {
+        const pending = deferred(), timer = clock();
+        const updated = {jobId: "a", status: action === "cancel" ? "cancelling" : "deleted"};
+        const jobs = new ProcessingJobs({listJobs: () => pending.promise,
+            cancelJob: async () => updated, deleteJob: async () => updated}, timer);
+        jobs.accept({jobId: "a", status: "running"});
+        jobs.accept({jobId: "b", status: "running"});
+        const refresh = jobs.refresh();
+        const mutation = jobs.action("a", action);
+        await tick();
+        const ready = {jobId: "b", status: "ready"};
+        pending.resolve([{jobId: "a", status: "ready"}, ready]);
+        await Promise.all([refresh, mutation]);
+        assert.deepEqual(jobs.jobs, [updated, ready]);
+        jobs.destroy();
+    });
+}
+
+test("local changes during a tracked-job lookup protect only that job", async () => {
+    const pending = deferred(), timer = clock();
+    const ready = {jobId: "a", status: "ready"};
+    const jobs = new ProcessingJobs({listJobs: async () => [ready], getJob: () => pending.promise}, timer);
+    jobs.tracked.add("b");
+    jobs.accept({jobId: "a", status: "running"});
+    jobs.accept({jobId: "b", status: "running"});
+    const refresh = jobs.refresh();
+    await tick();
+    const cancelled = {jobId: "b", status: "cancelled"};
+    jobs.accept(cancelled);
+    pending.resolve({jobId: "b", status: "running"});
+    await refresh;
+    assert.deepEqual(jobs.jobs, [cancelled, ready]);
+    jobs.destroy();
+});
+
 test("destroy closes a live stream and drops a racing notification and read", async () => {
     const timer=clock(), pending=deferred(); let changed,closed=0;
     const jobs=new ProcessingJobs({listJobs:()=>pending.promise,watchJobs:callback=>{changed=callback;return ()=>closed++;}},timer);
