@@ -9,14 +9,6 @@ const execution={targetChunkPixels:65536,readWidth:512,readHeight:128,evaluation
 const grid={width:512,height:128,crs:"EPSG:4326",dtype:"float32",transform:[1,0,0,0,-1,90],nativeBlocks:4,decodedBytes:262144,execution};
 const plan={jobId:"P".repeat(32),status:"running",progress:{phase:"calculating"},operation:"raster.aggregate.v1",expiresAt:"2099-01-01T00:00:00Z",grid};
 
-/** Wrap a test estimate in the planning resource returned by its admission URL.
- * @param {string} path Request URL. @param {Object} result Completed estimate.
- * @return {Object} Ready planning snapshot. */
-function readyPlan(path, result) {
-    const planId = path.split("/").at(-1);
-    return {planId, status:"ready", result:{...result, planId}};
-}
-
 test("warm-process metadata is validated and distinguishes readiness from repeated operation work", async()=>{
     const process={readyWaitSeconds:0,operationSeconds:.2,overheadSeconds:.01,reusedProcess:true};
     const timing={reservationSeconds:.01,preparationSeconds:.01,nativeProcessSeconds:.21,finalizationSeconds:.01,process};

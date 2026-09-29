@@ -282,8 +282,6 @@ def create_app(
             Control while the application serves requests.
         """
         async with AsyncExitStack() as client_stack:
-            client_stack.push_async_callback(planning_native.close)
-            planning_native.warm()
             client_stack.push_async_callback(processing_events.close)
             processing_events.start()
             for client in (
@@ -294,7 +292,6 @@ def create_app(
                 jobs_client,
             ):
                 client_stack.push_async_callback(client.aclose)
-            client_stack.push_async_callback(processing_service.close)
             client_stack.push_async_callback(render_queue.close)
             yield
 
@@ -334,18 +331,13 @@ def create_app(
     application.include_router(vector_feature.router)
     application.include_router(create_vector_sampling_router(vector_selection_reader))
     processing_limits = load_processing_limits()
-    planning_native = create_native_process(processing_limits)
     processing_events = PostgresJobEvents()
     processing_service = ProcessingService(
-        raster_source_authorizer,
-        vector_selection_reader,
         PostgresJobStore(processing_limits),
         LocalJobArtifacts(
             app_global_configuration.processing_data_path,
             (Path.cwd(), app_global_configuration.scan_mount_path),
         ),
-        processing_limits,
-        native=planning_native,
         changes=processing_events,
     )
     application.include_router(create_processing_router(processing_service))

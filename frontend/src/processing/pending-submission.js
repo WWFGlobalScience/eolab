@@ -1,5 +1,6 @@
 /** Reload recovery for one uncertain submission. No cookies, geometry, or result files are stored. */
-const KEY = "eolab.processing.pending.v1";
+import { normalizeRasterSamplingArea } from "../selected-area.js";
+const KEY = "eolab.processing.pending.v2";
 
 /** Own the minimal per-tab idempotency record. */
 export class PendingSubmissionStorage {
@@ -10,19 +11,27 @@ export class PendingSubmissionStorage {
     read() {
         try {
             const text = this.storage?.getItem(KEY);
-            if (!text || text.length > 2048) return null;
+            if (!text || text.length > 16384) return null;
             const value = JSON.parse(text);
-            if (!/^[A-Za-z0-9_-]{32}$/.test(value.planId) ||
+            if (![value.source?.collectionId, value.source?.itemId].every(id => typeof id === "string" && id.length > 0 && id.length <= 512) ||
                 !/^[A-Za-z0-9_-]{16,80}$/.test(value.requestId) ||
                 typeof value.label !== "string" || value.label.length > 512) return null;
-            return { planId: value.planId, requestId: value.requestId, label: value.label };
+            const area = normalizeRasterSamplingArea(value.area);
+            if (!["selectedArea", "catalogSelection"].includes(area.kind)) return null;
+            return { source: value.source, area, requestId: value.requestId, label: value.label };
         } catch { return null; }
     }
 
-    /** Persist before dispatch so a lost response can be retried safely. @param {Object} value Stable submission record. @return {void} */
+    /** Persist before dispatch so a lost response can be retried safely.
+     * @param {Object} value Captured source, area, request key and label.
+     * @return {void}
+     * @throws {Error} If storage is unavailable, full, or the record exceeds the recovery limit.
+     */
     write(value) {
         if (!this.storage) throw new Error("Browser session storage is unavailable. Enable it to create recoverable downloads.");
-        this.storage.setItem(KEY, JSON.stringify(value));
+        const text = JSON.stringify(value);
+        if (text.length > 16384) throw new Error("This clip request is too large to save for recovery.");
+        this.storage.setItem(KEY, text);
     }
 
     /** Clear a confirmed submission. @return {void} */

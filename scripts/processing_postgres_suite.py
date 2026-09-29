@@ -7,7 +7,6 @@ import pytest
 
 SUITES = (
     "test_processing_jobs.py",
-    "test_processing_planning_postgres.py",
     "test_processing_admission_postgres.py",
     "test_annotation_sessions_postgres.py",
     "test_saved_maps_postgres.py",

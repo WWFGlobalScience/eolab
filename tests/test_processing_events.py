@@ -16,7 +16,6 @@ from eolab_app.processing.job_notifications import (
     JOB_CHANGE_CHANNEL,
 )
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.clip_models import RasterClipLimits
 from eolab_app.processing.service import ProcessingService
 from eolab_app.routes.processing import COOKIE, create_processing_router
 from eolab_app.routes.processing_events import JobEventResponse
@@ -133,9 +132,7 @@ def test_sse_route_streams_hints_then_releases_on_disconnect(monkeypatch, asgi_s
         hub = PostgresJobEvents()
         hub.start()
         await asyncio.sleep(0)
-        service = ProcessingService(
-            None, None, None, None, RasterClipLimits(), changes=hub
-        )
+        service = ProcessingService(None, None, changes=hub)
         app = FastAPI()
         app.include_router(create_processing_router(service))
         assert (
@@ -199,7 +196,7 @@ def test_sse_route_streams_hints_then_releases_on_disconnect(monkeypatch, asgi_s
 
 def test_sse_origin_and_unavailable_provider_use_normal_http_errors():
     """Cross-origin streams and unavailable providers never consume stream slots."""
-    service = ProcessingService(None, None, None, None, RasterClipLimits())
+    service = ProcessingService(None, None)
     app = FastAPI()
     app.include_router(create_processing_router(service))
     with TestClient(app, base_url="https://testserver") as client:

@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 OpaqueId = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
 
@@ -27,24 +27,6 @@ class PreparedJobPlan:
     operation: str = ""
 
 
-class JobSubmitRequest(BaseModel):
-    """Accept a reviewed operation plan with a client-generated idempotency key."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    planId: OpaqueId
-    requestId: Annotated[
-        str, Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
-    ]
-
-
-class JobPlanLimits(BaseModel):
-    """Published output-size, runtime, and download-lifetime limits."""
-
-    maxRawBytes: int
-    runtimeSeconds: float
-    downloadLifetimeSeconds: int
-
-
 class JobResultResponse(BaseModel):
     """Owned download metadata shared by operation-specific result contracts."""
 
@@ -60,17 +42,6 @@ class JobFailureResponse(BaseModel):
 
     code: str
     detail: str
-
-
-class PlanningResponse(BaseModel):
-    """Owned planning progress; result is present only when ready for submission."""
-
-    planId: OpaqueId
-    status: Literal[
-        "checking", "queued", "planning", "cancelling", "ready", "failed", "cancelled"
-    ]
-    result: dict[str, object] | None
-    error: JobFailureResponse | None
 
 
 class JobProgressResponse(BaseModel):
@@ -116,13 +87,6 @@ class JobListResponse(BaseModel, Generic[JobResponseType]):
 class ProcessingLimits:
     """Deployment-wide scheduling, execution and retention limits.
 
-    max_owner_plans limits unfinished and ready plans held at once by one
-    Processing browser session, shared across its calculations and clip downloads.
-    It does not limit the number of rasters in a map or series. Releasing a plan
-    frees session capacity; the browser retries remaining requests as space opens.
-    plan_record_capacity separately includes failed and cancelled records retained
-    until expiry so that late retries cannot recreate cancelled work.
-
     Waiting-job limits count only queued work, not the single running attempt.
     max_job_records includes finished jobs and seven-day idempotency records.
     max_job_input_bytes bounds retained job specifications and summaries until
@@ -135,12 +99,7 @@ class ProcessingLimits:
     """
 
     plan_timeout_seconds: float = 15
-    plan_queue_seconds: float = 60
-    plan_queue_capacity: int = 32
-    plan_record_capacity: int = 128
-    max_owner_plans: int = 32
     runtime_seconds: float = 600
-    plan_ttl_seconds: int = 300
     result_ttl_seconds: int = 86_400
     max_waiting_jobs: int = 128
     max_owner_waiting_jobs: int = 32

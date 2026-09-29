@@ -11,7 +11,7 @@ from eolab_app.processing.job_notifications import (
     PostgresNotifications,
 )
 from eolab_app.processing.clip_models import ClipArea
-from eolab_app.processing.service import prepare_clip_job
+from eolab_app.processing.job_preparation import prepare_clip_job
 from test_processing_jobs import store
 from test_raster_clips import SOURCE, make_spec, write_source
 
@@ -31,8 +31,6 @@ def test_job_changes_notify_only_commits_and_changed_public_state(
     spec = prepare_clip_job(
         make_spec(path, ClipArea(kind="bounds", bounds=(0.1, 9.1, 0.9, 9.9)))
     )
-    plan = store.reserve_plan(owner, SOURCE)
-    store.finish_plan(plan, owner, spec)
 
     async def scenario():
         """Exercise commit, rollback, idempotency, progress and failure transitions."""
@@ -74,12 +72,16 @@ def test_job_changes_notify_only_commits_and_changed_public_state(
                 patch.setattr(store, "_transaction", rollback)
                 with pytest.raises(RuntimeError, match="rollback"):
                     await asyncio.to_thread(
-                        store.submit, owner, plan, "rolled-back", spec
+                        store.submit, owner, "rolled-back", spec, "fixture-input-hash"
                     )
             await quiet()
-            job = await asyncio.to_thread(store.submit, owner, plan, "committed", spec)
+            job = await asyncio.to_thread(
+                store.submit, owner, "committed", spec, "fixture-input-hash"
+            )
             await notified()
-            await asyncio.to_thread(store.submit, owner, plan, "committed", spec)
+            await asyncio.to_thread(
+                store.submit, owner, "committed", spec, "fixture-input-hash"
+            )
             await quiet()
             claimed = await asyncio.to_thread(store.claim)
             await notified()

@@ -11,8 +11,8 @@ import pytest
 
 from eolab_app.processing.job_store import PostgresJobStore
 from eolab_app.processing.models import Artifact, PreparedJobPlan, ProcessingError
-from test_processing_jobs import boundary, store, planned, HEADERS
-from test_processing_calculations import plan_calculation
+from test_processing_jobs import boundary, store, clip_inputs, HEADERS
+from test_processing_calculations import calculation_inputs
 
 
 def make_plan(
@@ -29,9 +29,7 @@ def make_plan(
         Plan ID and the immutable data admitted by its application owner.
     """
     plan = PreparedJobPlan({"input": payload}, {"label": "test"}, 1024)
-    identifier = store.reserve_plan(owner, {"input": payload})
-    store.finish_plan(identifier, owner, plan)
-    return identifier, plan
+    return payload, plan
 
 
 def admit(
@@ -50,7 +48,7 @@ def admit(
     Raises:
         ProcessingError: If an admission budget is exhausted.
     """
-    return store.submit(owner, plan[0], uuid4().hex, plan[1])
+    return store.submit(owner, uuid4().hex, plan[1], "fixture-input-hash")
 
 
 def finish(store: PostgresJobStore, job: dict[str, Any]) -> None:
@@ -148,7 +146,7 @@ def test_each_budget_rejects_explicitly_and_idempotency_still_recovers(
     with pytest.raises(ProcessingError) as denied:
         admit(store, "one", plan)
     assert denied.value.code == code and denied.value.status == 429
-    retried = store.submit("one", plan[0], first["request_key"], plan[1])
+    retried = store.submit("one", first["request_key"], plan[1], "fixture-input-hash")
     assert retried["id"] == first["id"]
 
 
@@ -224,7 +222,10 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
     key = uuid4().hex
     with ThreadPoolExecutor(max_workers=12) as clients:
         jobs = list(
-            clients.map(lambda _: store.submit("one", plan[0], key, plan[1]), range(12))
+            clients.map(
+                lambda _: store.submit("one", key, plan[1], "fixture-input-hash"),
+                range(12),
+            )
         )
     assert len({job["id"] for job in jobs}) == 1
     first = jobs[0]
@@ -246,7 +247,9 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
             (first["id"],),
         ).fetchone() == (0, 0)
     assert store.claim()["id"] == other["id"]
-    assert store.submit("one", plan[0], key, plan[1])["status"] == "cancelled"
+    assert (
+        store.submit("one", key, plan[1], "fixture-input-hash")["status"] == "cancelled"
+    )
 
 
 def test_record_budget_keeps_recent_idempotency_but_prunes_old_cleaned_jobs(
@@ -311,11 +314,11 @@ def test_older_writers_keep_input_accounting_during_rollout(
     with psycopg.connect(store.conninfo) as connection:
         row = connection.execute(
             "INSERT INTO processing.jobs "
-            "(id,owner,request_key,plan_id,expires_at,status,spec,summary,reserved_bytes) "
-            "VALUES (%s,'old-app',%s,%s,now()+interval '1 day','queued',"
+            "(id,owner,request_key,expires_at,status,spec,summary,reserved_bytes) "
+            "VALUES (%s,'old-app',%s,now()+interval '1 day','queued',"
             '\'{"input":"retained"}\',\'{"label":"old"}\',1024) '
             "RETURNING id,input_bytes,octet_length(spec::text)+octet_length(summary::text)",
-            (uuid4().hex, uuid4().hex, uuid4().hex),
+            (uuid4().hex, uuid4().hex),
         ).fetchone()
         assert row[1] == row[2] > 0
         connection.execute(
@@ -341,12 +344,16 @@ def test_clip_and_calculation_http_report_session_backlog(
     """
     client, _, _, _, _ = boundary
     store.limits = replace(store.limits, max_owner_waiting_jobs=3)
-    plan = planned(client) if operation == "raster-clips" else plan_calculation(client)
+    plan = (
+        clip_inputs(client)
+        if operation == "raster-clips"
+        else calculation_inputs(client)
+    )
     keys = [uuid4().hex for _ in range(4)]
     responses = [
         client.post(
             f"/api/processing/{operation}",
-            json={"planId": plan["planId"], "requestId": key},
+            json={**plan, "requestId": key},
             headers=HEADERS,
         )
         for key in keys

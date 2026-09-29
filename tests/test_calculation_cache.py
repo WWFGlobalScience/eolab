@@ -230,7 +230,7 @@ def test_worker_reuses_results_after_authorization(
     from unittest.mock import AsyncMock, Mock
     from eolab_app.processing.artifacts import LocalJobArtifacts
     from eolab_app.processing.models import ProcessingError
-    from eolab_app.processing.service import prepare_aggregate_job
+    from eolab_app.processing.job_preparation import prepare_aggregate_job
     from eolab_app.processing.worker import ProcessingWorker
     import eolab_app.processing.worker as worker_module
 
@@ -319,17 +319,14 @@ def test_cache_hit_skips_planning_and_pins_values(
         monkeypatch: Forbid native planning and polygon summary reads.
     """
     import asyncio
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
     from eolab_app.catalog_selection import CatalogSelection
     from eolab_app.processing.aggregate_models import (
         AggregatePlanRequest,
-        AggregatePlanResponse,
     )
-    from eolab_app.processing.models import JobSubmitRequest, ProcessingError
-    from eolab_app.processing.service import ProcessingService
-    import eolab_app.processing.service as service_module
+    from eolab_app.processing.models import ProcessingError
 
     if area_kind == "catalogSelection":
         area = AggregateArea(
@@ -385,64 +382,38 @@ def test_cache_hit_skips_planning_and_pins_values(
     )
     areas = SimpleNamespace(resolve_for_sampling=AsyncMock())
     store = Mock()
-    from test_processing_timings import configure_planning_store
+    from test_processing_timings import configure_prepared_job_store
+    from eolab_app.processing.aggregate_models import UnpreparedCalculation
+    from eolab_app.processing.worker import ProcessingWorker
+    import eolab_app.processing.worker as worker_module
 
-    configure_planning_store(store)
-    store.get_cached_calculation_results.return_value = saved
-    store.reserve_plan.return_value = "a" * 32
-    store.finish_plan.return_value = {
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5)
+    row = {
+        "id": "a" * 32,
+        "attempt_id": "b" * 32,
+        "spec": UnpreparedCalculation(request=request).model_dump(
+            mode="json", by_alias=True
+        ),
+        "updated_at": datetime.now(timezone.utc),
     }
-    service = ProcessingService(
-        authorizer, areas, store, Mock(), RasterAggregateLimits()
+    configure_prepared_job_store(store, row)
+    store.get_cached_calculation_results.return_value = saved
+    store.heartbeat.return_value = True
+    worker = ProcessingWorker(
+        authorizer, store, Mock(), RasterAggregateLimits(), areas=areas
     )
     forbidden = AsyncMock(
-        side_effect=AssertionError("Cache reuse must not plan raster work")
+        side_effect=AssertionError("Cache reuse must not inspect raster metadata")
     )
-    monkeypatch.setattr(service_module, "run_process", forbidden)
-    response = AggregatePlanResponse.model_validate(
-        asyncio.run(service.plan_raster_calculation("owner", request))
-    )
-    assert response.cacheHit
-    assert response.timing.nativeProcessSeconds == 0
-    assert response.timing.process is None
+    monkeypatch.setattr(worker_module, "run_process", forbidden)
+    asyncio.run(worker._prepare_calculation(row))
+    assert row["preparation"]["cacheHit"]
     forbidden.assert_not_called()
-    prepared = store.finish_plan.call_args.args[2]
-    retained = AggregateSpec.model_validate(prepared.specification)
+    retained = AggregateSpec.model_validate(row["spec"])
     assert retained.cachedRows[0].value == "42"
-    assert prepared.reserved_bytes == service.aggregate_limits.result_reservation_bytes
-
-    # Expiry/eviction after preparation cannot turn a cache hit into raster work.
+    assert row["reserved_bytes"] == worker.aggregate_limits.result_reservation_bytes
+    # The prepared copy retains values even after cache eviction.
     store.get_cached_calculation_results.return_value = {}
-    store.find_request.return_value = None
-    store.get_plan.return_value = {
-        "operation": retained.operation,
-        "spec": prepared.specification,
-        "request": request.model_dump(mode="json", by_alias=True),
-    }
-    store.submit.return_value = {
-        "id": "b" * 32,
-        "spec": prepared.specification,
-        "status": "queued",
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
-        "expires_at": None,
-        "progress": {},
-        "error": None,
-        "artifact": None,
-    }
-    asyncio.run(
-        service.submit_raster_calculation(
-            "owner", JobSubmitRequest(planId="a" * 32, requestId="b" * 32)
-        )
-    )
-    forbidden.assert_not_called()
-    assert authorizer.authorize.await_count == 2
-    assert areas.resolve_for_sampling.await_count == (
-        2 if area_kind == "catalogSelection" else 0
-    )
-
-    # Cached values never waive current raster or vector access.
+    assert retained.cachedRows[0].value == "42"
     denied = (
         areas.resolve_for_sampling
         if area_kind == "catalogSelection"
@@ -451,8 +422,11 @@ def test_cache_hit_skips_planning_and_pins_values(
     denied.side_effect = ProcessingError(
         "source_unavailable", "Source unavailable", 409
     )
+    row["spec"] = UnpreparedCalculation(request=request).model_dump(
+        mode="json", by_alias=True
+    )
     with pytest.raises(ProcessingError):
-        asyncio.run(service.plan_raster_calculation("owner", request))
+        asyncio.run(worker._prepare_calculation(row))
 
 
 def test_partial_or_malformed_cache_still_requires_normal_planning(

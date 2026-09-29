@@ -1,6 +1,7 @@
-"""Prepare raster calculation inputs and reserve their result and mask storage."""
+"""Serialize prepared raster jobs and reserve their output storage."""
 
 from eolab_app.processing.aggregate_models import AggregateSpec, RasterAggregateLimits
+from eolab_app.processing.clip_models import ClipSpec
 from eolab_app.processing.models import PreparedJobPlan
 from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 
@@ -29,5 +30,26 @@ def prepare_aggregate_job(
             "area": {"kind": spec.area.kind, "bounds": spec.area.bounds},
         },
         reserved_bytes=estimate_calculation_disk_bytes(spec, limits),
+        operation=spec.operation,
+    )
+
+
+def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
+    """Build the stored clip inputs, display details and disk reservation.
+
+    Args:
+        spec: Raster identity, selected area, and output grid measured during preparation.
+
+    Returns:
+        Clip inputs for the worker, details for the browser, and required disk space.
+    """
+    return PreparedJobPlan(
+        specification=spec.model_dump(mode="json", by_alias=True),
+        summary={
+            "source": spec.source.model_dump(by_alias=True),
+            "grid": spec.grid.model_dump(mode="json"),
+            "area": {"kind": spec.area.kind, "bounds": list(spec.area.bounds)},
+        },
+        reserved_bytes=spec.grid.reservedBytes,
         operation=spec.operation,
     )

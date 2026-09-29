@@ -28,6 +28,17 @@ def test_summary_prepares_and_calculates_without_a_plan_request(
         store: Disposable PostgreSQL job store.
     """
     client, worker, _, _, app = boundary
+    paths = app.openapi()["paths"]
+    assert not any(
+        "/plan" in path for path in paths if path.startswith("/api/processing")
+    )
+    for endpoint in (ENDPOINT, "/api/processing/raster-clips"):
+        legacy = client.post(
+            endpoint,
+            json={"planId": uuid4().hex, "requestId": uuid4().hex},
+            headers=HEADERS,
+        )
+        assert legacy.status_code == 422
     body = {**request_body(), "requestId": uuid4().hex}
     response = client.post(ENDPOINT, json=body, headers=HEADERS)
     assert response.status_code == 202, response.text
@@ -43,7 +54,7 @@ def test_summary_prepares_and_calculates_without_a_plan_request(
     assert client.post(ENDPOINT, json=changed, headers=HEADERS).status_code == 409
     with psycopg.connect(store.conninfo) as connection:
         assert connection.execute(
-            "SELECT count(*) FROM processing.plans"
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='processing' AND table_name='plans'"
         ).fetchone() == (0,)
     assert asyncio.run(worker.run_once())
     completed = client.get(f"/api/processing/jobs/{job['jobId']}").json()
@@ -70,18 +81,24 @@ def test_summary_prepares_and_calculates_without_a_plan_request(
     assert cached["result"]["rows"] == completed["result"]["rows"]
 
 
-def test_queued_summary_cancels_without_starting_preparation(
-    boundary: Any, store: Any
+@pytest.mark.parametrize("operation", ["summary", "clip"])
+def test_queued_job_cancels_without_starting_preparation(
+    boundary: Any, store: Any, operation: str
 ) -> None:
     """Cancellation before claim leaves no plan, prepared grid or raster result.
 
     Args:
         boundary: Real API and worker.
         store: Disposable PostgreSQL job store.
+        operation: Summary or clip sharing the same queue and cancellation.
     """
     client, worker, *_ = boundary
+    from test_processing_jobs import clip_inputs
+
+    endpoint = ENDPOINT if operation == "summary" else "/api/processing/raster-clips"
+    inputs = request_body() if operation == "summary" else clip_inputs(client)
     response = client.post(
-        ENDPOINT, json={**request_body(), "requestId": uuid4().hex}, headers=HEADERS
+        endpoint, json={**inputs, "requestId": uuid4().hex}, headers=HEADERS
     )
     assert response.status_code == 202, response.text
     job = response.json()
@@ -143,8 +160,9 @@ def test_direct_summary_area_inputs(boundary: Any, tmp_path: Path, kind: str) ->
 
 
 @pytest.mark.parametrize("phase", ["plan", "calculate"])
+@pytest.mark.parametrize("operation", ["summary", "clip"])
 def test_preparation_and_execution_are_observed_and_cancelled_through_one_job(
-    boundary: Any, monkeypatch: pytest.MonkeyPatch, phase: str
+    boundary: Any, monkeypatch: pytest.MonkeyPatch, phase: str, operation: str
 ) -> None:
     """Observe preparation and its estimates, cancelling either phase with the original ID.
 
@@ -152,11 +170,17 @@ def test_preparation_and_execution_are_observed_and_cancelled_through_one_job(
         boundary: Real HTTP, database and worker.
         monkeypatch: Pause the requested phase at the native process boundary.
         phase: Native operation at which to observe and cancel the job.
+        operation: Summary or clip using the same job lifecycle.
     """
     client, worker, *_ = boundary
+    from test_processing_jobs import clip_inputs
+
+    endpoint = ENDPOINT if operation == "summary" else "/api/processing/raster-clips"
+    inputs = request_body() if operation == "summary" else clip_inputs(client)
     job = client.post(
-        ENDPOINT, json={**request_body(), "requestId": uuid4().hex}, headers=HEADERS
+        endpoint, json={**inputs, "requestId": uuid4().hex}, headers=HEADERS
     ).json()
+    native_phase = "clip" if operation == "clip" and phase == "calculate" else phase
     native = worker_module.run_process
 
     async def exercise() -> None:
@@ -174,7 +198,7 @@ def test_preparation_and_execution_are_observed_and_cancelled_through_one_job(
             Returns:
                 Native result; the chosen operation waits for cancellation.
             """
-            if args[0] == phase:
+            if args[0] == native_phase:
                 operation_started.set()
                 await asyncio.Event().wait()
             return await native(target, args, *rest)

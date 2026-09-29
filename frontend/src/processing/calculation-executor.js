@@ -118,8 +118,7 @@ export class CalculationExecutor {
         for (let attempt = 0; ; attempt++) {
             try {
                 if (this.trace) this.trace.submissionAttempts = attempt + 1;
-                return await this.api.submitCalculation(saved.pending.planId ? saved.pending :
-                    {...saved.intent, requestId: saved.pending.requestId});
+                return await this.api.submitCalculation({...saved.intent, requestId: saved.pending.requestId});
             } catch (error) {
                 if (error instanceof ProcessingRequestError && error.isCapacityRejection) {
                     const wait = this.#capacityWait = new AbortController();
@@ -168,17 +167,10 @@ export class CalculationExecutor {
                 if (!job) return;
                 if (this.trace) { this.trace.submissionFinishedAtMs = this.now(); this.trace.jobId = job.jobId; }
                 this.#saved.jobId = job.jobId;
-                // Recover old tabs without changing their pending plan-based requests.
-                this.#saved.releasePlanId = this.#saved.pending.planId ?? null;
                 this.#saved.pending = null;
                 this.storage.write(this.#saved);
                 this.jobs.tracked.add(job.jobId);
                 this.jobs.accept(job);
-            }
-            if (this.#saved?.releasePlanId) {
-                await this.api.discardPlan(this.#saved.releasePlanId);
-                this.#saved.releasePlanId = null;
-                this.storage.write(this.#saved);
             }
             if (!this.#saved?.jobId) return;
             let job = this.jobs.jobs.find(item => item.jobId === this.#saved.jobId);
