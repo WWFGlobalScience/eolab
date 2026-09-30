@@ -49,11 +49,6 @@ If submission is uncertain, use **Recover / retry** instead of creating a second
 request. Exported names and formulas describe the submitted calculation even if
 you later edit its card.
 
-Summarize retains progress and results while closed and draws the latest state
-when reopened. While open, presentation updates are combined into one draw per
-animation frame. Its browser timing ends when the result reaches the controller;
-it excludes later panel drawing and paint.
-
 ## Plotting statistics across rasters
 
 Open **Raster series** from **More** or a raster histogram, then choose
@@ -208,8 +203,8 @@ and timings. These are wall times, including waiting within each operation:
 
 - **Total wait → result displayed** includes vector selection when initiated for the calculation in this tab,
   debounce, planning, queueing and
-  result delivery through the UI update. It excludes earlier confirmation time
-  and the browser's subsequent paint.
+  result delivery to the browser. It excludes earlier confirmation time
+  and the time needed to draw the result on screen.
 - Browser stages divide that total. Server stages overlap them; do not add the
   browser and server groups together.
 - **Kernel elapsed** covers source opening and calculation through the CSV
