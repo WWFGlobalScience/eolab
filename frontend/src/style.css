@@ -3646,17 +3646,16 @@ article.raster-histogram-summary {
   pointer-events: none;
 }
 
-#app:has(#map-inspection[data-active-tool="time-series"]),
-#app:has(#map-inspection[data-active-tool="feature-profile"]) {
+#app[data-inspection-wide="true"] {
   --inspection-width: min(580px, calc(100vw - 744px));
 }
 
-#app:has(#map-inspection:popover-open[data-minimized="false"] .map-inspection-panels:not([hidden])) {
+#app[data-inspection-expanded="true"] {
   --inspection-space: calc(var(--inspection-width) + var(--workspace-gap));
 }
 
 #map-inspection[data-minimized="true"],
-#map-inspection:has(.map-inspection-panels[hidden]) {
+#map-inspection[data-active-tool=""] {
   top: 42px;
   right: 85px;
   inset-block-end: auto;
@@ -4638,7 +4637,7 @@ summary:hover > .raster-disclosure-chevron {
 /* Small screens dock tools below the map instead of covering its edge. */
 @media (max-width: 1199px) {
   #app { --inspection-space: 0px; }
-  #app:has(#map-inspection:popover-open[data-minimized="false"] .map-inspection-panels:not([hidden])) {
+  #app[data-inspection-expanded="true"] {
     --inspection-space: 45dvh;
   }
   #map, #app.is-control-panel-collapsed #map {
@@ -4651,13 +4650,13 @@ summary:hover > .raster-disclosure-chevron {
     max-height: calc(45dvh - 16px);
   }
   #map-inspection[data-minimized="true"],
-  #map-inspection:has(.map-inspection-panels[hidden]) {
+  #map-inspection[data-active-tool=""] {
     inset: 30px 65px auto auto;
     width: min(420px, calc(100vw - 130px));
     height: auto;
     max-height: none;
   }
-  #app:has(#map-inspection:popover-open) .panel-opener {
+  #app[data-inspection-open="true"] .panel-opener {
     inset: 90px auto auto 75px;
   }
 }
@@ -4687,7 +4686,7 @@ summary:hover > .raster-disclosure-chevron {
 .map-filter-indicators { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 5px; max-height: min(120px, 20dvh); overflow-y: auto; pointer-events: auto; }
 #map-filter-indicators { max-width: min(420px, 55vw); }
 .map-filter-indicators[hidden],
-#app:has(#map-inspection:popover-open) #map-filter-indicators { display: none; }
+#app[data-inspection-open="true"] #map-filter-indicators { display: none; }
 .map-filter-indicator { max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: left; font-size: 0.78rem; }
 @media (max-width: 600px) {
   #map-filter-indicators { max-width: calc(100vw - 80px); max-height: 16vh; }

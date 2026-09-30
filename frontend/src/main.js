@@ -2093,7 +2093,9 @@ async function startApplication() {
             : new SavedMapViewLocalStorage(undefined, "eolab.workspace-panels.v1"),
     });
     if (isSharedViewer) layoutController.showWorkspace("map-layers");
-    const mapInspection = new MapInspectionController();
+    const mapInspection = new MapInspectionController({
+        onLayoutChange: layout => layoutController.setInspectionLayout(layout),
+    });
     const refreshCatalog = await initializeCatalog(
         appGlobalConfiguration,
         leafletMap,

@@ -310,8 +310,17 @@ test("successful catalog additions reveal Map layers through composition", () =>
         /onLayersChange: \(layers\) => \{[\s\S]*?!layers\.some\(\(layer\) =>[\s\S]*?layer\.visible && layer\.datasetKind === "raster"[\s\S]*?mapInspection\.closeHistogram\(false\);/
     );
     assert.doesNotMatch(COMPOSITION_SOURCE, /layoutController\.showWorkspace\("histogram"\)/);
-    assert.match(COMPOSITION_SOURCE, /new MapInspectionController\(\)/);
+    assert.match(COMPOSITION_SOURCE, /new MapInspectionController\(/);
     assert.doesNotMatch(COMPOSITION_SOURCE, /stopSampleWindowSelection|onHistogramClose/);
+});
+
+test("composition forwards inspection layout and CSS does not infer it from changing tool contents", () => {
+    assert.match(COMPOSITION_SOURCE, /onLayoutChange: layout => layoutController\.setInspectionLayout\(layout\)/);
+    assert.doesNotMatch(STYLESHEET, /#app:has\(#map-inspection/);
+    assert.doesNotMatch(STYLESHEET, /#map-inspection:has\(/);
+    assert.match(STYLESHEET, /#app\[data-inspection-expanded="true"\]/);
+    assert.match(STYLESHEET, /#app\[data-inspection-wide="true"\]/);
+    assert.match(STYLESHEET, /#app\[data-inspection-open="true"\]/);
 });
 
 test("composition calculates committed boxes and closes inspection when no raster accepts a click", () => {

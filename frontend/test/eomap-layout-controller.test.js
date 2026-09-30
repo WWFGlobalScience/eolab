@@ -275,6 +275,31 @@ test("shared viewer omits catalog and status while retaining layer and sidebar c
     assert.equal(fixture.catalogRegion.hidden, true);
 });
 
+test("inspection layout changes only the changed shell attributes without scheduling resize work", () => {
+    const fixture = createLayoutFixture();
+    const layout = new EomapLayoutController({
+        documentContext: fixture.document, schedule: fixture.schedule,
+        invalidateMapSize() {},
+    });
+    const writes = [];
+    const setAttribute = fixture.app.setAttribute.bind(fixture.app);
+    fixture.app.setAttribute = (name, value) => { writes.push([name, value]); setAttribute(name, value); };
+    const state = { open: true, expanded: true, wide: false };
+    layout.setInspectionLayout(state);
+    assert.deepEqual(writes, [
+        ["data-inspection-open", "true"], ["data-inspection-expanded", "true"],
+        ["data-inspection-wide", "false"],
+    ]);
+    writes.length = 0;
+    for (let i = 0; i < 25; i++) layout.setInspectionLayout({ ...state });
+    assert.deepEqual(writes, []);
+    layout.setInspectionLayout({ ...state, expanded: false });
+    assert.deepEqual(writes, [["data-inspection-expanded", "false"]]);
+    assert.equal(fixture.app.getAttribute("data-inspection-open"), "true");
+    assert.deepEqual(fixture.timers, [], "the existing map ResizeObserver owns actual viewport resizing");
+    layout.destroy();
+});
+
 test("workspace disclosures expose independent initial panel states", () => {
     const fixture = createLayoutFixture();
     const controller = new EomapLayoutController({

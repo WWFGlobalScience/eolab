@@ -5,9 +5,15 @@ export class MapInspectionController {
      *
      * @param {Object} dependencies Presentation dependencies.
      * @param {Document} [dependencies.documentContext=document] Owning document.
+     * @param {function({open: boolean, expanded: boolean, wide: boolean}):void}
+     * [dependencies.onLayoutChange] Receives initial layout and subsequent changes.
+     * Expanded means an open, non-minimized panel has an active tool; wide selects
+     * the wider vector-chart presentation. Result updates do not report a change.
      */
-    constructor({ documentContext = document } = {}) {
+    constructor({ documentContext = document, onLayoutChange = () => {} } = {}) {
         this.document = documentContext;
+        this.onLayoutChange = onLayoutChange;
+        this.reportedLayout = null;
         this.root = documentContext.querySelector("#map-inspection");
         this.panels = documentContext.querySelector("#map-inspection-panels");
         this.dockTitle = documentContext.querySelector("#map-inspection-dock-title");
@@ -648,12 +654,14 @@ export class MapInspectionController {
             this.activationOrder = [];
             this.minimized = false;
         }
+        const openChanged = shouldOpen !== this.isOpen;
+        this.isOpen = shouldOpen;
         this.#renderDock();
         this.analysisToolsButton.hidden = shouldOpen;
-        if (shouldOpen === this.isOpen) return;
-        this.isOpen = shouldOpen;
-        if (shouldOpen) this.root.showPopover();
-        else this.root.hidePopover();
+        if (openChanged) {
+            if (shouldOpen) this.root.showPopover();
+            else this.root.hidePopover();
+        }
     }
 
     /** Report expanded foreground presentation without knowing any tool's behavior.
@@ -717,6 +725,25 @@ export class MapInspectionController {
             this.reportedActiveTool = active;
             for (const listener of this.activityListeners) listener(active);
         }
+        this.#reportLayoutChange();
+    }
+
+    /** Report only changes that affect the space or placement of map tools.
+     * The composition root forwards this presentation to the app layout owner;
+     * neither controller needs to inspect the other's DOM or implementation.
+     * @return {void}
+     */
+    #reportLayoutChange() {
+        const layout = {
+            open: this.isOpen,
+            expanded: this.isOpen && !this.minimized && this.activeTool !== null,
+            wide: this.activeTool === "time-series" || this.activeTool === "feature-profile",
+        };
+        const previous = this.reportedLayout;
+        if (previous && previous.open === layout.open &&
+            previous.expanded === layout.expanded && previous.wide === layout.wide) return;
+        this.reportedLayout = layout;
+        this.onLayoutChange({ ...layout });
     }
 
     /** Release presentation listeners without changing retained analysis state. @return {void} */

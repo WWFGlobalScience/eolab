@@ -37,8 +37,12 @@ function fixture(configureDocument = () => {}) {
     root.showPopover = () => calls.push("show");
     root.hidePopover = () => calls.push("hide");
     configureDocument(doc);
-    const controller = new MapInspectionController({ documentContext: doc });
+    const layouts = [];
+    const controller = new MapInspectionController({
+        documentContext: doc, onLayoutChange: layout => layouts.push(layout),
+    });
     return {
+        layouts,
         doc,
         histogram,
         style,
@@ -213,6 +217,34 @@ test("active-tool subscriptions report expanded presentation, support detachment
     assert.equal(changes.at(-1), "histogram");
     const final = []; h.controller.subscribeActiveTool(tool => final.push(tool));
     h.controller.destroy(); assert.deepEqual(final, ["raster-clips", null]);
+});
+
+test("layout reports follow dock transitions, not repeated result updates", () => {
+    const h = fixture();
+    assert.deepEqual(h.layouts, [{ open: false, expanded: false, wide: false }]);
+    h.controller.beginMapClick({ lat: 0, lng: 0 });
+    h.controller.setClickResult("feature", { state: "empty", message: "No features" });
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: false, wide: false });
+    h.controller.showHistogram();
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: true, wide: false });
+    const count = h.layouts.length;
+    for (let i = 0; i < 25; i++) {
+        h.controller.showHistogram(i, { activate: false });
+        h.controller.setClickResult("histogram", { state: "loading", message: `Read ${i}` });
+    }
+    assert.equal(h.layouts.length, count, "result content does not change shell layout");
+    h.controller.showVectorTimeSeries();
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: true, wide: true });
+    h.minimizeButton.dispatchEvent(new Event("click"));
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: false, wide: true });
+    h.minimizeButton.dispatchEvent(new Event("click"));
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: true, wide: true });
+    h.controller.hideVectorTimeSeries();
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: true, wide: false });
+    h.controller.closeHistogram();
+    assert.deepEqual(h.layouts.at(-1), { open: true, expanded: false, wide: false });
+    h.controller.destroy();
+    assert.deepEqual(h.layouts.at(-1), { open: false, expanded: false, wide: false });
 });
 
 test("histogram and style have independent visibility on one persistent surface", () => {

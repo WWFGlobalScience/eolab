@@ -259,6 +259,25 @@ export class EomapLayoutController {
         this.#scheduleMapInvalidation();
     }
 
+    /** Reflect map-tool layout on the app shell without inspecting tool contents.
+     * CSS retains responsibility for desktop/mobile dimensions. Unchanged values
+     * do not rewrite attributes; the existing map ResizeObserver handles resizing.
+     * @param {Object} layout Presentation supplied by the browser composition root.
+     * @param {boolean} layout.open Whether the map-tool popover is open.
+     * @param {boolean} layout.expanded Whether it occupies space for an active panel.
+     * @param {boolean} layout.wide Whether its active panel uses the wider layout.
+     * @return {void}
+     */
+    setInspectionLayout({ open, expanded, wide }) {
+        for (const [name, value] of Object.entries({ open, expanded, wide })) {
+            const attribute = `data-inspection-${name}`;
+            const text = String(value);
+            if (this.appElement.getAttribute(attribute) !== text) {
+                this.appElement.setAttribute(attribute, text);
+            }
+        }
+    }
+
     /**
      * Detach every DOM listener installed during construction.
      *
