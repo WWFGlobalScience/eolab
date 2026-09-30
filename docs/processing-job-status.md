@@ -33,3 +33,38 @@ arriving during a refresh schedules one follow-up refresh. The two-second
 fallback for active work remains in place for lost notifications or unavailable
 SSE. An explicitly unavailable ID is removed from active tracking and reported
 to the caller; unrelated completed results are still accepted.
+
+## Measuring request delivery
+
+Processing JSON responses include a random `X-EOLab-Request-Id` and the same ID
+as a `requestId` Server-Timing description. This is a diagnostic identity, not a
+job ID or credential. Browser Resource Timing entries are matched by this ID,
+even when several requests use the same URL. Missing or evicted entries are
+reported as unavailable; diagnostics never delay result delivery to await them.
+
+The report includes browser time before request sending, request-to-first-byte,
+download, and download-finished-to-JSON-received intervals. DNS, connection, and
+TLS are overlapping details, not additional stages. The last interval includes
+parsing and browser scheduling; the first-byte interval includes server work and
+proxy/network transit. These measurements do not isolate Cloudflare's internals.
+
+Application middleware adds `appToHeaders`, `beforeRoute`, `afterRoute`, and
+`eventLoopLag` durations. The route's existing `processing` timer includes input
+reading, validation, application work, and serialization. The surrounding
+intervals start only after ASGI invocation; socket/Uvicorn waiting before that
+remains unmeasured. The lag metric samples lateness of a 50-ms timer during the
+request and is not an additive stage or a CPU profiler.
+
+After response sending, the application's `processing_http` log records that
+request ID, route template, status, total application duration, cumulative await
+time in ASGI `send`, headers-to-last-body duration, and whether sending completed.
+No bodies, query strings, cookies, or raw source paths are logged. Streams and
+downloads bypass this instrumentation; request probes are cancelled on errors
+and cancellation. Container logs use the existing rotation limits.
+
+Final send time cannot be included in already-sent headers. Match the trace ID
+in the report to the application log in Coolify. ASGI handoff is not proof of
+browser receipt. A reverse proxy's access-log durations, where available, can
+narrow the remaining external interval; this repository does not configure
+Coolify's shared proxy or Cloudflare. Never subtract timestamps from separate
+machines: compare durations and correlate request IDs instead.

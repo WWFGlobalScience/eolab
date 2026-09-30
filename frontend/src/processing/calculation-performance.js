@@ -69,9 +69,17 @@ function deliveryDescription(delivery) {
     for (const event of relevant.slice(-24)) {
         const server = Object.entries(event.serverTiming).map(([name, value]) => `${name} ${seconds(value)}`).join(", ");
         lines.push(`HTTP #${event.requestNumber} ${event.method} ${event.path} completed at +${seconds(event.afterSubmissionSeconds)}: ${event.status ?? "transport error"}, ${seconds(event.seconds)} total; headers ${event.headersSeconds == null ? "unavailable" : seconds(event.headersSeconds)}, body/JSON ${event.bodySeconds == null ? "unavailable" : seconds(event.bodySeconds)}${server ? `; server: ${server}` : "; server timing unavailable"}.`);
+        if (event.requestId) lines.push(`Request trace: ${event.requestId} (matches processing_http in the application log).`);
+        const network = event.networkTiming;
+        if (network) lines.push(
+            `Browser network (${network.protocol}): before request ${seconds(network.beforeRequestSeconds)}; request → first byte ${seconds(network.firstByteSeconds)}; download ${seconds(network.downloadSeconds)}; download finished → JSON received ${seconds(network.afterDownloadSeconds)}. Response bytes: ${network.encodedBytes} encoded, ${network.decodedBytes} decoded.`,
+            `Connection detail (overlaps before request): DNS ${seconds(network.dnsSeconds)}; connection ${seconds(network.connectSeconds)}; TLS ${seconds(network.tlsSeconds)} (included in connection). Reused connections may report zero.`,
+        );
+        else lines.push("Exact browser network timing unavailable for this response; no timing from another request was substituted.");
     }
     if (relevant.length > 24) lines.push(`Showing the last 24 of ${relevant.length} relevant HTTP completions.`);
     lines.push("Server processing includes route handling and serialization; admissionChecks includes source/area validation; queueAdmission includes database admission, commit and thread scheduling; jobRead includes database access and thread scheduling. These server stages overlap HTTP durations. Any remaining time is unaccounted for, not identified as network latency.");
+    lines.push("appToHeaders measures application entry → response headers; beforeRoute and afterRoute surround the existing route timer. eventLoopLag is maximum observed 50-ms timer lateness during this request, not an additive stage. Final send durations are logged after delivery and cannot appear in these response headers. Application entry excludes socket/proxy waiting; ASGI send completion is transport handoff, not browser receipt. Browser before-request includes connection setup and scheduling; first-byte time includes server work and proxy/network transit. Download-to-JSON includes parsing and browser scheduling. Proxy-internal waiting is not measured here.");
     return lines;
 }
 

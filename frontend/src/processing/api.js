@@ -2,7 +2,7 @@
 import { normalizeRasterSamplingArea } from "../selected-area.js";
 import { normalizeCalculationArea, validatePolygonAreaReference } from "./calculation-area.js";
 import { chunkPixels } from "./calculation-session.js";
-import { ProcessingDiagnostics } from "./diagnostics.js";
+import { ProcessingDiagnostics, captureRequestNetworkTiming } from "./diagnostics.js";
 
 /** Browser-safe HTTP failure; transport failures remain ordinary errors. */
 export class ProcessingRequestError extends Error {
@@ -375,6 +375,7 @@ export class ProcessingApiClient {
         const fields = {requestNumber, method, path, jobId: identity?.[1],
             shared: path === "/jobs" || path === "/jobs/status", inFlight: ++this.requestsInFlight};
         const startedAtMs = this.diagnostics.record("http-start", fields);
+        const finishNetworkTiming = captureRequestNetworkTiming();
         let headersAtMs, response, serverTiming = {};
         try {
             response = await this.fetch.call(globalThis, `/api/processing${path}`, {
@@ -389,7 +390,7 @@ export class ProcessingApiClient {
             headersAtMs = this.diagnostics.now();
             // Only our fixed numeric Server-Timing metrics enter the report.
             for (const metric of (response.headers?.get("Server-Timing") ?? "").split(",")) {
-                const match = metric.trim().match(/^(processing|admissionChecks|queueAdmission|jobRead);dur=([\d.]+)$/);
+                const match = metric.trim().match(/^(processing|admissionChecks|queueAdmission|jobRead|appToHeaders|beforeRoute|afterRoute|eventLoopLag);dur=([\d.]+)$/);
                 if (match && Number.isFinite(Number(match[2]))) serverTiming[match[1]] = Number(match[2]) / 1000;
             }
             const data = await response.json().catch(() => null);
@@ -410,12 +411,14 @@ export class ProcessingApiClient {
             return data;
         } finally {
             const finishedAtMs = this.diagnostics.now();
+            const headerId = response?.headers?.get("X-EOLab-Request-Id");
+            const requestId = /^[a-f0-9]{32}$/.test(headerId ?? "") ? headerId : null;
             this.requestsInFlight--;
             this.diagnostics.record("http-finish", {...fields, status: response?.status ?? null,
                 seconds: (finishedAtMs - startedAtMs) / 1000,
                 headersSeconds: headersAtMs == null ? null : (headersAtMs - startedAtMs) / 1000,
                 bodySeconds: headersAtMs == null ? null : (finishedAtMs - headersAtMs) / 1000,
-                serverTiming});
+                serverTiming, requestId, networkTiming: finishNetworkTiming(requestId, finishedAtMs)});
         }
     }
 }

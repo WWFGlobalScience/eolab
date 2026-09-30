@@ -137,6 +137,11 @@ class BoundedProcessingRoute(APIRoute):
             timings: dict[str, float] = {}
             token = request_timings.set(timings)
             started = time.perf_counter()
+            delivery_timing = request.scope.get("state", {}).get(
+                "processing_http_timing"
+            )
+            if delivery_timing is not None:
+                delivery_timing["routeEntered"] = started
             try:
                 response = await bounded(request)
                 timings["processing"] = time.perf_counter() - started
@@ -146,6 +151,8 @@ class BoundedProcessingRoute(APIRoute):
                 )
                 return response
             finally:
+                if delivery_timing is not None:
+                    delivery_timing["routeFinished"] = time.perf_counter()
                 request_timings.reset(token)
 
         return timed
