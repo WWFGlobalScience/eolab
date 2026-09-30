@@ -1,4 +1,4 @@
-/** Downloads owns review, immutable submissions, recovery, and job lifecycle presentation. */
+/** Raster clips own immutable submissions, recovery, and clip lifecycle presentation. */
 import { normalizeRasterSamplingArea } from "../selected-area.js";
 import { ProcessingRequestError } from "./api.js";
 
@@ -16,23 +16,22 @@ function explicitArea(area) {
     return normalizeRasterSamplingArea(area);
 }
 
-/** Own browser download state without importing map or histogram implementations. */
-export class DownloadsController {
+/** Retain clip state and show it only while the raster clip tool is active. */
+export class RasterClipsController {
     /**
      * @param {Object} dependencies Owned adapters and composition callbacks.
      * @param {Object} dependencies.api Processing API client.
      * @param {ProcessingJobs} [dependencies.jobs] Shared session polling/history.
-     * @param {Object} dependencies.view Downloads DOM adapter.
+     * @param {Object} dependencies.view Raster clip DOM adapter.
      * @param {Object} dependencies.storage Pending-submission storage.
      * @param {Function} dependencies.getContext Returns catalog sources and the presented area.
-     * @param {Function} dependencies.onOpen Opens the dock's Downloads tool.
+     * @param {Function} dependencies.onOpen Opens the dock's raster clip tool.
      * @param {Function} dependencies.onClose Closes that tool.
      * @param {Function} dependencies.onEditArea Opens existing sampling controls.
-     * @param {Function} [dependencies.onInspectCalculation] Opens a calculation result.
      * @param {Object} [dependencies.clock=globalThis] Timer provider.
      * @param {Function} [dependencies.requestId] Generates a unique idempotency key.
      */
-    constructor({ api, jobs, view, storage, getContext, onOpen, onClose, onEditArea, onInspectCalculation,
+    constructor({ api, jobs, view, storage, getContext, onOpen, onClose, onEditArea,
         clock = globalThis, requestId = () => globalThis.crypto.randomUUID() }) {
         Object.assign(this, { api, view, storage, getContext, onOpen, clock, requestId });
         this.state = { sources: [], source: null, area: null, selectedArea: null,
@@ -40,10 +39,11 @@ export class DownloadsController {
             message: "", jobMessage: "", pending: storage.read(),
             submitting: false, jobActions: new Set() };
         this.destroyed = false;
+        this.active = false;
         this.ownsJobs = !jobs;
         this.jobs = jobs ?? new ProcessingJobs(api, clock);
         this.unsubscribe = this.jobs.subscribe(store => {
-            this.state.jobs = store.jobs;
+            this.state.jobs = store.jobs.filter(job => job.operation === "raster.clip.v1");
             this.state.jobMessage = store.error;
             this.render();
         });
@@ -57,7 +57,6 @@ export class DownloadsController {
             onRefresh: () => void this.refresh(),
             onCancel: (id) => void this.jobAction(id, "cancel"),
             onDelete: (id) => void this.jobAction(id, "delete"),
-            onInspectCalculation,
         });
         this.render();
     }
@@ -69,7 +68,7 @@ export class DownloadsController {
     }
 
     /**
-     * Capture current intent when explicitly opening Downloads.
+     * Capture current intent when explicitly opening Raster clips.
      * @param {Object|null} [source=null] Requested Catalog raster.
      * @param {Object|undefined} area Explicit entry-point selection; undefined uses presented selection.
      * @return {void}
@@ -87,6 +86,7 @@ export class DownloadsController {
             this.state.area = this.state.selectedArea;
             this.state.areaChoice = "selection";
         }
+        this.active = true;
         this.onOpen();
         this.render();
     }
@@ -170,8 +170,20 @@ export class DownloadsController {
         finally { this.state.jobActions.delete(id); this.render(); }
     }
 
-    /** Publish state through the owned view contract. @return {void} */
-    render() { if (!this.destroyed) this.view.render(this.state); }
+    /**
+     * Show the latest retained clip state when the dock activates this tool.
+     * Closing it leaves accepted jobs and uncertain-submission recovery intact.
+     * @param {boolean} active Whether the raster clip tool is visible.
+     * @return {void}
+     */
+    setActive(active) {
+        if (this.active === active) return;
+        this.active = active;
+        this.render();
+    }
+
+    /** Draw clip controls only while their tool is visible. @return {void} */
+    render() { if (!this.destroyed && this.active) this.view.render(this.state); }
 
     /** Release browser work without cancelling accepted server jobs. @return {void} */
     destroy() {

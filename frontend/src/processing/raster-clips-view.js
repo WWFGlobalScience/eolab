@@ -1,4 +1,4 @@
-/** Accessible Downloads DOM adapter. No map, histogram, or vector implementation knowledge. */
+/** Accessible raster clip controls. No map, histogram, or vector implementation knowledge. */
 import { ACTIVE_JOB_STATES } from "./jobs.js";
 import { processingDownloadUrl } from "./api.js";
 
@@ -6,21 +6,17 @@ import { describeClipCrs, formatDownloadBytes, describeClipArea, describeJobProg
 export { describeClipCrs, formatDownloadBytes, describeClipArea, describeJobProgress } from "./presentation.js";
 
 /** Own fixed controls, review details, and retained job cards. */
-export class DownloadsView {
+export class RasterClipsView {
     /** @param {Document} [documentContext=globalThis.document] Owning document. */
     constructor(documentContext = globalThis.document) {
         this.document = documentContext;
         this.elements = Object.fromEntries([
             "source", "area", "area-description", "create", "message", "jobs", "job-message",
             "pending", "retry-submission", "refresh", "edit-area", "close", "form",
-        ].map(name => [name, documentContext.querySelector(`#downloads-${name}`)]));
+        ].map(name => [name, documentContext.querySelector(`#raster-clips-${name}`)]));
         this.openers = [
-            documentContext.querySelector("#open-downloads"),
-            documentContext.querySelector("#open-downloads-dock"),
-        ];
-        this.moreSummaries = [
-            documentContext.querySelector("#map-tools-more-summary"),
-            documentContext.querySelector("#map-inspection-more-summary"),
+            documentContext.querySelector("#open-raster-clips"),
+            documentContext.querySelector("#open-raster-clips-dock"),
         ];
         this.moreMenus = [
             documentContext.querySelector("#map-tools-more"),
@@ -100,22 +96,6 @@ export class DownloadsView {
         e.pending.textContent = state.pending ? `${state.submitting ? "Confirming" : "Unconfirmed submission for"} ${state.pending.label}. Its area and raster are fixed until this request is recovered.` : "";
         e["retry-submission"].hidden = !state.pending;
         e["retry-submission"].disabled = state.submitting;
-        const active = state.jobs.filter(job => ACTIVE_JOB_STATES.has(job.status)).length;
-        const ready = state.jobs.filter(job => job.status === "ready").length;
-        const activity = active
-            ? String(active) + " working"
-            : state.pending ? "action needed" : "";
-        const readyLabel = ready ? " \u00b7 " + ready + " ready" : "";
-        for (const summary of this.moreSummaries) {
-            summary.textContent = "More" + (activity ? " \u00b7 " + activity : "");
-            summary.title = activity
-                ? "Open more map tools; " + activity
-                : "Open more map tools";
-        }
-        for (const opener of this.openers) {
-            opener.textContent = "History & exports" + readyLabel;
-            opener.title = "Open calculation history and raster clip exports";
-        }
         const jobSignature = JSON.stringify([state.jobs, [...state.jobActions], state.sources]);
         if (this.jobSignature !== jobSignature) {
             const focus = this.document.activeElement?.getAttribute("data-download-action");
@@ -126,14 +106,13 @@ export class DownloadsView {
         }
     }
 
-    /** Build one owned lifecycle card. @param {Object} job Public job. @param {Object} state Current presentation state. @return {HTMLElement} Job card. */
+    /** Build progress, download and lifecycle controls for one owned clip. @param {Object} job Public clip job. @param {Object} state Current presentation state. @return {HTMLElement} Clip card. */
     jobCard(job, state) {
         const card = this.element("article", "");
         card.className = "download-job";
         const identity = job.source ?? Object.values(job.sources ?? {})[0];
-        const calculation = job.operation === "raster.aggregate.v1";
         const source = state.sources.find(item => item.collectionId === identity?.collectionId && item.itemId === identity?.itemId);
-        card.append(this.element("h3", source?.label ?? job.result?.filename ?? job.source?.itemId ?? "Raster calculation"),
+        card.append(this.element("h3", source?.label ?? job.result?.filename ?? job.source?.itemId ?? "Raster clip"),
             this.element("p", describeJobProgress(job)));
         if (job.area) card.append(this.element("p", describeClipArea(job.area)));
         if (job.status === "running" && job.progress.phase === "clipping" && job.progress.totalBlocks > 0) {
@@ -144,12 +123,12 @@ export class DownloadsView {
             card.append(progress);
         }
         if (job.grid) card.append(this.element("p", `${job.grid.width} × ${job.grid.height} pixels · ${describeClipCrs(job.grid.crs)}`));
-        if (!calculation && job.grid) card.append(this.element("p",
+        if (job.grid) card.append(this.element("p",
             `COG · native resolution · ${formatDownloadBytes(job.grid.estimatedRawBytes)} estimated uncompressed`));
         if (job.error) card.append(this.element("p", `${job.error.detail} (${job.error.code})`));
         if (job.result && job.status === "ready") {
             card.append(this.element("p", `${formatDownloadBytes(job.result.bytes)} · expires ${new Date(job.expiresAt).toLocaleString()}`));
-            for (const [kind, label, url] of [["result", calculation ? "Download CSV" : "Download COG", job.result.url], ["provenance", "Provenance", job.result.provenanceUrl]]) {
+            for (const [kind, label, url] of [["result", "Download COG", job.result.url], ["provenance", "Provenance", job.result.provenanceUrl]]) {
                 const link = this.element("a", label);
                 link.className = "secondary-button";
                 link.href = processingDownloadUrl(url, job.jobId, kind);
@@ -157,14 +136,6 @@ export class DownloadsView {
                 link.setAttribute("data-download-action", `${job.jobId}-${kind}`);
                 card.append(link);
             }
-        }
-        if (calculation) {
-            const inspect = this.element("button", "View calculation results");
-            inspect.type = "button";
-            inspect.className = "secondary-button";
-            inspect.setAttribute("data-download-action", `${job.jobId}-inspect`);
-            inspect.addEventListener("click", () => this.handlers?.onInspectCalculation?.(job.jobId));
-            card.append(inspect);
         }
         const active = ACTIVE_JOB_STATES.has(job.status);
         const action = active ? "cancel" : "delete";

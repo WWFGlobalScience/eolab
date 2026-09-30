@@ -571,8 +571,8 @@
             <button id="toggle-map-legend" class="secondary-button" type="button" aria-pressed="true">Hide legend</button>
             <button id="open-raster-series" class="secondary-button" type="button"
               aria-controls="raster-series">Plot raster stack</button>
-            <button id="open-downloads" class="secondary-button" type="button"
-              aria-controls="downloads-panel">History &amp; exports</button>
+            <button id="open-raster-clips" class="secondary-button" type="button"
+              aria-controls="raster-clips-panel">Raster clips</button>
           </div>
         </details>
       </div>
@@ -589,8 +589,8 @@
               <label class="summary-auto-option"><input id="summary-auto" type="checkbox" checked>Update statistics automatically</label>
               <button id="open-raster-series-dock" class="secondary-button" type="button"
                 aria-controls="raster-series">Plot raster stack</button>
-              <button id="open-downloads-dock" class="secondary-button" type="button"
-                aria-controls="downloads-panel">History &amp; exports</button>
+              <button id="open-raster-clips-dock" class="secondary-button" type="button"
+                aria-controls="raster-clips-panel">Raster clips</button>
             </div>
           </details>
           <section id="map-click-summary" class="map-click-summary" aria-labelledby="map-inspection-dock-title" hidden>
@@ -609,9 +609,9 @@
               aria-controls="raster-series" aria-selected="false" tabindex="-1" hidden>Raster series</button>
             <button id="map-inspection-tab-annotations" class="map-inspection-tab" type="button" role="tab" aria-controls="annotations-panel" aria-selected="false" tabindex="-1" hidden>Shared layer</button>
             <button id="map-inspection-tab-calculations" class="map-inspection-tab" type="button" role="tab" aria-controls="calculations-panel" aria-selected="false" tabindex="-1" hidden>Summarize</button>
-            <button id="map-inspection-tab-downloads" class="map-inspection-tab"
-              type="button" role="tab" aria-controls="downloads-panel"
-              aria-selected="false" tabindex="-1" hidden>History &amp; exports</button>
+            <button id="map-inspection-tab-raster-clips" class="map-inspection-tab"
+              type="button" role="tab" aria-controls="raster-clips-panel"
+              aria-selected="false" tabindex="-1" hidden>Raster clips</button>
             <button id="map-inspection-tab-histogram" class="map-inspection-tab"
               type="button" role="tab" aria-controls="map-histogram-panel"
               aria-selected="false" tabindex="-1" hidden>Raster histograms</button>
@@ -766,43 +766,40 @@
             </details>
             <p id="summary-recovery-status" role="status" aria-live="polite" hidden></p>
             <button id="calculations-retry" class="secondary-button" type="button" hidden>Recover / retry</button>
-            <details id="summary-saved-result" hidden><summary>Saved calculation</summary><button id="summary-close-saved" class="summary-text-button" type="button">Close saved calculation</button><section id="calculations-result" aria-label="Saved calculation result"></section></details>
-          </section>
-          <section id="downloads-panel" role="tabpanel" aria-labelledby="map-inspection-tab-downloads" hidden>
-            <header class="map-histogram-toolbar">
-              <h2>History &amp; exports</h2>
-              <button id="downloads-close" class="secondary-button" type="button" aria-label="Close history and exports">&times;</button>
-            </header>
-            <p>Review earlier calculation results or create and retrieve raster clips. Results remain available for 24 hours in this browser session.</p>
             <details class="map-analysis-advanced-section">
               <summary>Previous calculation results</summary>
               <button id="calculations-refresh" class="secondary-button" type="button">Refresh calculation history</button>
               <div id="calculations-history"></div>
             </details>
-            <details id="downloads-clip-tools" class="map-analysis-advanced-section" open>
-              <summary>Raster clips</summary>
-            <form id="downloads-form">
-              <label for="downloads-source">Raster</label>
-              <select id="downloads-source"></select>
-              <label for="downloads-area">Clip area</label>
-              <select id="downloads-area"></select>
-              <p id="downloads-area-description"></p>
-              <p>The selected area is captured when Downloads opens. Reopen from a histogram to use a newer selection.</p>
+            <details id="summary-saved-result" hidden><summary>Saved calculation</summary><button id="summary-close-saved" class="summary-text-button" type="button">Close saved calculation</button><section id="calculations-result" aria-label="Saved calculation result"></section></details>
+          </section>
+          <section id="raster-clips-panel" role="tabpanel" aria-labelledby="map-inspection-tab-raster-clips" hidden>
+            <header class="map-histogram-toolbar">
+              <h2>Raster clips</h2>
+              <button id="raster-clips-close" class="secondary-button" type="button" aria-label="Close raster clips">&times;</button>
+            </header>
+            <p>Create and download raster clips. Completed clips remain available for 24 hours in this browser session.</p>
+            <form id="raster-clips-form">
+              <label for="raster-clips-source">Raster</label>
+              <select id="raster-clips-source"></select>
+              <label for="raster-clips-area">Clip area</label>
+              <select id="raster-clips-area"></select>
+              <p id="raster-clips-area-description"></p>
+              <p>The selected area is captured when Raster clips opens. Reopen from a histogram to use a newer selection.</p>
               <div class="downloads-actions">
-                <button id="downloads-edit-area" class="secondary-button" type="button">Choose box or catalog vector</button>
-                <button id="downloads-create" class="primary-button" type="submit" disabled>Create clip</button>
+                <button id="raster-clips-edit-area" class="secondary-button" type="button">Choose box or catalog vector</button>
+                <button id="raster-clips-create" class="primary-button" type="submit" disabled>Create clip</button>
               </div>
             </form>
-            <p id="downloads-message" role="status" aria-live="polite"></p>
-            <p id="downloads-pending" hidden></p>
-            <button id="downloads-retry-submission" class="secondary-button" type="button" hidden>Recover submission</button>
+            <p id="raster-clips-message" role="status" aria-live="polite"></p>
+            <p id="raster-clips-pending" hidden></p>
+            <button id="raster-clips-retry-submission" class="secondary-button" type="button" hidden>Recover submission</button>
             <header class="map-histogram-toolbar">
-              <h3>Your processing jobs</h3>
-              <button id="downloads-refresh" class="secondary-button" type="button">Refresh</button>
+              <h3>Your clips</h3>
+              <button id="raster-clips-refresh" class="secondary-button" type="button">Refresh</button>
             </header>
-            <p id="downloads-job-message" role="status" aria-live="polite"></p>
-            <div id="downloads-jobs"></div>
-            </details>
+            <p id="raster-clips-job-message" role="status" aria-live="polite"></p>
+            <div id="raster-clips-jobs"></div>
           </section>
           <section id="vector-feature-inspector" role="tabpanel"
             aria-labelledby="map-inspection-tab-feature" hidden>

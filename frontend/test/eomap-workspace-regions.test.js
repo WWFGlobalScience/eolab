@@ -218,7 +218,7 @@ test("Map layers owns compact rows; the bounded map-tool dock owns styling", () 
     assert.match(inspection.source, /id="map-inspection-tabs"[^>]+role="tablist"/);
     assert.match(inspection.source, /id="map-inspection-dock-title"[^>]*>Map tools/);
     assert.match(inspection.source, /id="map-inspection-more-summary"[^>]*>More/);
-    assert.match(inspection.source, /id="open-downloads-dock"[\s\S]*?>History &amp; exports/);
+    assert.match(inspection.source, /id="open-raster-clips-dock"[\s\S]*?>Raster clips/);
     assert.match(
         inspection.source,
         /id="style-inspected-vector-layer"[\s\S]*?aria-controls="layer-style-editor"/
@@ -228,7 +228,7 @@ test("Map layers owns compact rows; the bounded map-tool dock owns styling", () 
         ["time-series", "vector-time-series"],
         ["feature-profile", "vector-feature-profile"],
         ["histogram", "map-histogram-panel"],
-        ["downloads", "downloads-panel"],
+        ["raster-clips", "raster-clips-panel"],
         ["calculations", "calculations-panel"],
         ["annotations", "annotations-panel"],
         ["style", "layer-style-editor"],
@@ -267,7 +267,7 @@ test("Map layers owns compact rows; the bounded map-tool dock owns styling", () 
         STYLESHEET,
         /#map-inspection-tab-style\s*\{[^}]*text-overflow:\s*ellipsis/s
     );
-    assert.match(STYLESHEET, /#map-histogram-panel,\s*#raster-series,\s*#annotations-panel,\s*#calculations-panel,\s*#downloads-panel,\s*#layer-style-editor,\s*#vector-filter-panel,\s*#vector-feature-inspector,\s*#vector-time-series,\s*#vector-feature-profile\s*\{[^}]*height:\s*100%[^}]*overflow-y:\s*auto/s);
+    assert.match(STYLESHEET, /#map-histogram-panel,\s*#raster-series,\s*#annotations-panel,\s*#calculations-panel,\s*#raster-clips-panel,\s*#layer-style-editor,\s*#vector-filter-panel,\s*#vector-feature-inspector,\s*#vector-time-series,\s*#vector-feature-profile\s*\{[^}]*height:\s*100%[^}]*overflow-y:\s*auto/s);
     assert.doesNotMatch(STYLESHEET, /\.map-inspection-panels:has\(/);
 });
 

@@ -31,7 +31,7 @@ export class MapInspectionController {
         this.histogram = documentContext.querySelector("#map-histogram-panel");
         this.style = documentContext.querySelector("#layer-style-editor");
         this.filter = documentContext.querySelector("#vector-filter-panel");
-        this.downloads = documentContext.querySelector("#downloads-panel");
+        this.rasterClips = documentContext.querySelector("#raster-clips-panel");
         this.calculations = documentContext.querySelector("#calculations-panel");
         this.annotations = documentContext.querySelector("#annotations-panel");
         this.rasterSeries = documentContext.querySelector("#raster-series");
@@ -61,8 +61,8 @@ export class MapInspectionController {
             { name: "calculations", label: "Summarize", panel: this.calculations,
                 tab: documentContext.querySelector("#map-inspection-tab-calculations") },
             {
-                name: "downloads", label: "History & exports", panel: this.downloads,
-                tab: documentContext.querySelector("#map-inspection-tab-downloads"),
+                name: "raster-clips", label: "Raster clips", panel: this.rasterClips,
+                tab: documentContext.querySelector("#map-inspection-tab-raster-clips"),
             },
             {
                 name: "histogram",
@@ -234,11 +234,11 @@ export class MapInspectionController {
     /** Hide calculations without changing peer panels. @return {void} */
     hideCalculations() { this.#hideTool("calculations"); }
 
-    /** Reveal the Downloads tool while retaining peer panels. @return {void} */
-    showDownloads() { this.#showTool("downloads"); }
+    /** Reveal the raster clip tool while retaining peer panels. @return {void} */
+    showRasterClips() { this.#showTool("raster-clips"); }
 
-    /** Close Downloads without cancelling server work. @return {void} */
-    hideDownloads() { this.#hideTool("downloads"); }
+    /** Close raster clips without cancelling server work. @return {void} */
+    hideRasterClips() { this.#hideTool("raster-clips"); }
 
     /** Hide the filter editor without closing other tools. @return {void} */
     hideFilter() {
@@ -488,8 +488,8 @@ export class MapInspectionController {
     #activateTool(name) {
         const tool = this.#tool(name);
         if (tool.panel.hidden) return;
-        if (name !== "downloads" && !this.downloads.hidden) {
-            this.#closeToolState("downloads");
+        if (name !== "raster-clips" && !this.rasterClips.hidden) {
+            this.#closeToolState("raster-clips");
         }
         this.activeTool = name;
         const result = this.clickResults.find(entry => entry.name === name);
@@ -736,7 +736,7 @@ export class MapInspectionController {
         this.histogram.hidden = true;
         this.style.hidden = true;
         this.filter.hidden = true;
-        this.downloads.hidden = true;
+        this.rasterClips.hidden = true;
         this.calculations.hidden = true;
         this.annotations.hidden = true;
         this.rasterSeries.hidden = true;

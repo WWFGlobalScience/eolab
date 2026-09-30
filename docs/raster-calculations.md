@@ -43,7 +43,7 @@ with no numeric result; the states below explain why.
 
 Changing the active calculation cancels obsolete work. Closing or switching away
 from the panel cancels automatic work; manually submitted work can continue in
-**More → History & exports**. Keep the same browser session to recover jobs after
+**Summarize → Previous calculation results**. Keep the same browser session to recover jobs after
 reload. A shared map link does not grant access to another person's jobs.
 If submission is uncertain, use **Recover / retry** instead of creating a second
 request. Exported names and formulas describe the submitted calculation even if

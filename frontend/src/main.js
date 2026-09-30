@@ -106,8 +106,8 @@ import { SummaryStatisticsView } from "./processing/summary-statistics-view.js";
 import { CalculationRequests } from "./processing/calculation-requests.js";
 import { CalculationSessionStorage } from "./processing/calculation-session.js";
 import { ProcessingJobs } from "./processing/jobs.js";
-import { DownloadsController } from "./processing/downloads-controller.js";
-import { DownloadsView } from "./processing/downloads-view.js";
+import { RasterClipsController } from "./processing/raster-clips-controller.js";
+import { RasterClipsView } from "./processing/raster-clips-view.js";
 import { PendingSubmissionStorage } from "./processing/pending-submission.js";
 
 /** Copy the Catalog identity and map label for a processing intent.
@@ -862,31 +862,31 @@ async function initializeCatalog(
         onCancelSelection: () => summarySampling.invalidate("Selection cancelled"),
     });
     mapInspection.subscribeActiveTool(tool => calculations.setActive(tool === "calculations"));
-    const downloads = new DownloadsController({
-        api: processingApi, jobs: processingJobs, view: new DownloadsView(),
-        onInspectCalculation: id => calculations.inspect(id),
+    const rasterClips = new RasterClipsController({
+        api: processingApi, jobs: processingJobs, view: new RasterClipsView(),
         storage: new PendingSubmissionStorage(browserSessionStorage()),
         getContext: processingContext,
-        onOpen: () => mapInspection.showDownloads(),
-        onClose: () => mapInspection.hideDownloads(),
+        onOpen: () => mapInspection.showRasterClips(),
+        onClose: () => mapInspection.hideRasterClips(),
         onEditArea: editProcessingArea,
     });
+    mapInspection.subscribeActiveTool(tool => rasterClips.setActive(tool === "raster-clips"));
     mapLayerController.onDownload = (key) => {
         const record = mapLayerController.getRecord(key);
-        if (record) downloads.open(clipSource(record.entry.item, record.entry.label));
+        if (record) rasterClips.open(clipSource(record.entry.item, record.entry.label));
     };
     mapLayerController.onCalculate = (key) => {
         const record = mapLayerController.getRecord(key);
         if (record) calculations.open(clipSource(record.entry.item, record.entry.label));
     };
-    void downloads.start();
+    void rasterClips.start();
 
     rasterVisualization = initializeRasterViewer({
         wmsUrl: appGlobalConfiguration.wmsUrl,
         leafletMap,
         leaflet: L,
         onTileError: reportMapTileError,
-        onDownloadRequested: (item, area) => downloads.open(clipSource(item, mapLayerController.getRecord(getCatalogItemKey(item))?.entry.label), area),
+        onDownloadRequested: (item, area) => rasterClips.open(clipSource(item, mapLayerController.getRecord(getCatalogItemKey(item))?.entry.label), area),
         onCalculateRequested: (item, area) => {
             calculations.open(clipSource(item, mapLayerController.getRecord(getCatalogItemKey(item))?.entry.label), area);
             calculations.calculateSelection(true);
@@ -1319,7 +1319,7 @@ async function initializeCatalog(
         "click",
         openAnalysisToolsAtMapCenter
     );
-    onRasterViewerReady(rasterVisualization, downloads, calculations);
+    onRasterViewerReady(rasterVisualization, rasterClips, calculations);
     /**
      * Apply the scanner-owned visualization decision to the map action.
      *
