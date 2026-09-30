@@ -117,26 +117,34 @@ export class RasterSeriesView {
         });
     }
 
-    /** Update the visible controls and figures from one coalesced snapshot.
+    /** Update changed controls and figures from one coalesced snapshot.
+     * Unchanged presentation leaves existing DOM nodes and attributes intact.
      * @param {Object} state Latest presentation supplied to render().
      * @return {void}
      */
     draw(state) {
         const areaMode = state.mode === "area";
-        this.areaControls.hidden = !areaMode;
-        this.document.querySelector("#raster-series-mode").value = state.mode ?? "pixel";
-        this.retry.hidden = areaMode;
-        this.document.querySelector("#raster-series-value-heading").textContent = areaMode ? "Value" : "Pixel value";
-        this.document.querySelector("#raster-series-statistic-heading").hidden = !areaMode;
-        this.document.querySelector("#raster-series-plots").hidden = !areaMode;
-        this.document.querySelector("#raster-series-add-plot").hidden = !areaMode;
+        if (this.areaControls.hidden !== !areaMode) this.areaControls.hidden = !areaMode;
+        const mode = this.document.querySelector("#raster-series-mode");
+        if (mode.value !== (state.mode ?? "pixel")) mode.value = state.mode ?? "pixel";
+        if (this.retry.hidden !== areaMode) this.retry.hidden = areaMode;
+        const valueHeading = this.document.querySelector("#raster-series-value-heading");
+        const valueLabel = areaMode ? "Value" : "Pixel value";
+        if (valueHeading.textContent !== valueLabel) valueHeading.textContent = valueLabel;
+        for (const id of ["statistic-heading", "plots", "add-plot"]) {
+            const element = this.document.querySelector("#raster-series-" + id);
+            if (element.hidden !== !areaMode) element.hidden = !areaMode;
+        }
         if (areaMode) this.renderAreaControls(state);
-        this.context.textContent = areaMode ? (state.area.areaChoice === "whole" ? "Whole extent of each raster" : state.area.areaLabel || "No sampling area selected") : state.position
+        const context = areaMode ? (state.area.areaChoice === "whole" ? "Whole extent of each raster" : state.area.areaLabel || "No sampling area selected") : state.position
             ? `Pixel values at ${state.position.latitude.toFixed(5)}, ${state.position.longitude.toFixed(5)}`
             : "Pixel values across raster layers";
-        this.status.textContent = state.message;
-        this.root.setAttribute("aria-busy", String(state.busy));
-        this.sourceSummary.textContent = `Rasters · ${state.sources.filter(source => source.selected).length} selected`;
+        if (this.context.textContent !== context) this.context.textContent = context;
+        if (this.status.textContent !== state.message) this.status.textContent = state.message;
+        const busy = String(state.busy);
+        if (this.root.getAttribute("aria-busy") !== busy) this.root.setAttribute("aria-busy", busy);
+        const sourceCount = `Rasters · ${state.sources.filter(source => source.selected).length} selected`;
+        if (this.sourceSummary.textContent !== sourceCount) this.sourceSummary.textContent = sourceCount;
         const signature = JSON.stringify(state.sources.map(({ key, label, selected }) => [key, label, selected]));
         if (signature !== this.sourceSignature) {
             this.sourceSignature = signature;
@@ -157,14 +165,17 @@ export class RasterSeriesView {
                 }
             }
         }
-        this.chart.replaceChildren();
+        // Area statistics use separate plots; clear the pixel chart only when it has contents.
+        if (!areaMode || this.chart.children.length) this.chart.replaceChildren();
         const plottedRows = state.previousRows?.some(row => row.state === "value") ? state.previousRows : state.rows;
         const showingPrevious = areaMode ? state.showingPrevious : plottedRows === state.previousRows;
-        this.chart.classList.toggle("is-previous", showingPrevious);
-        this.chartNote.hidden = !showingPrevious;
-        this.chartNote.textContent = showingPrevious ? (areaMode ? "Previous results — calculating replacements." : "Previous plot — reading the new click.") : "";
-        this.chart.hidden = areaMode || !plottedRows.some(row => row.state === "value");
-        if (this.chart.hidden) this.chart.setAttribute("hidden", "");
+        if (this.chart.classList.contains("is-previous") !== !!showingPrevious) this.chart.classList.toggle("is-previous", !!showingPrevious);
+        if (this.chartNote.hidden !== !showingPrevious) this.chartNote.hidden = !showingPrevious;
+        const chartNote = showingPrevious ? (areaMode ? "Previous results — calculating replacements." : "Previous plot — reading the new click.") : "";
+        if (this.chartNote.textContent !== chartNote) this.chartNote.textContent = chartNote;
+        const chartHidden = areaMode || !plottedRows.some(row => row.state === "value");
+        if (this.chart.hidden !== chartHidden) this.chart.hidden = chartHidden;
+        if (chartHidden && this.chart.getAttribute("hidden") === null) this.chart.setAttribute("hidden", "");
         if (areaMode) this.plotsView.renderPlots(state);
         if (!this.chart.hidden) {
             renderOrdinalSeriesChart({
@@ -190,12 +201,12 @@ export class RasterSeriesView {
                 return tr;
             }));
         }
-        this.download.disabled = !state.canDownload;
-        this.retry.disabled = !state.canRetry;
+        if (this.download.disabled !== !state.canDownload) this.download.disabled = !state.canDownload;
+        if (this.retry.disabled !== !state.canRetry) this.retry.disabled = !state.canRetry;
     }
 
 
-    /** Update formula controls without replacing focused inputs during progress.
+    /** Update changed formula controls while preserving focused edits and timing disclosures.
      * @param {Object} state Area-series presentation. @return {void}
      */
     renderAreaControls(state) {
@@ -233,8 +244,10 @@ export class RasterSeriesView {
             const name = formula.label || formula.expression || "Custom statistic";
             for (const input of row.querySelectorAll("input")) {
                 if (input.dataset.field === "visible") {
-                    input.checked = formula.visible; input.setAttribute("aria-label", `Show ${name} on plot`);
-                } else if (input !== this.document.activeElement) input.value = formula[input.dataset.field];
+                    if (input.checked !== formula.visible) input.checked = formula.visible;
+                    const label = `Show ${name} on plot`;
+                    if (input.getAttribute("aria-label") !== label) input.setAttribute("aria-label", label);
+                } else if (input !== this.document.activeElement && input.value !== formula[input.dataset.field]) input.value = formula[input.dataset.field];
             }
             const plot = row.querySelector("select");
             const plotsKey = state.plots.map(item => item.id).join(",");
@@ -245,16 +258,24 @@ export class RasterSeriesView {
                     option.textContent = `Plot ${item.id}`; return option;
                 }));
             }
-            plot.setAttribute("aria-label", `Plot for ${name}`); plot.value = String(formula.plotId);
+            const label = `Plot for ${name}`;
+            if (plot.getAttribute("aria-label") !== label) plot.setAttribute("aria-label", label);
+            if (plot.value !== String(formula.plotId)) plot.value = String(formula.plotId);
         }
-        this.document.querySelector("#raster-series-area").value = area.areaChoice;
-        this.document.querySelector("#raster-series-add-formula").disabled = area.formulas.length >= 5;
+        const areaChoice = this.document.querySelector("#raster-series-area");
+        if (areaChoice.value !== area.areaChoice) areaChoice.value = area.areaChoice;
+        const addFormula = this.document.querySelector("#raster-series-add-formula");
+        if (addFormula.disabled !== (area.formulas.length >= 5)) addFormula.disabled = area.formulas.length >= 5;
         const calculate = this.document.querySelector("#raster-series-calculate");
-        calculate.disabled = state.busy || !area.sources.length || (area.areaChoice !== "whole" && !area.area);
-        calculate.hidden = area.complete && !area.hasErrors;
-        calculate.textContent = "Calculate";
-        this.document.querySelector("#raster-series-cancel").hidden = !state.busy;
-        this.document.querySelector("#raster-series-recover").hidden = !area.recoverable;
+        const cannotCalculate = state.busy || !area.sources.length || (area.areaChoice !== "whole" && !area.area);
+        if (calculate.disabled !== cannotCalculate) calculate.disabled = cannotCalculate;
+        const hideCalculate = !!area.complete && !area.hasErrors;
+        if (calculate.hidden !== hideCalculate) calculate.hidden = hideCalculate;
+        if (calculate.textContent !== "Calculate") calculate.textContent = "Calculate";
+        const cancel = this.document.querySelector("#raster-series-cancel");
+        if (cancel.hidden !== !state.busy) cancel.hidden = !state.busy;
+        const recover = this.document.querySelector("#raster-series-recover");
+        if (recover.hidden !== !area.recoverable) recover.hidden = !area.recoverable;
         const performance = this.document.querySelector("#raster-series-performance");
         for (const [key, report] of this.timingReports) {
             if (area.results.get(key) === report.result) continue;

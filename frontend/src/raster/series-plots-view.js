@@ -99,7 +99,7 @@ export class RasterSeriesPlotsView {
         for (const plot of state.plots) {
             if (!this.cards.has(plot.id)) this.cards.set(plot.id, this.createPlotCard(plot));
             const elements = this.cards.get(plot.id);
-            elements.scale.value = plot.scale;
+            if (elements.scale.value !== plot.scale) elements.scale.value = plot.scale;
             const statistics = state.statistics.filter(statistic => statistic.plotId === plot.id && statistic.visible);
             const series = statistics.map(statistic => ({
                 id: String(statistic.id), label: `${statistic.label || "Custom statistic"} · ${statistic.expression}`,
