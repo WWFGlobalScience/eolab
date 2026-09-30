@@ -101,10 +101,18 @@ export class RasterSeriesPlotsView {
             const elements = this.cards.get(plot.id);
             elements.scale.value = plot.scale;
             const statistics = state.statistics.filter(statistic => statistic.plotId === plot.id && statistic.visible);
-            const signature = JSON.stringify([plot.scale, state.chartType, state.showingPrevious, statistics]);
+            const series = statistics.map(statistic => ({
+                id: String(statistic.id), label: `${statistic.label || "Custom statistic"} · ${statistic.expression}`,
+                ...STATISTIC_STYLES[statistic.styleIndex],
+                points: (state.showingPrevious ? statistic.previousRows : statistic.rows).map(row => ({
+                    xLabel: row.label, yValue: row.state === "value" ? row.value : null, rawValue: row.rawValue, unit: row.unit,
+                })),
+            }));
+            // Only chart inputs belong here: progress and catalog metadata do not change a figure.
+            const signature = JSON.stringify([plot.scale, state.chartType, state.showingPrevious, series]);
             if (elements.signature === signature) continue;
             elements.signature = signature;
-            this.renderPlot(elements, plot, statistics, state);
+            this.renderPlot(elements, plot, statistics, state, series);
         }
     }
 
@@ -114,9 +122,10 @@ export class RasterSeriesPlotsView {
      * @param {{id:number,scale:string}} plot Plot settings.
      * @param {Object[]} statistics Visible statistics assigned to this plot.
      * @param {{showingPrevious:boolean,chartType:string}} state Current presentation settings.
+     * @param {import("../charts/series-chart.js").ChartSeries[]} series Chart-only observations and styles.
      * @return {void}
      */
-    renderPlot(elements, plot, statistics, state) {
+    renderPlot(elements, plot, statistics, state, series) {
         const { chart, tooltip, legend, note, empty } = elements;
         const focused = this.document.activeElement;
         const hadChartFocus = chart.contains(focused);
@@ -124,13 +133,6 @@ export class RasterSeriesPlotsView {
         const focusPoint = focused?.getAttribute?.("data-point-index");
         const focusLegend = legend.contains(focused) ? focused?.dataset?.statisticId : null;
         chart.replaceChildren(); legend.replaceChildren(); tooltip.hidden = true;
-        const series = statistics.map(statistic => ({
-            id: String(statistic.id), label: `${statistic.label || "Custom statistic"} · ${statistic.expression}`,
-            ...STATISTIC_STYLES[statistic.styleIndex],
-            points: (state.showingPrevious ? statistic.previousRows : statistic.rows).map(row => ({
-                xLabel: row.label, yValue: row.state === "value" ? row.value : null, rawValue: row.rawValue, unit: row.unit,
-            })),
-        }));
         const values = series.flatMap(item => item.points).filter(point => Number.isFinite(point.yValue));
         const units = [...new Set(values.map(point => point.unit || "unit unspecified"))];
         const excluded = plot.scale === "log" ? values.filter(point => point.yValue <= 0).length : 0;

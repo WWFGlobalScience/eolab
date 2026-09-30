@@ -25,6 +25,9 @@ export class RasterSeriesView {
         this.sourceSignature = null;
         this.areaControls = documentContext.querySelector("#raster-series-area-controls");
         this.formulaRows = documentContext.querySelector("#raster-series-formulas");
+        this.frame = null;
+        this.pendingState = null;
+        this.timingReports = new Map();
     }
 
     /**
@@ -75,8 +78,12 @@ export class RasterSeriesView {
     }
 
     /**
-     * Refresh values while preserving keyboard focus and the raster checklist disclosure.
+     * Schedule the latest presentation for a browser frame, without drawing in a result callback.
+     * Multiple updates before that frame replace its pending snapshot. Results
+     * remain in the controller; intermediate drawings may be skipped. Closing
+     * the panel cancels pending drawing, and reopening supplies current state.
      * @param {Object} state Plot presentation.
+     * @param {boolean} state.active Whether the series panel is open.
      * @param {Object[]} state.sources Available rasters with their selected flag.
      * @param {Object[]} state.rows Ordered current pixel or statistic results.
      * @param {Object[]|null} state.previousRows Previous input's rows while no new value has arrived.
@@ -94,6 +101,27 @@ export class RasterSeriesView {
      * @return {void}
      */
     render(state) {
+        this.pendingState = state;
+        if (!state.active) {
+            if (this.frame !== null) this.document.defaultView.cancelAnimationFrame(this.frame);
+            this.frame = null;
+            this.pendingState = null;
+            return;
+        }
+        if (this.frame !== null) return;
+        this.frame = this.document.defaultView.requestAnimationFrame(() => {
+            this.frame = null;
+            const latest = this.pendingState;
+            this.pendingState = null;
+            this.draw(latest);
+        });
+    }
+
+    /** Update the visible controls and figures from one coalesced snapshot.
+     * @param {Object} state Latest presentation supplied to render().
+     * @return {void}
+     */
+    draw(state) {
         const areaMode = state.mode === "area";
         this.areaControls.hidden = !areaMode;
         this.document.querySelector("#raster-series-mode").value = state.mode ?? "pixel";
@@ -148,14 +176,20 @@ export class RasterSeriesView {
                 pointTooltip: point => `${point.xLabel}\nPixel value: ${formatSeriesNumber(point.yValue)}`,
             });
         }
-        this.table.replaceChildren(...state.rows.map(row => {
-            const tr = this.document.createElement("tr");
-            for (const value of [row.label, ...(areaMode ? [row.statisticLabel] : []), row.state === "value" ? (row.rawValue ?? formatSeriesNumber(row.value)) + (row.unit ? " " + row.unit : "") : "-",
-                row.errorMessage || (row.state === "value" ? (row.cached ? "Cached" : "Value") : STATES[row.state])]) {
-                const cell = this.document.createElement("td"); cell.textContent = value; tr.append(cell);
-            }
-            return tr;
-        }));
+        const tableValues = state.rows.map(row => [row.label, ...(areaMode ? [row.statisticLabel] : []),
+            row.state === "value" ? (row.rawValue ?? formatSeriesNumber(row.value)) + (row.unit ? " " + row.unit : "") : "-",
+            row.errorMessage || (row.state === "value" ? (row.cached ? "Cached" : "Value") : STATES[row.state])]);
+        const tableSignature = JSON.stringify(tableValues);
+        if (this.tableSignature !== tableSignature) {
+            this.tableSignature = tableSignature;
+            this.table.replaceChildren(...tableValues.map(values => {
+                const tr = this.document.createElement("tr");
+                for (const value of values) {
+                    const cell = this.document.createElement("td"); cell.textContent = value; tr.append(cell);
+                }
+                return tr;
+            }));
+        }
         this.download.disabled = !state.canDownload;
         this.retry.disabled = !state.canRetry;
     }
@@ -222,25 +256,38 @@ export class RasterSeriesView {
         this.document.querySelector("#raster-series-cancel").hidden = !state.busy;
         this.document.querySelector("#raster-series-recover").hidden = !area.recoverable;
         const performance = this.document.querySelector("#raster-series-performance");
-        const completedKey = JSON.stringify([area.elapsedSeconds, [...area.results].map(([key, result]) => [key, result.job?.jobId, result.error])]);
-        if (this.performanceKey !== completedKey) {
-            this.performanceKey = completedKey;
-            performance.replaceChildren(...[...area.results].filter(([,result]) => result.job).map(([key, result]) => {
+        for (const [key, report] of this.timingReports) {
+            if (area.results.get(key) === report.result) continue;
+            report.details.remove();
+            this.timingReports.delete(key);
+        }
+        for (const [key, result] of area.results) {
+            if (!result.job) continue;
+            if (!this.timingReports.has(key)) {
                 const details = this.document.createElement("details");
                 const summary = this.document.createElement("summary");
-                summary.textContent = (area.sources.find(source => source.key === key)?.label ?? key) + " — " + result.elapsedSeconds.toFixed(3) + " s";
                 details.append(summary);
                 for (const line of result.performanceLines) {
                     const p = this.document.createElement("p"); p.textContent = line; details.append(p);
                 }
-                return details;
-            }));
-            if (area.elapsedSeconds != null) {
-                const total = this.document.createElement("p");
-                total.textContent = "Whole series: " + area.elapsedSeconds.toFixed(3) +
-                    " s from requesting the series to the last result or error, including debounce, validation and any recovery pauses.";
-                performance.prepend(total);
+                performance.append(details);
+                this.timingReports.set(key, { result, details, summary });
             }
+            const summary = this.timingReports.get(key).summary;
+            const text = (area.sources.find(source => source.key === key)?.label ?? key) + " — " + result.elapsedSeconds.toFixed(3) + " s";
+            if (summary.textContent !== text) summary.textContent = text;
+        }
+        if (area.elapsedSeconds == null) {
+            this.totalTiming?.remove();
+            this.totalTiming = null;
+        } else {
+            if (!this.totalTiming) {
+                this.totalTiming = this.document.createElement("p");
+                performance.prepend(this.totalTiming);
+            }
+            const text = "Whole series: " + area.elapsedSeconds.toFixed(3) +
+                " s from requesting the series to the last result or error, including debounce, validation and any recovery pauses.";
+            if (this.totalTiming.textContent !== text) this.totalTiming.textContent = text;
         }
     }
 

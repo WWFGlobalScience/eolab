@@ -31,8 +31,8 @@ test("multiple statistics share axes and raster positions while missing values b
     assert.deepEqual(result.pointElements.map(({circle}) => Number(circle.getAttribute("cx"))), [72, 656, 72, 364, 656]);
     assert.deepEqual(result.pointElements.map(({circle}) => Number(circle.getAttribute("cy"))), [268, 20, 20, 144, 268]);
     const paths = result.elements.filter(element => element.getAttribute("class") === "series-chart-line");
-    assert.equal(paths[0].getAttribute("d"), "M72,268 M656,20");
-    assert.equal(paths[1].getAttribute("d"), "M72,20 L364,144 L656,268");
+    assert.equal(paths[0].getAttribute("d"), "M72,268ZM656,20Z");
+    assert.equal(paths[1].getAttribute("d"), "M72,20L364,144L656,268");
     assert.equal(paths[1].getAttribute("stroke-dasharray"), "7 3");
 });
 
