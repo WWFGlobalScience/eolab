@@ -18,6 +18,114 @@ function fixture() {
     return { document, view, frames, frame };
 }
 
+/** Create area-series controls and record calls to their plot view.
+ * @return {Object} Frame fixture, mutable presentation and plot-call snapshots.
+ */
+function controlsFixture() {
+    const h = fixture();
+    const create = h.document.createElement.bind(h.document);
+    h.document.createElement = tag => {
+        const element = create(); element.tagName = tag; element.dataset = {};
+        return element;
+    };
+    const plots = [];
+    h.view.plotsView = { renderPlots: state => plots.push(state) };
+    h.view.actions = {};
+    const source = { key: "a", label: "Raster A", selected: true };
+    const formula = { id: 1, label: "Mean", expression: "mean(a)", visible: true, plotId: 1, styleIndex: 0 };
+    const state = { active: true, mode: "area", busy: true, sources: [source], rows: [], previousRows: null,
+        showingPrevious: false, message: "Preparing", canDownload: false, canRetry: false, chartType: "line",
+        statistics: [formula], plots: [{ id: 1, scale: "linear" }],
+        area: { formulas: [formula], sources: [source], results: new Map(), areaChoice: "whole",
+            elapsedSeconds: null, complete: false, recoverable: false } };
+    const draw = () => { h.view.render(state); h.frame(); };
+    return { ...h, plots, state, draw };
+}
+
+/** Observe writes to existing controls, including redundant assignments a fake DOM normally hides.
+ * @param {FakeRasterControlDocument} document Fake owning document.
+ * @return {Object[]} Mutable log of presentation writes.
+ */
+function observeControlWrites(document) {
+    const writes = [], visited = new Set();
+    const elements = [...document.elements.values()];
+    while (elements.length) {
+        const element = elements.pop();
+        if (visited.has(element)) continue;
+        visited.add(element); elements.push(...element.children);
+        for (const property of ["textContent", "hidden", "disabled", "checked", "value"]) {
+            let value = element[property];
+            Object.defineProperty(element, property, { configurable: true, get: () => value,
+                set: next => { writes.push({ element, property, value: next }); value = next; } });
+        }
+        for (const method of ["setAttribute", "replaceChildren"]) {
+            const original = element[method].bind(element);
+            element[method] = (...args) => { writes.push({ element, property: method }); return original(...args); };
+        }
+        const toggle = element.classList.toggle;
+        element.classList.toggle = (...args) => { writes.push({ element, property: "classList.toggle" }); return toggle(...args); };
+    }
+    return writes;
+}
+
+test("unchanged area snapshots perform no control writes; progress changes only its displayed text", () => {
+    const h = controlsFixture(); h.draw();
+    const writes = observeControlWrites(h.document);
+    for (let i = 0; i < 25; i++) h.draw();
+    assert.deepEqual(writes, []);
+    h.state.message = "1 of 25 complete"; h.draw();
+    assert.deepEqual(writes, [{ element: h.view.status, property: "textContent", value: "1 of 25 complete" }]);
+});
+
+test("changed controls remain current without overwriting a focused formula edit", () => {
+    const h = controlsFixture(); h.draw();
+    const row = h.view.formulaRows.children[0];
+    const inputs = row.querySelectorAll("input");
+    const expression = inputs.find(input => input.dataset.field === "expression");
+    expression.value = "mean(a) + "; expression.focus();
+    Object.assign(h.state.statistics[0], { label: "Average", visible: false, plotId: 2 });
+    h.state.plots.push({ id: 2, scale: "log" });
+    h.state.sources[0].label = "Renamed raster";
+    h.state.busy = false; h.state.canDownload = true;
+    h.state.area.complete = true; h.state.area.recoverable = true;
+    h.draw();
+    assert.equal(expression.value, "mean(a) + ");
+    assert.equal(h.document.activeElement, expression);
+    assert.equal(inputs.find(input => input.dataset.field === "label").value, "Average");
+    assert.equal(inputs[0].checked, false);
+    assert.equal(inputs[0].getAttribute("aria-label"), "Show Average on plot");
+    assert.equal(row.querySelector("select").value, "2");
+    assert.equal(row.querySelector("select").getAttribute("aria-label"), "Plot for Average");
+    assert.equal(h.view.sources.children[0].children[1].textContent, "Renamed raster");
+    assert.equal(h.view.root.getAttribute("aria-busy"), "false");
+    assert.equal(h.view.download.disabled, false);
+    assert.equal(h.document.querySelector("#raster-series-calculate").hidden, true);
+    assert.equal(h.document.querySelector("#raster-series-cancel").hidden, true);
+    assert.equal(h.document.querySelector("#raster-series-recover").hidden, false);
+    h.document.activeElement = null; h.draw();
+    assert.equal(expression.value, "mean(a)", "unfocused inputs reflect the supplied state");
+});
+
+test("area mode clears a previous pixel chart once and mode switches restore controls", () => {
+    const h = controlsFixture();
+    h.view.chart.append(h.document.createElementNS("http://www.w3.org/2000/svg", "path"));
+    h.draw();
+    assert.equal(h.view.chart.children.length, 0);
+    const writes = observeControlWrites(h.document);
+    h.draw(); assert.deepEqual(writes, []);
+    h.state.mode = "pixel"; h.state.position = { latitude: 1, longitude: 2 }; h.state.canRetry = true;
+    h.draw();
+    assert.equal(h.view.areaControls.hidden, true);
+    assert.equal(h.view.retry.hidden, false);
+    assert.equal(h.view.retry.disabled, false);
+    assert.equal(h.document.querySelector("#raster-series-value-heading").textContent, "Pixel value");
+    assert.equal(h.view.context.textContent, "Pixel values at 1.00000, 2.00000");
+    h.state.mode = "area"; h.draw();
+    assert.equal(h.view.areaControls.hidden, false);
+    assert.equal(h.view.retry.hidden, true);
+    assert.equal(h.document.querySelector("#raster-series-value-heading").textContent, "Value");
+});
+
 test("results return immediately and a burst draws only its latest snapshot", () => {
     const h = fixture(), drawn = [];
     h.view.draw = state => drawn.push(state);
