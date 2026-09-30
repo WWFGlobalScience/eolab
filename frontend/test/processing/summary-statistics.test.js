@@ -30,6 +30,87 @@ test("the first active map click calculates and an unchanged completed box reuse
     assert.equal(h.controller.state.statistics[0].current, true);
 });
 
+test("closed summary retains completed manual results without drawing and shows them on reopening", async () => {
+    const h = fixture({}, new Map(), {}, undefined, true);
+    assert.equal(h.frames.size, 0);
+    assert.equal(h.view.cards.size, 0);
+    await h.open(); h.drawFrame();
+    const card = h.controller.state.statistics[0], row = h.view.cards.get(card.id);
+    h.controller.request(card.id, "manual"); await flush(); h.drawFrame();
+    const history = h.view.elements.history.children;
+    h.controller.close();
+    h.elapse(1000); await h.finish("ready", ["42"]);
+    assert.equal(h.frames.size, 0);
+    assert.equal(card.result.row.value, "42");
+    assert.equal(card.result.totalWaitSeconds, 1);
+    assert.equal(row.value.textContent, "");
+    assert.equal(h.view.elements.history.children, history);
+    h.elapse(10000); await h.open();
+    assert.equal(h.frames.size, 1);
+    h.drawFrame();
+    assert.equal(row.value.textContent, "42");
+    assert.equal(card.result.totalWaitSeconds, 1);
+    assert.match(visibleText(h.view.elements.history), /Ready/);
+    h.controller.destroy();
+});
+
+test("summary coalesces updates, retains unchanged opener text, and focuses after drawing", async () => {
+    const h = fixture({}, new Map(), {}, undefined, true);
+    await h.open(); h.drawFrame();
+    const opener = h.view.openers[0]; let label = opener.textContent, writes = 0;
+    Object.defineProperty(opener, "textContent", { get: () => label, set: value => { label = value; writes++; } });
+    const card = h.controller.state.statistics[0];
+    for (let index = 0; index < 20; index++) h.controller.editStatistic(card.id, { label: `Name ${index}` });
+    assert.equal(h.frames.size, 1);
+    assert.equal(writes, 0);
+    assert.notEqual(h.view.cards.get(card.id).label.value, "Name 19");
+    h.drawFrame();
+    assert.equal(h.view.cards.get(card.id).label.value, "Name 19");
+    h.controller.addStatistic("sum");
+    const added = h.controller.state.statistics.at(-1);
+    assert.equal(h.view.cards.has(added.id), false);
+    h.drawFrame();
+    assert.equal(h.document.activeElement, h.view.cards.get(added.id).expression);
+    card.pending = true; h.controller.render(); h.controller.render();
+    assert.equal(writes, 1);
+    assert.match(label, /working/);
+    h.controller.destroy();
+    assert.equal(h.frames.size, 0);
+});
+
+test("closing summary cancels drawing and focus without restoring obsolete presentation", async () => {
+    const h = fixture({}, new Map(), {}, undefined, true);
+    await h.open(); h.controller.addStatistic("sum");
+    h.controller.close(); h.drawFrame();
+    assert.equal(h.view.cards.size, 0);
+    assert.equal(h.frames.size, 0);
+    await h.open(); h.drawFrame();
+    assert.equal(h.view.cards.size, 2);
+    assert.notEqual(h.document.activeElement, h.view.cards.get(2).expression);
+    h.controller.destroy();
+});
+
+test("summary history ignores diagnostics but updates displayed progress and action ownership", async () => {
+    const h = fixture({}, new Map(), {}, undefined, true);
+    await h.open();
+    const card = h.controller.state.statistics[0];
+    h.controller.request(card.id, "manual"); await flush(); h.drawFrame();
+    const before = h.view.elements.history.children;
+    const job = h.server.values().next().value;
+    h.server.set(job.jobId, { ...job, diagnostics: { changed: true } });
+    await h.jobs.refresh(); h.drawFrame();
+    assert.equal(h.view.elements.history.children, before);
+    h.server.set(job.jobId, { ...job, progress: { ...job.progress, completedBlocks: 2 } });
+    await h.jobs.refresh(); h.drawFrame();
+    assert.notEqual(h.view.elements.history.children, before);
+    assert.match(visibleText(h.view.elements.history), /2 of 4/);
+    h.view.elements.history.children[1].children.at(-1).dispatchEvent(new Event("click"));
+    await flush(); h.drawFrame();
+    assert.deepEqual(h.requests.find(([action]) => action === "cancel"), ["cancel", job.jobId]);
+    assert.equal(h.view.elements.history.children[1].children.at(-1).disabled, true);
+    h.controller.destroy();
+});
+
 test("changing the map source name preserves calculated values and pending request identity", async () => {
     const context = { sources: [{ ...source }], area: box(77) };
     const h = fixture({}, new Map(), {}, context); await h.open();
@@ -81,9 +162,11 @@ test("clearing raster coverage cancels automatic work without relabeling the pre
 /** Build the real summary/controller/job boundary against current HTML identities.
  * @param {Object} [overrides={}] API fault overrides. @param {Map} [data=new Map()] Session storage.
  * @param {Object} [browserContext={}] Clipboard capability.
- * @param {Object} [context] Current catalog sources and sampling area. @return {Object} Observable workflow harness.
+ * @param {Object} [context] Current catalog sources and sampling area.
+ * @param {boolean} [manualFrames=false] Leave drawing queued for scheduling tests.
+ * @return {Object} Observable workflow harness.
  */
-function fixture(overrides = {}, data = new Map(), browserContext = {}, context = {sources:[source,resistance],area:box(77)}) {
+function fixture(overrides = {}, data = new Map(), browserContext = {}, context = {sources:[source,resistance],area:box(77)}, manualFrames = false) {
     let serial = 0, jobSerial = 0, elapsed = 0;
     const timers = new Map(), requests = [], server = new Map();
     const clock = { setTimeout(fn, delay) { timers.set(++serial, { fn, delay }); return serial; }, clearTimeout(id) { timers.delete(id); } };
@@ -110,7 +193,17 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}, context 
     const jobs = new ProcessingJobs(api,clock);
     const storage = new CalculationSessionStorage({getItem:key=>data.get(key),setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)});
     const document = new SummaryControlDocument();
+    const frames = new Map(); let frameSerial = 0;
+    document.defaultView.requestAnimationFrame = callback => { frames.set(++frameSerial, callback); return frameSerial; };
+    document.defaultView.cancelAnimationFrame = id => frames.delete(id);
+    const drawFrame = () => { const due = [...frames.values()]; frames.clear(); for (const callback of due) callback(); };
     const view = new SummaryStatisticsView(document, browserContext);
+    // Existing workflow tests observe the DOM after a frame. Scheduling tests
+    // keep the real boundary pending and advance it explicitly.
+    if (!manualFrames) {
+        const schedule = view.render.bind(view);
+        view.render = state => { schedule(state); drawFrame(); };
+    }
     let controller;
     const calculationRequests = new CalculationRequests({ api, jobs, storage, now:()=>elapsed, requestId:()=>`request-${String(jobSerial).padStart(16,"0")}` });
     controller = new SummaryStatisticsController({api,jobs,calculationRequests,view,clock,now:()=>elapsed,getContext:()=>context,
@@ -124,7 +217,7 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}, context 
     };
     const open = async()=>{controller.open();await tick();};
     const submits=()=>requests.filter(r=>r[0]==="submit").length;
-    return {controller,api,jobs,storage,view,document,requests,server,tick,finish,open,submits,data,elapse:ms=>{elapsed+=ms;}};
+    return {controller,api,jobs,storage,view,document,requests,server,tick,finish,open,submits,data,frames,drawFrame,elapse:ms=>{elapsed+=ms;}};
 }
 
 /** Read text throughout a fake DOM tree. @param {Object} node Test node. @return {string} Descendant text. */
@@ -505,18 +598,19 @@ test("the summary Area selector offers inline vector controls and never calculat
     assert.equal(h.submits(),1);
 });
 
-test("total wait includes debounce, planning, polling and the first result DOM update, then freezes", async()=>{
+test("total wait ends at result receipt, excludes drawing, then freezes", async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];
     h.controller.calculateSelection();h.elapse(700);await h.tick();
     h.elapse(3300);
     const render=h.view.render.bind(h.view);let displayed=false;
     h.view.render=state=>{render(state);if(card.result&&!displayed){displayed=true;h.elapse(25);}};
     await h.finish();
-    assert.equal(card.result.totalWaitSeconds,4.025);
+    assert.equal(card.result.totalWaitSeconds,4);
     const text=node=>[node.textContent,...node.children.map(text)].join(" ");
-    assert.match(text(h.view.cards.get(card.id).detailsBody),/Total measured wait: 4.025 s/);
+    assert.match(text(h.view.cards.get(card.id).detailsBody),/Total measured wait: 4.000 s/);
+    assert.match(text(h.view.cards.get(card.id).detailsBody),/excludes earlier confirmation time and subsequent panel drawing/);
     h.elapse(10000);h.controller.render();await h.jobs.refresh();
-    assert.equal(card.result.totalWaitSeconds,4.025);
+    assert.equal(card.result.totalWaitSeconds,4);
     h.controller.request(card.id,"manual");await flush();h.elapse(1500);await h.finish();
     assert.equal(card.result.totalWaitSeconds,1.5);
 });
@@ -896,6 +990,7 @@ test("recovery preserves accepted batch settings without another submission",asy
     await restored.controller.start();
     assert.equal(restored.submits(),0);assert.equal(restored.controller.executor.snapshot.currentJob.jobId,id);
     assert.equal(restored.controller.state.targetChunkPixels,262144);
+    await restored.open();
     assert.equal(restored.view.extra["chunk-pixels"].value,"262144");
     assert.equal(restored.controller.executor.snapshot.unfinishedCalculation.calculation.targetChunkPixels,262144);
 });

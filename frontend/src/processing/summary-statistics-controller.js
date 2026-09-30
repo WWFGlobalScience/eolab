@@ -531,7 +531,8 @@ export class SummaryStatisticsController {
         this.onOpen(); this.render();
         this.view.focusSaved?.();
     }
-    /** Present matching results and explicit selection/calculation lifecycle feedback.
+    /** Record received results and schedule presentation of current calculation feedback.
+     * Browser wait measurements end at receipt, independently of panel visibility or drawing.
      * @return {void}
      */
     render() {
@@ -554,10 +555,8 @@ export class SummaryStatisticsController {
             if (this.state.vectorSelecting) card.message = "Calculating · selecting filtered features…";
             else if (!this.state.area && this.state.selectionMessage) card.message = this.state.selectionMessage;
         }
-        this.view.render(this.state);
-        // Stop after the result DOM has been updated, including the view's work.
+        // Stop at result receipt; the view draws separately in an animation frame.
         // Keep this browser-local: recovered jobs have no monotonic start time.
-        let measured = false;
         for (const card of this.state.statistics) {
             const result = card.result;
             if (result && Number.isFinite(result.requestStarted) && result.totalWaitSeconds === undefined) {
@@ -574,10 +573,9 @@ export class SummaryStatisticsController {
                         vectorSelectionSeconds: result.vectorSelectionSeconds,
                     };
                 }
-                measured = true;
             }
         }
-        if (measured) this.view.render(this.state);
+        this.view.render(this.state);
     }
     destroy() {
         this.destroyed = true;

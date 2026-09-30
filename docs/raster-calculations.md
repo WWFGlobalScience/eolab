@@ -49,6 +49,11 @@ If submission is uncertain, use **Recover / retry** instead of creating a second
 request. Exported names and formulas describe the submitted calculation even if
 you later edit its card.
 
+Summarize retains progress and results while closed and draws the latest state
+when reopened. While open, presentation updates are combined into one draw per
+animation frame. Its browser timing ends when the result reaches the controller;
+it excludes later panel drawing and paint.
+
 ## Plotting statistics across rasters
 
 Open **Raster series** from **More** or a raster histogram, then choose

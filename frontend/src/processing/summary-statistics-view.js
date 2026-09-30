@@ -27,6 +27,9 @@ export class SummaryStatisticsView {
         this.signatures = {};
         this.clipboard = clipboard;
         this.cards = new Map();
+        this.scheduledRenderFrame = null;
+        this.latestState = null;
+        this.focusAfterRender = null;
         this.vectorAreaControls = documentContext.querySelector("#calculations-vector-area");
         this.extra = Object.fromEntries(["auto", "undo", "undo-button", "saved-result", "close-saved", "recovery-status", "chunk-pixels", "performance-plans"]
             .map(name => [name, documentContext.querySelector(`#summary-${name}`)]));
@@ -116,11 +119,35 @@ export class SummaryStatisticsView {
         root.append(heading, equation, binding, size, details, remove);
         return { root, label, source, expression, equation, value, valueActions, copy, copyStatus, copyRevision: 0, status, statusRow, run, stop, progress, details, detailsBody, size, remove };
     }
-    /** Present current cards and independently inspected saved jobs.
-     * @param {Object} state Summary controller snapshot. @return {void}
-     * @throws {TypeError} If a result contains an invalid owned download address.
+    /** Retain current state and schedule one draw while the panel is open.
+     * Closed panels update only their visible opener, when its text changes.
+     * Result callbacks never wait for drawing; newer state replaces a pending draw.
+     * @param {Object} state Latest summary controller state.
+     * @param {boolean} state.active Whether composition has opened Summarize.
+     * @return {void}
      */
     render(state) {
+        this.latestState = state;
+        const label = state.statistics.some(card => card.pending) ? "Summarize · working" : "Summarize";
+        for (const opener of this.openers) if (opener.textContent !== label) opener.textContent = label;
+        if (!state.active) {
+            this.cancelScheduledRender();
+            return;
+        }
+        if (this.scheduledRenderFrame !== null) return;
+        this.scheduledRenderFrame = this.document.defaultView.requestAnimationFrame(() => {
+            this.scheduledRenderFrame = null;
+            this.draw(this.latestState);
+            const focus = this.focusAfterRender;
+            this.focusAfterRender = null;
+            focus?.();
+        });
+    }
+    /** Update visible cards and history from the latest retained state.
+     * @param {Object} state Summary controller state. @return {void}
+     * @throws {TypeError} If a result contains an invalid owned download address.
+     */
+    draw(state) {
         this.sources = state.sources;
         const sourceSignature = JSON.stringify(state.sources);
         const ids = state.statistics.map(card => card.id).join(",");
@@ -232,7 +259,6 @@ export class SummaryStatisticsView {
             x["saved-result"].open = true; this.signatures.saved = JSON.stringify(state.saved);
         }
         this.renderHistory(state);
-        for (const opener of this.openers) opener.textContent = state.statistics.some(card => card.pending) ? "Summarize · working" : "Summarize";
     }
     /**
      * Copy the exact scalar from the current result, without display rounding or units.
@@ -259,8 +285,16 @@ export class SummaryStatisticsView {
             if (stillCurrent()) { row.copying = false; row.copy.disabled = false; row.copyStatus.hidden = false; }
         }
     }
-    /** Release listeners and invalidate pending clipboard feedback. @return {void} */
+    /** Cancel queued drawing and focus when closing or destroying the panel. @return {void} */
+    cancelScheduledRender() {
+        if (this.scheduledRenderFrame !== null) this.document.defaultView.cancelAnimationFrame(this.scheduledRenderFrame);
+        this.scheduledRenderFrame = null;
+        this.focusAfterRender = null;
+    }
+    /** Release listeners, cancel drawing and invalidate pending clipboard feedback. @return {void} */
     unbind() {
+        this.cancelScheduledRender();
+        this.latestState = null;
         for (const [node, event, callback] of this.listeners) node.removeEventListener(event, callback);
         this.listeners = [];
         this.cards.clear();
@@ -277,7 +311,8 @@ export class SummaryStatisticsView {
             root.append(this.element("p", `Ground area: ${method.ellipsoid} ellipsoid, hectares, including partial pixels. ${method.edgeToleranceMetres} m chord-deviation target; at most ${method.maximumSegmentMetres.toLocaleString()} m per segment. Numeric functions select cell centers.`));
         }
         const performance = this.element("details");
-        performance.append(this.element("summary", "Performance"), ...performanceDescription(job, result.totalWaitSeconds, result.stages).map(text => this.element("p", text)));
+        performance.append(this.element("summary", "Performance"), ...performanceDescription(job, result.totalWaitSeconds, result.stages,
+            "Measured in this tab from the calculation request until its result reaches the Summarize controller, including vector selection when requested here, debounce, queueing and result delivery; excludes earlier confirmation time and subsequent panel drawing and paint.").map(text => this.element("p", text)));
         root.append(performance);
         const links = this.element("div"); links.className = "downloads-actions";
         for (const [kind, label, url] of [["result", "Download CSV", job.result.url], ["provenance", "Download provenance", job.result.provenanceUrl]]) {
@@ -286,31 +321,48 @@ export class SummaryStatisticsView {
         }
         root.append(this.element("small", "Downloads preserve the formulas and names at the time of calculation."), links);
     }
-    /** Render owned history actions when job snapshots change. @param {Object} state Summary snapshot containing jobs and historyError. @return {void} */
+    /** Rebuild history only when its displayed text, order or actions change.
+     * Diagnostic and other undisplayed job fields do not invalidate these rows.
+     * @param {Object} state Summary state containing jobs and historyError. @return {void}
+     */
     renderHistory(state) {
-        const signature = JSON.stringify([state.jobs, state.historyError]);
+        const rows = state.jobs.filter(job => job.status !== "deleted").map(job => ({
+            id: job.jobId,
+            label: `${job.calculations?.map(row => row.label).join(", ") ?? "Summary statistics"} · ${describeJobProgress(job)}`,
+            description: `${new Date(job.createdAt).toLocaleString()} · ${describeClipArea(job.area)}`,
+            active: ACTIVE_JOB_STATES.has(job.status),
+            disabled: job.status === "cancelling",
+        }));
+        const signature = JSON.stringify([rows, state.historyError]);
         if (signature === this.signatures.history) return;
-        const children = state.jobs.filter(job => job.status !== "deleted").map(job => {
+        const children = rows.map(row => {
             const root = this.element("div"); root.className = "calculation-history-row";
-            const inspect = this.element("button", `${job.calculations?.map(row => row.label).join(", ") ?? "Summary statistics"} · ${describeJobProgress(job)}`);
+            const inspect = this.element("button", row.label);
             inspect.type = "button"; inspect.className = "secondary-button";
-            inspect.addEventListener("click", () => this.handlers.onInspect(job.jobId));
-            const active = ACTIVE_JOB_STATES.has(job.status);
-            const action = this.element("button", active ? "Cancel" : "Delete"); action.type = "button"; action.className = "secondary-button";
-            action.disabled = job.status === "cancelling";
-            action.addEventListener("click", () => active ? this.handlers.onCancel(job.jobId) : this.handlers.onDelete(job.jobId));
-            root.append(inspect, this.element("small", `${new Date(job.createdAt).toLocaleString()} · ${describeClipArea(job.area)}`), action);
+            inspect.addEventListener("click", () => this.handlers.onInspect(row.id));
+            const action = this.element("button", row.active ? "Cancel" : "Delete"); action.type = "button"; action.className = "secondary-button";
+            action.disabled = row.disabled;
+            action.addEventListener("click", () => row.active ? this.handlers.onCancel(row.id) : this.handlers.onDelete(row.id));
+            root.append(inspect, this.element("small", row.description), action);
             return root;
         });
         this.elements.history.replaceChildren(this.element("p", state.historyError || "Results remain available for 24 hours in this browser session."), ...children);
         this.signatures.history = signature;
     }
-    /** Focus a surviving formula after add/undo. @param {number} id Stable card identity. @return {void} */
-    focusStatistic(id) { this.cards.get(id)?.expression.focus(); }
+    /** Apply a user-requested focus action after pending drawing creates its controls.
+     * @param {()=>void} focus Focus or reveal an existing control. @return {void}
+     */
+    focusWhenRendered(focus) {
+        if (!this.latestState?.active) return;
+        if (this.scheduledRenderFrame !== null) this.focusAfterRender = focus;
+        else focus();
+    }
+    /** Focus a surviving formula after add/undo and drawing. @param {number} id Stable card identity. @return {void} */
+    focusStatistic(id) { this.focusWhenRendered(() => this.cards.get(id)?.expression.focus()); }
     /** Focus the editor entry point without inventing a statistic. @return {void} */
-    focusAddStatistic() { this.elements.template.focus(); }
+    focusAddStatistic() { this.focusWhenRendered(() => this.elements.template.focus()); }
     /** Focus removal recovery. @return {void} */
-    focusUndo() { this.extra["undo-button"].focus(); }
+    focusUndo() { this.focusWhenRendered(() => this.extra["undo-button"].focus()); }
     /** Reveal the immutable saved-job presentation. @return {void} */
-    focusSaved() { this.extra["saved-result"].open = true; this.extra["saved-result"].scrollIntoView({ block: "nearest" }); }
+    focusSaved() { this.focusWhenRendered(() => { this.extra["saved-result"].open = true; this.extra["saved-result"].scrollIntoView({ block: "nearest" }); }); }
 }
