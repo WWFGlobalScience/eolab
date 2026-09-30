@@ -203,8 +203,8 @@ and timings. These are wall times, including waiting within each operation:
 
 - **Total wait → result displayed** includes vector selection when initiated for the calculation in this tab,
   debounce, planning, queueing and
-  result delivery through the UI update. It excludes earlier confirmation time
-  and the browser's subsequent paint.
+  result delivery to the browser. It excludes earlier confirmation time
+  and the time needed to draw the result on screen.
 - Browser stages divide that total. Server stages overlap them; do not add the
   browser and server groups together.
 - **Kernel elapsed** covers source opening and calculation through the CSV

@@ -46,8 +46,58 @@ export class FakeRasterControlElement extends EventTarget {
      * @return {void}
      */
     append(...children) {
-        this.children.push(...children);
+        for (const child of children) this.appendChild(child);
     }
+
+    /** Insert an SVG child for D3's DOM data join.
+     * @param {FakeRasterControlElement} child Child to attach.
+     * @param {FakeRasterControlElement|null} before Following sibling.
+     * @return {FakeRasterControlElement} Attached child.
+     */
+    insertBefore(child, before) {
+        child.remove();
+        child.parentNode = this;
+        const index = before == null ? this.children.length : this.children.indexOf(before);
+        this.children.splice(index, 0, child);
+        return child;
+    }
+
+    /** Append a child using the DOM method used by chart libraries.
+     * @param {FakeRasterControlElement} child Child to attach.
+     * @return {FakeRasterControlElement} Attached child.
+     */
+    appendChild(child) { return this.insertBefore(child, null); }
+
+    /** Insert children ahead of the existing contents.
+     * @param {...FakeRasterControlElement} children Children to attach.
+     * @return {void}
+     */
+    prepend(...children) {
+        for (const child of children.reverse()) this.insertBefore(child, this.children[0] ?? null);
+    }
+
+    /** Detach this element from its parent. @return {void} */
+    remove() {
+        if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+        this.parentNode = null;
+    }
+
+    /** Resolve tag and class selectors used by D3's axes.
+     * @param {string} selector Tag name or single class selector.
+     * @return {FakeRasterControlElement[]} Matching descendants.
+     */
+    querySelectorAll(selector) {
+        return this.children.flatMap(child => [
+            ...((selector.startsWith(".") ? (child.getAttribute("class") ?? "").split(" ").includes(selector.slice(1)) : child.tagName === selector) ? [child] : []),
+            ...child.querySelectorAll(selector),
+        ]);
+    }
+
+    /** Return the first matching chart descendant.
+     * @param {string} selector Tag name or single class selector.
+     * @return {FakeRasterControlElement|null} Matching element.
+     */
+    querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
 
     /**
      * Check ownership for focus-scoped keyboard interactions.
@@ -179,9 +229,14 @@ export class FakeRasterControlDocument extends EventTarget {
     /**
      * Create one fake SVG element.
      *
+     * @param {string} namespaceURI SVG namespace.
+     * @param {string} tagName SVG tag name.
      * @return {FakeRasterControlElement} New fake SVG element.
      */
-    createElementNS() {
-        return new FakeRasterControlElement("", this);
+    createElementNS(namespaceURI, tagName) {
+        const element = new FakeRasterControlElement("", this);
+        element.namespaceURI = namespaceURI;
+        element.tagName = tagName;
+        return element;
     }
 }

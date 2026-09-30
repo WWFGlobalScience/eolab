@@ -202,7 +202,7 @@ export class RasterSeriesController {
         const previousByKey = new Map(previous?.samples.map(sample => [sample.key, sample]) ?? []);
         this.view.render({
             sources: this.sources.map(source => ({ ...source, selected: this.selectedKeys.has(source.key) })),
-            mode: this.mode, rows, position: this.position, message, busy, chartType: this.chartType,
+            active: this.active, mode: this.mode, rows, position: this.position, message, busy, chartType: this.chartType,
             previousRows: previous ? sources.map(source => ({ ...source, ...previousByKey.get(source.key), label: source.label })) : null,
             canDownload: !!this.snapshot && !busy && rows.length > 0,
             canRetry: !!this.position && sources.length > 0 && sources.length <= MAXIMUM_POINT_SAMPLE_PARTICIPANTS && !busy,
@@ -350,7 +350,7 @@ export class RasterSeriesController {
             const result = results.get(source.key);
             const row = result?.job?.result?.rows.find(row => row.label === "stat-" + formula.id);
             const sameFormula = result?.calculationInputs.calculations.some(item => item.label === "stat-" + formula.id && item.expression === formula.expression.trim());
-            return { ...source, statisticId: formula.id, statisticLabel: formula.label || formula.expression || "Custom statistic",
+            return { key: source.key, label: source.label, statisticId: formula.id, statisticLabel: formula.label || formula.expression || "Custom statistic",
                 state: row?.state === "ok" && sameFormula ? "value" : result?.error ? "error" : sameFormula ? row?.state ?? "waiting" : "waiting",
                 value: !sameFormula || row?.value == null ? null : Number(row.value), rawValue: sameFormula ? row?.value : null, unit: row?.unit ?? "",
                 errorMessage: result?.error ?? area.progress.get(source.key)?.message ?? (!result ? "Waiting" : ""), cached: !!result?.job?.result?.cacheHit };
@@ -360,7 +360,7 @@ export class RasterSeriesController {
         const showingPrevious = !!(area.busy && !rows.some(row => row.state === "value") && area.previousResults);
         for (const statistic of statistics) statistic.previousRows = showingPrevious ? rowsFor(area.previousResults, statistic) : null;
         this.view.render({
-            mode: "area", area: { formulas: this.formulas, sources: area.sources, areaChoice: this.areaChoice,
+            active: this.active, mode: "area", area: { formulas: this.formulas, sources: area.sources, areaChoice: this.areaChoice,
                 area: area.area, areaLabel: area.areaLabel, results: area.results, complete: area.complete,
                 recoverable: area.needsRecovery, hasErrors: area.hasErrors,
                 elapsedSeconds: area.elapsedSeconds }, statistics, plots: this.plots,

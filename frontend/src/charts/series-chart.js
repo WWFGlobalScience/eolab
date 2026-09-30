@@ -1,9 +1,11 @@
-/** Draw ordered numeric observations for vector and raster series. */
+/** Draw ordered numeric observations for vector and raster series with D3. */
+import { axisBottom, axisLeft, extent, line as seriesLine, scaleLinear, scaleLog, select } from "d3";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 360;
 const CHART_MARGIN = Object.freeze({ top: 20, right: 24, bottom: 92, left: 72 });
+const NUMBER_FORMAT = new Intl.NumberFormat("en", { maximumSignificantDigits: 6 });
 
 /**
  * @typedef {Object} ChartSeries
@@ -22,9 +24,7 @@ const CHART_MARGIN = Object.freeze({ top: 20, right: 24, bottom: 92, left: 72 })
  * @return {string} Compact localized value.
  */
 export function formatSeriesNumber(value) {
-    return new Intl.NumberFormat("en", {
-        maximumSignificantDigits: 6,
-    }).format(value);
+    return NUMBER_FORMAT.format(value);
 }
 
 /**
@@ -166,82 +166,37 @@ export function renderOrdinalSeriesChart({
     ) {
         throw new TypeError("Numeric series chart X values must be finite.");
     }
-    const minimumX = numericX.length > 0 ? Math.min(...numericX) : null;
-    const maximumX = numericX.length > 0 ? Math.max(...numericX) : null;
-    const x = (index) => {
-        if (
-            points.length === 1 ||
-            (xScale === "numeric" && minimumX === maximumX)
-        ) {
-            return CHART_MARGIN.left + plotWidth / 2;
-        }
-        if (xScale === "numeric") {
-            return CHART_MARGIN.left +
-                (points[index].xValue - minimumX) * plotWidth /
-                (maximumX - minimumX);
-        }
-        return CHART_MARGIN.left + index * plotWidth / (points.length - 1);
-    };
-    const y = (value) => CHART_MARGIN.top +
-        (maximum - (yScale === "log" ? Math.log10(value) : value)) * plotHeight / (maximum - minimum);
+    const horizontal = scaleLinear()
+        .domain(xScale === "numeric" ? extent(numericX) : [0, points.length - 1])
+        .range([CHART_MARGIN.left, CHART_MARGIN.left + plotWidth]);
+    const x = index => horizontal(xScale === "numeric" ? numericX[index] : index);
+    const y = (yScale === "log" ? scaleLog() : scaleLinear())
+        .domain(yScale === "log"
+            ? [Math.max(Number.MIN_VALUE, 10 ** minimum), Math.min(Number.MAX_VALUE, 10 ** maximum)]
+            : [minimum, maximum])
+        .range([CHART_MARGIN.top + plotHeight, CHART_MARGIN.top]);
     const xAxisY = CHART_MARGIN.top + plotHeight;
     chart.setAttribute("viewBox", `0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`);
     chart.setAttribute("aria-label", ariaLabel);
-    chart.append(
-        svgElement(documentContext, "line", {
-            class: "series-chart-axis",
-            x1: CHART_MARGIN.left,
-            y1: xAxisY,
-            x2: CHART_MARGIN.left + plotWidth,
-            y2: xAxisY,
-        }),
-        svgElement(documentContext, "line", {
-            class: "series-chart-axis",
-            x1: CHART_MARGIN.left,
-            y1: CHART_MARGIN.top,
-            x2: CHART_MARGIN.left,
-            y2: xAxisY,
-        })
-    );
-    for (let index = 0; index < 5; index += 1) {
-        const scaledValue = minimum + (maximum - minimum) * index / 4;
-        const value = yScale === "log" ? Math.min(Number.MAX_VALUE, Math.max(Number.MIN_VALUE, 10 ** scaledValue)) : scaledValue;
-        const tickY = y(value);
-        chart.append(
-            svgElement(documentContext, "line", {
-                class: "series-chart-grid",
-                x1: CHART_MARGIN.left,
-                y1: tickY,
-                x2: CHART_MARGIN.left + plotWidth,
-                y2: tickY,
-            }),
-            svgElement(documentContext, "text", {
-                class: "series-chart-tick",
-                x: CHART_MARGIN.left - 10,
-                y: tickY + 4,
-                "text-anchor": "end",
-            }, formatSeriesNumber(value))
-        );
-    }
-    for (const index of ordinalTickIndexes(points.length)) {
-        const tickX = x(index);
-        chart.append(
-            svgElement(documentContext, "line", {
-                class: "series-chart-axis",
-                x1: tickX,
-                y1: xAxisY,
-                x2: tickX,
-                y2: xAxisY + 5,
-            }),
-            svgElement(documentContext, "text", {
-                class: "series-chart-x-tick",
-                x: tickX,
-                y: xAxisY + 16,
-                transform: `rotate(-35 ${tickX} ${xAxisY + 16})`,
-                "text-anchor": "end",
-            }, formatTickLabel(points[index].xLabel))
-        );
-    }
+    const xAxis = svgElement(documentContext, "g", {
+        class: "series-chart-x-axis", transform: `translate(0 ${xAxisY})`,
+    });
+    const indexes = ordinalTickIndexes(points.length);
+    const ticks = xScale === "numeric" ? indexes.map(index => numericX[index]) : indexes;
+    select(xAxis).call(axisBottom(horizontal).tickValues([...new Set(ticks)])
+        .tickFormat(value => formatTickLabel(points[xScale === "numeric" ? numericX.indexOf(value) : value].xLabel))
+        .tickSizeOuter(0));
+    select(xAxis).selectAll("text").attr("transform", "rotate(-35)").attr("text-anchor", "end");
+    const yAxis = svgElement(documentContext, "g", {
+        class: "series-chart-y-axis", transform: `translate(${CHART_MARGIN.left} 0)`,
+    });
+    // Generate log ticks in exponent space so subnormal or maximum finite
+    // values never overflow the library's decimal tick-step calculation.
+    const yTicks = yScale === "log" ? scaleLinear([minimum, maximum]).ticks(5)
+        .map(value => Math.min(Number.MAX_VALUE, Math.max(Number.MIN_VALUE, 10 ** value))) : y.ticks(5);
+    select(yAxis).call(axisLeft(y).tickValues(yTicks).tickSize(-plotWidth).tickSizeOuter(0)
+        .tickFormat(formatSeriesNumber));
+    chart.append(xAxis, yAxis);
     const pointElements = [];
     const pointGroups = [];
     const inspectionState = { focused: null, hovered: null };
@@ -253,16 +208,8 @@ export function renderOrdinalSeriesChart({
         if (item.color) pointGroup.setAttribute("style", `--series-color: ${item.color}`);
         if (series) pointGroups.push(pointGroup);
         if (chartType === "line") {
-            let segmentOpen = false;
-            const path = item.points.map((point, index) => {
-                if (!canPlot(point)) {
-                    segmentOpen = false;
-                    return "";
-                }
-                const command = segmentOpen ? "L" : "M";
-                segmentOpen = true;
-                return `${command}${x(index)},${y(point.yValue)}`;
-            }).filter(Boolean).join(" ");
+            const path = seriesLine().defined(canPlot)
+                .x((point, index) => x(index)).y(point => y(point.yValue))(item.points);
             const line = svgElement(documentContext, "path", {
                 class: "series-chart-line",
                 d: path,
