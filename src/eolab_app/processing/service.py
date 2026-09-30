@@ -402,6 +402,30 @@ class ProcessingService:
             rows = await asyncio.to_thread(self.jobs.list_owned, owner)
         return [public_job(row) for row in rows]
 
+    async def read_job_statuses(
+        self, owner: str, identifiers: list[str]
+    ) -> dict[str, Any]:
+        """Return requested job statuses without reading unrelated job history.
+
+        Args:
+            owner: Current session hash.
+            identifiers: Validated public job IDs, at most 100.
+
+        Returns:
+            Public jobs and unavailable IDs, each in request order with duplicates
+            removed. Foreign and nonexistent IDs are indistinguishable.
+        """
+        with measure_request_stage("jobRead"):
+            rows = await asyncio.to_thread(
+                self.jobs.read_owned_jobs, owner, identifiers
+            )
+        by_id = {row["id"]: row for row in rows}
+        requested = list(dict.fromkeys(identifiers))
+        return {
+            "jobs": [public_job(by_id[value]) for value in requested if value in by_id],
+            "unavailableJobIds": [value for value in requested if value not in by_id],
+        }
+
     async def cancel(
         self, owner: str, identifier: str, delete: bool = False
     ) -> dict[str, Any]:

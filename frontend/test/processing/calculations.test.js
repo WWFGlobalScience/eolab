@@ -97,6 +97,12 @@ function fixture(overrides = {}, data = new Map()) {
         },
         cancelJob: async id => { requests.push(["cancel",id]); const job = {...server.get(id),status:"cancelling"}; server.set(id,job); return job; },
         deleteJob: async id => { const job={...server.get(id),status:"deleted",result:null};server.set(id,job);return job; },
+        /** @param {string[]} ids Requested IDs. @return {Promise<Object>} Owned statuses. */
+        async readJobStatuses(ids) {
+            const records = await this.listJobs();
+            return {jobs: records.filter(job => ids.includes(job.jobId)),
+                unavailableJobIds: ids.filter(id => !records.some(job => job.jobId === id))};
+        },
         ...overrides,
     };
     const jobs = new ProcessingJobs(api,clock);
@@ -191,7 +197,7 @@ test("an unavailable saved job waits for explicit recovery rather than refreshin
     h.jobs.jobs = [];
     h.server.clear();
     let reads = 0;
-    h.api.getJob = async () => { reads++; throw Error("Job unavailable"); };
+    h.api.readJobStatuses = async () => { reads++; throw Error("Job unavailable"); };
     const recovered = new CalculationExecutor(h.options);
     await recovered.start();
     await flush();

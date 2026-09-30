@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import logging
+import re
+import time
 
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
@@ -11,6 +14,8 @@ from eolab_app.processing.job_events import PostgresJobEvents
 from eolab_app.processing.request_timings import measure_request_stage, request_timings
 from eolab_app.routes.processing import BoundedProcessingRoute
 from eolab_app.routes.processing_events import JobEventResponse
+from eolab_app.routes.processing_timings import ProcessingHttpTimings
+from starlette.types import Message, Receive, Scope, Send
 
 
 def test_route_reports_server_time_without_changing_body() -> None:
@@ -73,6 +78,136 @@ def test_concurrent_measurements_remain_request_local() -> None:
         assert request_timings.get() is None
 
     asyncio.run(scenario())
+
+
+def test_application_boundary_headers_and_final_send_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Slow pre-route work and transport handoff are distinct from the route timer.
+
+    Args:
+        caplog: Capture correlation and final send measurements without credentials.
+    """
+    app = FastAPI()
+    router = APIRouter(prefix="/api/processing", route_class=BoundedProcessingRoute)
+    transport_delays: list[float] = []
+
+    @router.get("/jobs")
+    async def jobs() -> dict[str, list]:
+        """Return an empty job snapshot after briefly blocking the event loop.
+
+        Returns:
+            Unchanged public job-list body.
+        """
+        time.sleep(0.08)
+        return {"jobs": []}
+
+    app.include_router(router)
+
+    async def delayed_app(scope: Scope, receive: Receive, send: Send) -> None:
+        """Introduce pre-route delay at the real middleware boundary.
+
+        Args:
+            scope: Test request scope.
+            receive: Original request receiver.
+            send: Measured response sender.
+        """
+        await asyncio.sleep(0.01)
+        await app(scope, receive, send)
+
+    async def scenario() -> list[Message]:
+        """Exercise ASGI delivery with a slow transport.
+
+        Returns:
+            Original response messages with optional timing headers.
+        """
+        messages: list[Message] = []
+
+        async def receive() -> Message:
+            """Return the empty GET body.
+
+            Returns:
+                ASGI request message.
+            """
+            return {"type": "http.request", "body": b""}
+
+        async def send(message: Message) -> None:
+            """Delay each response handoff.
+
+            Args:
+                message: Outgoing response metadata or bytes.
+            """
+            send_started = time.perf_counter()
+            await asyncio.sleep(0.01)
+            messages.append(message)
+            transport_delays.append(time.perf_counter() - send_started)
+
+        await ProcessingHttpTimings(delayed_app)(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "method": "GET",
+                "path": "/api/processing/jobs",
+                "headers": [],
+                "query_string": b"",
+                "scheme": "https",
+                "server": ("test", 443),
+            },
+            receive,
+            send,
+        )
+        return messages
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.processing_timing"):
+        messages = asyncio.run(scenario())
+    headers = messages[0]["headers"]
+    metrics = b", ".join(
+        value for key, value in headers if key == b"server-timing"
+    ).decode()
+    values = {
+        name: float(value) for name, value in re.findall(r"(\w+);dur=([\d.]+)", metrics)
+    }
+    trace = dict(headers)[b"x-eolab-request-id"].decode()
+    assert len(trace) == 32 and trace in metrics and trace in caplog.text
+    assert values["beforeRoute"] >= 5
+    assert values["eventLoopLag"] >= 20
+    assert values["appToHeaders"] >= values["processing"]
+    assert json.loads(messages[-1]["body"]) == {"jobs": []}
+    assert "complete=True" in caplog.text
+    reported_send = float(re.search(r"send_seconds=([\d.]+)", caplog.text)[1])
+    assert reported_send == pytest.approx(sum(transport_delays), abs=0.002)
+    assert len(transport_delays) == 2
+
+
+def test_application_timing_preserves_errors_and_skips_streams() -> None:
+    """Diagnostic middleware leaves validation, SSE, and non-Processing routes alone."""
+    app = FastAPI()
+    app.add_middleware(ProcessingHttpTimings)
+    router = APIRouter(prefix="/api/processing", route_class=BoundedProcessingRoute)
+
+    @router.get("/jobs")
+    async def jobs(count: int) -> dict[str, int]:
+        """Return a validated test count.
+
+        Args:
+            count: Required integer query field.
+
+        Returns:
+            Validated count.
+        """
+        return {"count": count}
+
+    app.include_router(router)
+    with TestClient(app) as client:
+        error = client.get("/api/processing/jobs")
+        assert error.status_code == 422 and "detail" in error.json()
+        assert "x-eolab-request-id" in error.headers
+        for path in (
+            "/healthz",
+            "/api/processing/events",
+            "/api/processing/jobs/id/result",
+        ):
+            assert "x-eolab-request-id" not in client.get(path).headers
 
 
 def test_sse_timing_is_coalesced_private_metadata_not_job_state(

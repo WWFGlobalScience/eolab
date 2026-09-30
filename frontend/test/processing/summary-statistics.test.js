@@ -99,6 +99,12 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}, context 
         },
         cancelJob: async id => { requests.push(["cancel",id]);const job={...server.get(id),status:"cancelling"};server.set(id,job);return job; },
         deleteJob: async id => { const job={...server.get(id),status:"deleted",result:null};server.set(id,job);return job; },
+        /** @param {string[]} ids Requested IDs. @return {Promise<Object>} Owned statuses. */
+        async readJobStatuses(ids) {
+            const records = await this.listJobs();
+            return {jobs: records.filter(job => ids.includes(job.jobId)),
+                unavailableJobIds: ids.filter(id => !records.some(job => job.jobId === id))};
+        },
         ...overrides,
     };
     const jobs = new ProcessingJobs(api,clock);

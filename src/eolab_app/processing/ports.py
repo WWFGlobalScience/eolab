@@ -201,6 +201,21 @@ class JobStore(Protocol):
         """
         ...
 
+    def read_owned_jobs(
+        self, owner: str, identifiers: list[str]
+    ) -> list[dict[str, Any]]:
+        """Read requested session-owned jobs regardless of recent-history limits.
+
+        Args:
+            owner: Current session hash.
+            identifiers: Validated public job IDs, at most 100.
+
+        Returns:
+            Matching owned records, including deleted jobs, in unspecified order.
+            Foreign and nonexistent IDs are omitted.
+        """
+        ...
+
     def cancel(
         self, identifier: str, owner: str, delete: bool = False
     ) -> dict[str, Any]:

@@ -21,6 +21,12 @@ function fixture(overrides = {}) {
     const storage = new PendingSubmissionStorage({ getItem: key => data.get(key), setItem: (key,value) => data.set(key,value), removeItem: key => data.delete(key) });
     const requests = [];
     const api = { listJobs: async () => [],
+        /** @param {string[]} ids Requested IDs. @return {Promise<Object>} Owned statuses. */
+        async readJobStatuses(ids) {
+            const records = await this.listJobs();
+            return {jobs: records.filter(value => ids.includes(value.jobId)),
+                unavailableJobIds: ids.filter(id => !records.some(value => value.jobId === id))};
+        },
         submitClip: async value => { requests.push(value); return structuredClone(job); },
         cancelJob: async value => requests.push(["cancel",value]), deleteJob: async value => requests.push(["delete",value]), ...overrides };
     let context = { sources: [structuredClone(source)], area: structuredClone(box) };

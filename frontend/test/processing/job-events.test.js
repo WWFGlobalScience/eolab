@@ -3,6 +3,22 @@ import assert from "node:assert/strict";
 import { ProcessingJobs } from "../../src/processing/jobs.js";
 import { ProcessingApiClient } from "../../src/processing/api.js";
 
+
+/** Adapt controlled list fixtures to the batch transport contract. */
+class TestJobs extends ProcessingJobs {
+    /** @param {Object} api Test transport. @param {Object} [timer] Test clock. */
+    constructor(api, timer) {
+        super({
+            /** @param {string[]} ids Requested IDs. @return {Promise<Object>} Owned statuses. */
+            async readJobStatuses(ids) {
+                const records = await api.listJobs();
+                return {jobs: records.filter(job => ids.includes(job.jobId)),
+                    unavailableJobIds: ids.filter(id => !records.some(job => job.jobId === id))};
+            }, ...api,
+        }, timer);
+    }
+}
+
 const tick = async () => { for (let i=0;i<8;i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r=>resolve=r); return {promise,resolve}; };
 function clock() { return {next:0,timers:new Map(),setTimeout(fn,ms) { const id=++this.next; this.timers.set(id,{fn,ms}); return id; },clearTimeout(id) {this.timers.delete(id);}}; }
@@ -10,7 +26,7 @@ function clock() { return {next:0,timers:new Map(),setTimeout(fn,ms) { const id=
 test("one shared event stream refreshes clips and calculations while keeping two-second fallback", async () => {
     const timer=clock(); let changed, opens=0, closes=0, reads=0;
     let state=[{jobId:"clip",status:"running"},{jobId:"calculation",status:"queued"}];
-    const jobs=new ProcessingJobs({listJobs:async()=>{reads++;return state;},watchJobs:callback=>{opens++;changed=callback;return ()=>closes++;}},timer);
+    const jobs=new TestJobs({listJobs:async()=>{reads++;return state;},watchJobs:callback=>{opens++;changed=callback;return ()=>closes++;}},timer);
     await jobs.refresh(); jobs.accept(state[1]);
     assert.equal(opens,1); assert.equal([...timer.timers.values()][0].ms,2000);
     state=state.map(job=>({...job,status:"ready"})); changed(); await tick();
@@ -22,7 +38,7 @@ test("one shared event stream refreshes clips and calculations while keeping two
 test("notification during an in-flight read forces one follow-up and cannot lose a ready result", async () => {
     const timer=clock(), pending=deferred(); let changed,reads=0;
     const queued={jobId:"a",status:"queued"},ready={...queued,status:"ready"};
-    const jobs=new ProcessingJobs({listJobs:()=>++reads===1?pending.promise:Promise.resolve([ready]),watchJobs:callback=>{changed=callback;return ()=>{};}},timer);
+    const jobs=new TestJobs({listJobs:()=>++reads===1?pending.promise:Promise.resolve([ready]),watchJobs:callback=>{changed=callback;return ()=>{};}},timer);
     jobs.accept(queued); const first=jobs.refresh();
     for(let i=0;i<100;i++) changed();
     assert.equal(reads,1);
@@ -33,7 +49,7 @@ test("notification during an in-flight read forces one follow-up and cannot lose
 
 test("missing events, unsupported SSE and recovery still poll at two seconds", async () => {
     const timer=clock(); let reads=0;
-    const jobs=new ProcessingJobs({listJobs:async()=>[{jobId:"a",status:++reads===1?"running":"ready"}]},timer);
+    const jobs=new TestJobs({listJobs:async()=>[{jobId:"a",status:++reads===1?"running":"ready"}]},timer);
     await jobs.refresh(); const fallback=[...timer.timers.values()][0];
     assert.equal(fallback.ms,2000); fallback.fn(); await tick();
     assert.equal(jobs.jobs[0].status,"ready"); jobs.destroy();
@@ -41,7 +57,7 @@ test("missing events, unsupported SSE and recovery still poll at two seconds", a
 
 test("a new submission preserves itself without delaying another job's ready result", async () => {
     const pending = deferred(), timer = clock();
-    const jobs = new ProcessingJobs({listJobs: () => pending.promise}, timer);
+    const jobs = new TestJobs({listJobs: () => pending.promise}, timer);
     jobs.accept({jobId: "old-history", status: "ready"});
     jobs.accept({jobId: "a", status: "running"});
     const refresh = jobs.refresh();
@@ -50,8 +66,9 @@ test("a new submission preserves itself without delaying another job's ready res
     const ready = {jobId: "a", status: "ready"};
     pending.resolve([ready]);
     await refresh;
-    assert.deepEqual(jobs.jobs, [submitted, ready]);
-    // History absent from the next authoritative response is still removed.
+    assert.deepEqual(jobs.jobs, [submitted, {jobId: "old-history", status: "ready"}, ready]);
+    // Batch reads retain unrelated history; an idle history refresh removes it.
+    await jobs.refresh();
     await jobs.refresh();
     assert.deepEqual(jobs.jobs, [ready]);
     jobs.destroy();
@@ -61,7 +78,7 @@ for (const action of ["cancel", "delete"]) {
     test(`${action} protects only the changed job from an older list response`, async () => {
         const pending = deferred(), timer = clock();
         const updated = {jobId: "a", status: action === "cancel" ? "cancelling" : "deleted"};
-        const jobs = new ProcessingJobs({listJobs: () => pending.promise,
+        const jobs = new TestJobs({listJobs: () => pending.promise,
             cancelJob: async () => updated, deleteJob: async () => updated}, timer);
         jobs.accept({jobId: "a", status: "running"});
         jobs.accept({jobId: "b", status: "running"});
@@ -76,10 +93,10 @@ for (const action of ["cancel", "delete"]) {
     });
 }
 
-test("local changes during a tracked-job lookup protect only that job", async () => {
+test("local changes during a batch lookup protect only that job", async () => {
     const pending = deferred(), timer = clock();
     const ready = {jobId: "a", status: "ready"};
-    const jobs = new ProcessingJobs({listJobs: async () => [ready], getJob: () => pending.promise}, timer);
+    const jobs = new TestJobs({listJobs: () => pending.promise}, timer);
     jobs.tracked.add("b");
     jobs.accept({jobId: "a", status: "running"});
     jobs.accept({jobId: "b", status: "running"});
@@ -87,7 +104,7 @@ test("local changes during a tracked-job lookup protect only that job", async ()
     await tick();
     const cancelled = {jobId: "b", status: "cancelled"};
     jobs.accept(cancelled);
-    pending.resolve({jobId: "b", status: "running"});
+    pending.resolve([ready, {jobId: "b", status: "running"}]);
     await refresh;
     assert.deepEqual(jobs.jobs, [cancelled, ready]);
     jobs.destroy();
@@ -95,7 +112,7 @@ test("local changes during a tracked-job lookup protect only that job", async ()
 
 test("destroy closes a live stream and drops a racing notification and read", async () => {
     const timer=clock(), pending=deferred(); let changed,closed=0;
-    const jobs=new ProcessingJobs({listJobs:()=>pending.promise,watchJobs:callback=>{changed=callback;return ()=>closed++;}},timer);
+    const jobs=new TestJobs({listJobs:()=>pending.promise,watchJobs:callback=>{changed=callback;return ()=>closed++;}},timer);
     jobs.accept({jobId:"a",status:"running"}); changed(); jobs.destroy(); changed();
     pending.resolve([]); await tick();
     assert.equal(closed,1); assert.equal(timer.timers.size,0); assert.equal(jobs.jobs.length,1);

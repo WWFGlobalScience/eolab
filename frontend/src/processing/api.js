@@ -2,7 +2,7 @@
 import { normalizeRasterSamplingArea } from "../selected-area.js";
 import { normalizeCalculationArea, validatePolygonAreaReference } from "./calculation-area.js";
 import { chunkPixels } from "./calculation-session.js";
-import { ProcessingDiagnostics } from "./diagnostics.js";
+import { ProcessingDiagnostics, captureRequestNetworkTiming } from "./diagnostics.js";
 
 /** Browser-safe HTTP failure; transport failures remain ordinary errors. */
 export class ProcessingRequestError extends Error {
@@ -248,6 +248,32 @@ export class ProcessingApiClient {
         return response.jobs.map(validateJob);
     }
 
+    /** Read every requested job without relying on the recent-history limit.
+     * Larger sets use batches of 100 IDs; no per-job HTTP lookups are needed.
+     * @param {string[]} jobIds Public job IDs belonging to this browser session.
+     * @return {Promise<{jobs:Object[], unavailableJobIds:string[]}>} Snapshots and unavailable IDs.
+     * @throws {Error} If an ID, request, or response is invalid or incomplete.
+     */
+    async readJobStatuses(jobIds) {
+        const requested = [...new Set(jobIds.map(opaqueId))];
+        const result = {jobs: [], unavailableJobIds: []};
+        await this.ensureSession();
+        for (let offset = 0; offset < requested.length; offset += 100) {
+            const batch = requested.slice(offset, offset + 100);
+            const response = await this.request("/jobs/status", "POST", {jobIds: batch});
+            if (!Array.isArray(response.jobs) || !Array.isArray(response.unavailableJobIds))
+                throw new Error("Invalid processing status response.");
+            const jobs = response.jobs.map(validateJob);
+            const unavailable = response.unavailableJobIds.map(opaqueId);
+            const returned = [...jobs.map(job => job.jobId), ...unavailable];
+            if (returned.length !== batch.length || new Set(returned).size !== batch.length ||
+                returned.some(id => !batch.includes(id))) throw new Error("Incomplete processing status response.");
+            result.jobs.push(...jobs);
+            result.unavailableJobIds.push(...unavailable);
+        }
+        return result;
+    }
+
     /** Submit complete clip inputs with a stable retry key.
      * @param {Object} submission Captured catalog source, explicit area and requestId.
      * @return {Promise<Object>} Owned queued job; the worker supplies its grid later.
@@ -347,8 +373,9 @@ export class ProcessingApiClient {
         const requestNumber = ++this.requestSequence;
         const identity = path.match(/^\/jobs\/([a-f0-9]{32})(?:\/|$)/);
         const fields = {requestNumber, method, path, jobId: identity?.[1],
-            shared: path === "/jobs", inFlight: ++this.requestsInFlight};
+            shared: path === "/jobs" || path === "/jobs/status", inFlight: ++this.requestsInFlight};
         const startedAtMs = this.diagnostics.record("http-start", fields);
+        const finishNetworkTiming = captureRequestNetworkTiming();
         let headersAtMs, response, serverTiming = {};
         try {
             response = await this.fetch.call(globalThis, `/api/processing${path}`, {
@@ -363,7 +390,7 @@ export class ProcessingApiClient {
             headersAtMs = this.diagnostics.now();
             // Only our fixed numeric Server-Timing metrics enter the report.
             for (const metric of (response.headers?.get("Server-Timing") ?? "").split(",")) {
-                const match = metric.trim().match(/^(processing|admissionChecks|queueAdmission|jobRead);dur=([\d.]+)$/);
+                const match = metric.trim().match(/^(processing|admissionChecks|queueAdmission|jobRead|appToHeaders|beforeRoute|afterRoute|eventLoopLag);dur=([\d.]+)$/);
                 if (match && Number.isFinite(Number(match[2]))) serverTiming[match[1]] = Number(match[2]) / 1000;
             }
             const data = await response.json().catch(() => null);
@@ -384,12 +411,14 @@ export class ProcessingApiClient {
             return data;
         } finally {
             const finishedAtMs = this.diagnostics.now();
+            const headerId = response?.headers?.get("X-EOLab-Request-Id");
+            const requestId = /^[a-f0-9]{32}$/.test(headerId ?? "") ? headerId : null;
             this.requestsInFlight--;
             this.diagnostics.record("http-finish", {...fields, status: response?.status ?? null,
                 seconds: (finishedAtMs - startedAtMs) / 1000,
                 headersSeconds: headersAtMs == null ? null : (headersAtMs - startedAtMs) / 1000,
                 bodySeconds: headersAtMs == null ? null : (finishedAtMs - headersAtMs) / 1000,
-                serverTiming});
+                serverTiming, requestId, networkTiming: finishNetworkTiming(requestId, finishedAtMs)});
         }
     }
 }

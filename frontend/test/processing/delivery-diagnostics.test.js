@@ -1,7 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ProcessingDiagnostics } from "../../src/processing/diagnostics.js";
+import { ProcessingDiagnostics, readRequestNetworkTiming, captureRequestNetworkTiming } from "../../src/processing/diagnostics.js";
 import { ProcessingApiClient } from "../../src/processing/api.js";
+
+
+/** Adapt controlled list fixtures to the batch transport contract. */
+class TestJobs extends ProcessingJobs {
+    /** @param {Object} api Test transport. @param {Object} [timer] Test clock. */
+    constructor(api, timer) {
+        super({
+            /** @param {string[]} ids Requested IDs. @return {Promise<Object>} Owned statuses. */
+            async readJobStatuses(ids) {
+                const records = await api.listJobs();
+                return {jobs: records.filter(job => ids.includes(job.jobId)),
+                    unavailableJobIds: ids.filter(id => !records.some(job => job.jobId === id))};
+            }, ...api,
+        }, timer);
+    }
+}
 import { ProcessingJobs } from "../../src/processing/jobs.js";
 
 /** Drain observer promise chains. @return {Promise<void>} Completion. */
@@ -19,6 +35,39 @@ test("bounded traces retain shared transport activity and report truncation", ()
     assert.equal(snapshot.events.length, 3);
     assert.equal(snapshot.events[0].afterSubmissionSeconds, .002);
     assert.equal(trace.snapshot(2,"plan","mine").partial, false);
+});
+
+test("network timings match the response ID rather than the most recent identical URL", () => {
+    const id = "a".repeat(32);
+    const resource = {initiatorType: "fetch", serverTiming: [{name: "requestId", description: id}],
+        startTime: 100, requestStart: 130, responseStart: 230, responseEnd: 250,
+        domainLookupStart: 100, domainLookupEnd: 110, connectStart: 110, connectEnd: 125,
+        secureConnectionStart: 115, nextHopProtocol: "h2", encodedBodySize: 30, decodedBodySize: 100};
+    const clock = {getEntriesByType: () => [resource, {...resource, requestStart: 999,
+        serverTiming: [{name: "requestId", description: "b".repeat(32)}]}]};
+    assert.deepEqual(readRequestNetworkTiming(id, 260, clock), {
+        beforeRequestSeconds: .03, dnsSeconds: .01, connectSeconds: .015, tlsSeconds: .01,
+        firstByteSeconds: .1, downloadSeconds: .02, afterDownloadSeconds: .01,
+        protocol: "h2", encodedBytes: 30, decodedBytes: 100,
+    });
+    assert.equal(readRequestNetworkTiming("c".repeat(32), 260, clock), null);
+    assert.equal(readRequestNetworkTiming(id, 260, {}), null);
+    assert.equal(readRequestNetworkTiming(id, 260, {getEntriesByType: () => {throw Error();}}), null);
+});
+
+test("resource observers release subscriptions even when there is no response ID", context => {
+    let disconnected = 0, observed = 0;
+    const original = globalThis.PerformanceObserver;
+    context.after(() => { if (original) globalThis.PerformanceObserver = original; else delete globalThis.PerformanceObserver; });
+    globalThis.PerformanceObserver = class {
+        observe() { observed++; }
+        takeRecords() { return []; }
+        disconnect() { disconnected++; }
+    };
+    const finish = captureRequestNetworkTiming();
+    assert.equal(finish(null, 100), null);
+    assert.equal(observed, 1);
+    assert.equal(disconnected, 1);
 });
 
 test("HTTP diagnostics separate headers from body parsing and retain only fixed numeric server metrics", async () => {
@@ -49,7 +98,7 @@ test("observer accepts ready results on the first response despite another submi
     const api = {diagnostics:trace,
         listJobs:() => ++reads === 1 ? new Promise(r => {resolve = r;}) : Promise.resolve([ready]),
         watchJobs:callback => {changed = callback; return () => {};}};
-    const jobs = new ProcessingJobs(api);
+    const jobs = new TestJobs(api);
     jobs.tracked.add("a"); jobs.accept({...ready,status:"running"});
     const pending = jobs.refresh();
     now = 100; changed();
@@ -70,7 +119,7 @@ test("observer accepts ready results on the first response despite another submi
 test("diagnostics count skipped same-job updates without discarding unrelated results", async () => {
     let resolve;
     const trace = new ProcessingDiagnostics();
-    const jobs = new ProcessingJobs({diagnostics: trace, listJobs: () => new Promise(r => { resolve = r; })});
+    const jobs = new TestJobs({diagnostics: trace, listJobs: () => new Promise(r => { resolve = r; })});
     jobs.tracked.add("a"); jobs.tracked.add("b");
     const pending = jobs.refresh();
     jobs.accept({jobId: "a", status: "deleted"});
@@ -82,15 +131,15 @@ test("diagnostics count skipped same-job updates without discarding unrelated re
     jobs.destroy();
 });
 
-test("fallback records late timers and individual lookups without changing polling", async () => {
+test("fallback records late timers and uses one batch lookup", async () => {
     let now = 0, callback;
     const trace = new ProcessingDiagnostics(() => now);
-    const jobs = new ProcessingJobs({diagnostics:trace,listJobs:async()=>[],getJob:async()=>({jobId:"a",status:"ready"})},
+    const jobs = new TestJobs({diagnostics:trace,listJobs:async()=>[{jobId:"a",status:"ready"}]},
         {setTimeout:fn=>{callback=fn;return 1;},clearTimeout:()=>{}});
     jobs.tracked.add("a"); jobs.schedule();
     now = 2700; callback(); await flush();
     assert.equal(trace.events.find(e => e.kind === "fallback-timer").lateSeconds, .7);
-    assert.equal(trace.events.find(e => e.kind === "extra-job-read").jobId, "a");
+    assert.equal(trace.events.some(e => e.kind === "extra-job-read"), false);
     assert.equal(trace.events.find(e => e.kind === "ready-accepted").trigger, "timer");
     jobs.destroy();
 });

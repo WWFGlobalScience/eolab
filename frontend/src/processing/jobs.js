@@ -34,9 +34,9 @@ export class ProcessingJobs {
         this.notify();
         this.schedule();
     }
-    /** Refresh job history, preserving local changes made while the read was pending.
-     * Merge by job ID so one submission or action cannot delay unrelated results.
-     * Jobs absent from server history are removed unless tracked or changed locally.
+    /** Refresh tracked and active jobs together, preserving newer local changes.
+     * Idle refreshes recover recent history. Active refreshes query only the IDs
+     * needed by this observer and retain unrelated history already displayed.
      * @param {string} [trigger="explicit"] SSE, timer, follow-up, or explicit caller.
      * @return {Promise<void>} The existing in-flight read, or a new refresh.
      */
@@ -51,19 +51,15 @@ export class ProcessingJobs {
         const changedJobs = new Set();
         this.jobsChangedDuringRefresh = changedJobs;
         const eventRevision = this.eventRevision;
+        const requested = new Set([...this.tracked,
+            ...this.jobs.filter(job => ACTIVE_JOB_STATES.has(job.status)).map(job => job.jobId)]);
         this.refreshing = (async () => {
             try {
-                const jobs = await this.api.listJobs();
+                const {jobs, unavailableJobIds} = requested.size
+                    ? await this.api.readJobStatuses([...requested])
+                    : {jobs: await this.api.listJobs(), unavailableJobIds: []};
                 for (const job of jobs) if (job.status === "ready" && this.tracked.has(job.jobId)) {
                     diagnostics?.record("ready-received", {jobId: job.jobId, trigger, refreshNumber});
-                }
-                for (const id of this.tracked) {
-                    if (!jobs.some(job => job.jobId === id)) {
-                        diagnostics?.record("extra-job-read", {jobId: id, trigger, refreshNumber});
-                        const job = await this.api.getJob(id);
-                        jobs.push(job);
-                        if (job.status === "ready") diagnostics?.record("ready-received", {jobId: id, trigger, refreshNumber});
-                    }
                 }
                 if (!this.destroyed) {
                     const accepted = jobs.filter(job => {
@@ -71,8 +67,11 @@ export class ProcessingJobs {
                         diagnostics?.record("job-update-skipped", {jobId: job.jobId, trigger, refreshNumber});
                         return false;
                     });
-                    this.jobs = [...this.jobs.filter(job => changedJobs.has(job.jobId)), ...accepted];
-                    this.error = "";
+                    this.jobs = [...this.jobs.filter(job => changedJobs.has(job.jobId) ||
+                        (requested.size && !requested.has(job.jobId))), ...accepted];
+                    const unavailable = unavailableJobIds.filter(id => !changedJobs.has(id));
+                    this.error = unavailable.length ? "A requested processing job is unavailable. Retry the calculation." : "";
+                    for (const id of unavailable) this.tracked.delete(id);
                     for (const job of accepted) if (job.status === "ready" && this.tracked.has(job.jobId)) {
                         diagnostics?.record("ready-accepted", {jobId: job.jobId, trigger, refreshNumber});
                     }

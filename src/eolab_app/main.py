@@ -59,6 +59,7 @@ from eolab_app.routes.diagnostics import create_diagnostics_router
 from eolab_app.routes.raster_analysis import create_raster_analysis_router
 from eolab_app.routes.rasters import create_raster_feature
 from eolab_app.routes.processing import create_processing_router
+from eolab_app.routes.processing_timings import ProcessingHttpTimings
 from eolab_app.routes.scans import create_scan_router
 from eolab_app.routes.jobs_proxy import create_jobs_proxy_router
 from eolab_app.routes.stac_proxy import (
@@ -301,6 +302,7 @@ def create_app(
         version=app_global_configuration.app_version,
         lifespan=lifespan,
     )
+    application.add_middleware(ProcessingHttpTimings)
     annotation_sessions = AnnotationSessionStore(
         layer_capacity=app_global_configuration.shared_layer_capacity,
         creation_limit=app_global_configuration.shared_layer_creation_limit,

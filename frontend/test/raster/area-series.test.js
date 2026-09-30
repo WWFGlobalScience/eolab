@@ -42,6 +42,12 @@ function fixture(overrides = {}, data = new Map()) {
         },
         listJobs:async()=>[...server.values()],getJob:async id=>server.get(id),
         cancelJob:async id=>{requests.push(["cancel",id]);const job={...server.get(id),status:"cancelling"};server.set(id,job);return job;},
+        /** @param {string[]} ids Requested IDs. @return {Promise<Object>} Owned statuses. */
+        async readJobStatuses(ids) {
+            const records = await this.listJobs();
+            return {jobs: records.filter(job => ids.includes(job.jobId)),
+                unavailableJobIds: ids.filter(id => !records.some(job => job.jobId === id))};
+        },
         ...overrides,
     };
     const storage=new CalculationSessionStorage({get length(){return data.size;},key:index=>[...data.keys()][index]??null,
