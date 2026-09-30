@@ -10,24 +10,23 @@ whole-raster exports are not offered.
 
 Use **Download clip** on a raster in Map layers or an individual 1D histogram.
 The 2D histogram has separate **Download X clip** and **Download Y clip** actions.
-The **Downloads** toolbar/dock button stays accessible while other tools are open.
+Use **More → Raster clips** to return to your clips while other tools are open.
 
-Downloads captures the explicit selected histogram area when opened. The 1D and
+Raster clips captures the explicit selected histogram area when opened. The 1D and
 2D selections remain distinct; whole-raster and whole-overlap sampling do not
 become export areas. Choose a box or a filtered Catalog vector in Sampling area.
-**Choose sampling area** opens the existing area controls. Reopen Downloads to capture a changed histogram selection. Histogram
+**Choose box or catalog vector** opens the existing area controls. Reopen Raster clips to capture a changed histogram selection. Histogram
 results need not be ready or successful before reviewing a clip.
 
-**Review clip** reads metadata and presents the source, geographic area, native
-CRS/pixel size, dimensions, datatype, and estimated uncompressed size.
-**Create clip** accepts this fixed intent. Later map/filter changes do not change accepted work.
+**Create clip** submits the chosen raster and area. The worker prepares the clip
+and reports its grid and progress. Later map/filter changes do not change accepted work.
 The original Catalog sources must remain available and unchanged until execution
 and publication finish. Job cards show measured block progress and named file
 preparation phases, plus cancel, download, provenance, delete, size, and expiry.
 Downloads go directly through the browser, without a JavaScript Blob buffer.
 
 Owned jobs recover through the session cookie after reload. The per-tab session
-storage contains only an unconfirmed plan ID, idempotency key, and display label;
+storage contains the unconfirmed source and area, idempotency key, and display label;
 it is saved before dispatch. Reload or **Recover submission** retries that same
 request. No cookie, geometry, result file, or processing job is placed in a shared
 map link. Disabled session storage prevents submission with a clear explanation.
@@ -70,7 +69,7 @@ this feature does not weaken the existing source reader to enable that path.
 Results expire 24 hours after completion. Keep the same browser session to inspect,
 cancel, delete or download your jobs; knowing a job ID is not sufficient.
 Downloads support resume. An accepted job can continue after the browser closes;
-recover it through History & exports. A failed job does not expose a partial TIFF.
+recover it through **More → Raster clips**. A failed job does not expose a partial TIFF.
 Deployments and worker restarts interrupt unfinished jobs; submit them again.
 Completed results remain available until expiry.
 

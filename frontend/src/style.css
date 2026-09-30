@@ -3805,7 +3805,7 @@ article.raster-histogram-summary {
 #raster-series,
 #annotations-panel,
 #calculations-panel,
-#downloads-panel,
+#raster-clips-panel,
 #layer-style-editor,
 #vector-filter-panel,
 #vector-feature-inspector,
@@ -3831,7 +3831,7 @@ article.raster-histogram-summary {
 #raster-series[hidden],
 #annotations-panel[hidden],
 #calculations-panel[hidden],
-#downloads-panel[hidden],
+#raster-clips-panel[hidden],
 #layer-style-editor[hidden],
 #vector-filter-panel[hidden],
 #vector-feature-inspector[hidden],
@@ -3844,7 +3844,7 @@ article.raster-histogram-summary {
 #raster-series:not([data-map-inspection-active="true"]),
 #annotations-panel:not([data-map-inspection-active="true"]),
 #calculations-panel:not([data-map-inspection-active="true"]),
-#downloads-panel:not([data-map-inspection-active="true"]),
+#raster-clips-panel:not([data-map-inspection-active="true"]),
 #layer-style-editor:not([data-map-inspection-active="true"]),
 #vector-filter-panel:not([data-map-inspection-active="true"]),
 #vector-feature-inspector:not([data-map-inspection-active="true"]),
@@ -4692,7 +4692,7 @@ summary:hover > .raster-disclosure-chevron {
 @media (max-width: 600px) {
   #map-filter-indicators { max-width: calc(100vw - 80px); max-height: 16vh; }
 }
-#downloads-panel {
+#raster-clips-panel {
     padding: 1rem;
     overflow-wrap: anywhere;
 }
@@ -4707,9 +4707,9 @@ summary:hover > .raster-disclosure-chevron {
     font-weight: 650;
 }
 .map-analysis-advanced-section > summary + * { margin-top: 0.7rem; }
-#downloads-form { display: grid; gap: 0.55rem; }
-#downloads-form select { width: 100%; min-width: 0; }
-#downloads-panel p { font-size: 0.85rem; line-height: 1.45; }
+#raster-clips-form { display: grid; gap: 0.55rem; }
+#raster-clips-form select { width: 100%; min-width: 0; }
+#raster-clips-panel p { font-size: 0.85rem; line-height: 1.45; }
 .downloads-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.6rem 0; }
 .download-plan, .download-job {
     border: 1px solid #c7d7d3;
@@ -4725,7 +4725,7 @@ summary:hover > .raster-disclosure-chevron {
 .download-plan pre { white-space: pre-wrap; max-height: 12rem; overflow: auto; font-size: 0.75rem; }
 .download-job .secondary-button { display: inline-block; margin: 0.25rem 0.35rem 0 0; text-decoration: none; }
 .download-job progress { width: 100%; }
-#downloads-message:empty, #downloads-job-message:empty { display: none; }
+#raster-clips-message:empty, #raster-clips-job-message:empty { display: none; }
 /* Summary controls, saved results and passive activity on the sampling rectangle. */
 #calculations-panel { padding: 0.75rem; overflow-wrap: anywhere; }
 #calculations-panel p { font-size: 0.85rem; line-height: 1.45; }

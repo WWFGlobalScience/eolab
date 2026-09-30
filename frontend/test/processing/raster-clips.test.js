@@ -2,8 +2,8 @@ import { CATALOG_SELECTION } from "../../test-support/raster/fixtures.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync, readdirSync } from "node:fs";
-import { DownloadsController } from "../../src/processing/downloads-controller.js";
-import { DownloadsView, describeJobProgress, describeClipCrs } from "../../src/processing/downloads-view.js";
+import { RasterClipsController } from "../../src/processing/raster-clips-controller.js";
+import { RasterClipsView, describeJobProgress, describeClipCrs } from "../../src/processing/raster-clips-view.js";
 import { ProcessingApiClient, ProcessingRequestError, processingDownloadUrl } from "../../src/processing/api.js";
 import { PendingSubmissionStorage } from "../../src/processing/pending-submission.js";
 import { FakeRasterControlDocument } from "../../test-support/raster/fake-controls-document.js";
@@ -34,7 +34,7 @@ function fixture(overrides = {}) {
     const timers = [];
     const options = { api, view, storage, getContext: () => context, onOpen() {}, onClose() {}, onEditArea() {},
         clock: { setTimeout(callback, delay) { timers.push([callback,delay]); return timers.length; }, clearTimeout() {} }, requestId: () => "request-1234567890" };
-    const controller = new DownloadsController(options);
+    const controller = new RasterClipsController(options);
     return { controller, api, view, storage, requests, timers, options, data, get context() { return context; }, setContext(value) { context = value; } };
 }
 
@@ -77,10 +77,10 @@ test("uncertain submission survives reload and retries the original inputs/key",
     h.controller.open(); await h.controller.submit();
     const saved = h.storage.read(); assert.deepEqual(saved.source, source); assert.deepEqual(saved.area, box);
     h.controller.open(source, null); assert.deepEqual(h.storage.read(), saved);
-    const recovered = new DownloadsController({ ...h.options, api: { ...h.api, listJobs: async () => [job], submitClip: async value => { h.requests.push(value); return job; } } });
+    const recovered = new RasterClipsController({ ...h.options, api: { ...h.api, listJobs: async () => [job], submitClip: async value => { h.requests.push(value); return job; } } });
     await recovered.start();
     assert.deepEqual(h.requests.at(-1), h.requests.at(-2));
-    assert.equal(h.storage.read(), null); assert.equal(h.view.state.jobs.length, 1);
+    assert.equal(h.storage.read(), null); assert.equal(recovered.state.jobs.length, 1);
 });
 
 test("definitive capacity rejection releases intent; server error retains it", async () => {
@@ -97,18 +97,58 @@ test("definitive capacity rejection releases intent; server error retains it", a
 test("polling recovers owned jobs without any map layers and lifecycle buttons call the API", async () => {
     const h = fixture({ listJobs: async () => [job] });
     h.setContext({ sources: [], area: null }); await h.controller.start();
-    assert.equal(h.view.state.jobs.length, 1); assert.equal(h.timers.at(-1)[1], 2000);
+    assert.equal(h.controller.state.jobs.length, 1); assert.equal(h.timers.at(-1)[1], 2000);
     await h.controller.jobAction(id,"cancel"); await h.controller.jobAction(id,"delete");
     assert.deepEqual(h.requests, [["cancel",id],["delete",id]]);
 });
 
-test("Downloads retains both operations in shared processing history", async () => {
+test("raster clips retain only clip jobs without drawing while closed", async () => {
     const calculation = { ...job, jobId: "b".repeat(32), operation: "raster.aggregate.v1",
         area: { kind: "wholeRaster", bounds: null }, source: undefined };
     const h = fixture({ listJobs: async () => [calculation, job] });
     await h.controller.start();
-    assert.deepEqual(h.view.state.jobs, [calculation, job]);
-    assert.equal(h.view.state.jobMessage, "");
+    assert.deepEqual(h.controller.state.jobs, [job]);
+    assert.equal(h.controller.state.jobMessage, "");
+    assert.equal(h.view.state, undefined);
+    h.controller.open();
+    assert.deepEqual(h.view.state.jobs, [job]);
+});
+
+test("closed clip controls retain updates and reopen with the latest clip without submitting", () => {
+    const h = fixture();
+    let drawings = 0;
+    h.view.render = state => { drawings++; h.view.state = structuredClone(state); };
+    h.controller.open();
+    assert.equal(drawings, 1);
+    h.controller.setActive(false);
+    for (let i = 0; i < 25; i++) {
+        h.controller.jobs.accept({ ...job, jobId: String(i), operation: "raster.aggregate.v1" });
+    }
+    const ready = { ...job, status: "ready" };
+    h.controller.jobs.accept(ready);
+    assert.equal(drawings, 1);
+    assert.deepEqual(h.controller.state.jobs, [ready]);
+    h.controller.setActive(true);
+    assert.equal(drawings, 2);
+    assert.deepEqual(h.view.state.jobs, [ready]);
+    assert.deepEqual(h.requests, []);
+    h.controller.setActive(true);
+    assert.equal(drawings, 2);
+    h.controller.destroy();
+    h.controller.setActive(true);
+    assert.equal(drawings, 2);
+});
+
+test("calculation results stay under Summarize and clip labels target the retained controls", () => {
+    const markup = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+    const summary = markup.slice(markup.indexOf('<section id="calculations-panel"'), markup.indexOf('<section id="raster-clips-panel"'));
+    assert.match(summary, /id="calculations-history"/);
+    assert.match(summary, /id="summary-saved-result"/);
+    assert.doesNotMatch(markup, /History &amp; exports|id="downloads-|id="open-downloads/);
+    for (const name of ["source", "area"]) {
+        assert.ok(markup.includes(`for="raster-clips-${name}"`));
+        assert.ok(markup.includes(`id="raster-clips-${name}"`));
+    }
 });
 
 test("an older job listing cannot erase a newly accepted clip", async () => {
@@ -151,25 +191,24 @@ test("download navigation is limited to direct owned artifact endpoints", () => 
 
 test("clip form and job cards show grid, real progress, direct links and independent actions", async () => {
     const h = fixture();
-    const doc = new FakeRasterControlDocument(); const view = new DownloadsView(doc);
+    const doc = new FakeRasterControlDocument(); const view = new RasterClipsView(doc);
     const actions=[]; view.bind({ onOpen() {}, onClose() {}, onSource() {}, onArea() {}, onCreate() {}, onRetrySubmission() {}, onRefresh() {}, onEditArea() {}, onCancel: id => actions.push(id), onDelete: id => actions.push(id) });
     h.controller.open();
     view.render(h.view.state);
     const text = element => element.textContent + element.children.map(text).join(" ");
-    assert.equal(doc.querySelector("#downloads-create").disabled, false);
+    assert.equal(doc.querySelector("#raster-clips-create").disabled, false);
     h.view.state.jobs = [{ ...job, status:"ready", expiresAt: plan.expiresAt,
         result: { url:`/api/processing/jobs/${id}/result`, provenanceUrl:`/api/processing/jobs/${id}/provenance`, bytes:100, filename:"clip.tif" } }];
     view.render(h.view.state);
-    const card = doc.querySelector("#downloads-jobs").children[0];
+    const card = doc.querySelector("#raster-clips-jobs").children[0];
     assert.match(text(card), /100 × 120 pixels/);
     assert.match(text(card), /EPSG:3857/);
     const link = card.children.find(child => child.textContent === "Download COG");
     assert.equal(link.href, `/api/processing/jobs/${id}/result`);
     card.children.at(-1).dispatchEvent(new Event("click")); assert.deepEqual(actions,[id]);
-    assert.match(doc.querySelector("#open-downloads").textContent,/History & exports · 1 ready/);
-    assert.equal(doc.querySelector("#map-tools-more-summary").textContent, "More");
+    doc.querySelector("#map-tools-more-summary").textContent = "More";
     view.render({ ...h.view.state, jobs: [{ ...job, status: "running" }] });
-    assert.equal(doc.querySelector("#map-inspection-more-summary").textContent, "More · 1 working");
+    assert.equal(doc.querySelector("#map-tools-more-summary").textContent, "More");
     assert.equal(describeJobProgress({ ...job, status:"running", progress:{phase:"clipping",completedBlocks:3,totalBlocks:10} }),"Clipping · 3 of 10 source blocks");
     assert.equal(describeJobProgress({ ...job, status:"running", progress:{phase:"preparing"} }), "Preparing clip…");
     assert.equal(describeJobProgress({ ...job, status:"running", progress:{phase:"calculating"} }), "Starting clip…");

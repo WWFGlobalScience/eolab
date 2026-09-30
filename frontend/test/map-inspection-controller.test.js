@@ -25,7 +25,7 @@ function fixture(configureDocument = () => {}) {
     const vectorTimeSeries = doc.querySelector("#vector-time-series");
     const vectorFeatureProfile = doc.querySelector("#vector-feature-profile");
     doc.querySelector("#vector-filter-panel").hidden = true;
-    doc.querySelector("#downloads-panel").hidden = true;
+    doc.querySelector("#raster-clips-panel").hidden = true;
     doc.querySelector("#calculations-panel").hidden = true;
     doc.querySelector("#annotations-panel").hidden = true;
     doc.querySelector("#raster-series").hidden = true;
@@ -179,18 +179,18 @@ test("empty and failed streams remain understandable without opening unavailable
     h.controller.destroy();
 });
 
-test("History and exports is transient while retained analysis results remain available", () => {
+test("Raster clips is transient while retained analysis results remain available", () => {
     const h = fixture();
     h.controller.showHistogram();
-    h.controller.showDownloads();
-    const downloads = h.doc.querySelector("#downloads-panel");
+    h.controller.showRasterClips();
+    const downloads = h.doc.querySelector("#raster-clips-panel");
     assert.equal(downloads.getAttribute("data-map-inspection-active"), "true");
     assert.equal(h.histogram.hidden, false);
     h.histogramTab.dispatchEvent(new Event("click"));
     assert.equal(downloads.hidden, true);
     assert.equal(h.histogram.getAttribute("data-map-inspection-active"), "true");
-    h.controller.showDownloads();
-    h.controller.hideDownloads();
+    h.controller.showRasterClips();
+    h.controller.hideRasterClips();
     assert.equal(downloads.hidden, true);
     assert.equal(h.histogram.getAttribute("data-map-inspection-active"), "true");
     h.controller.destroy();
@@ -209,10 +209,10 @@ test("active-tool subscriptions report expanded presentation, support detachment
     assert.equal(h.dockTitle.textContent, "Map tools");
     h.histogramTab.dispatchEvent(new Event("click"));
     assert.deepEqual(changes, [null, "calculations", null, "calculations", "histogram"]);
-    unsubscribe(); h.controller.showDownloads();
+    unsubscribe(); h.controller.showRasterClips();
     assert.equal(changes.at(-1), "histogram");
     const final = []; h.controller.subscribeActiveTool(tool => final.push(tool));
-    h.controller.destroy(); assert.deepEqual(final, ["downloads", null]);
+    h.controller.destroy(); assert.deepEqual(final, ["raster-clips", null]);
 });
 
 test("histogram and style have independent visibility on one persistent surface", () => {
@@ -531,7 +531,7 @@ for (const [name, show, hide, args] of [
     ["field across features", "showVectorTimeSeries", "hideVectorTimeSeries", []],
     ["fields from feature", "showVectorFeatureProfile", "hideVectorFeatureProfile", []],
     ["summaries", "showCalculations", "hideCalculations", []],
-    ["downloads", "showDownloads", "hideDownloads", []],
+    ["raster-clips", "showRasterClips", "hideRasterClips", []],
     ["style", "showStyle", "hideStyle", ["Raster"]],
     ["filter", "showFilter", "hideFilter", ["Countries"]],
 ]) {
