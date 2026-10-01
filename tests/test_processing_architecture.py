@@ -2,6 +2,8 @@
 
 import ast
 from pathlib import Path
+import subprocess
+import sys
 
 
 def imports(path: Path) -> set[str]:
@@ -92,7 +94,7 @@ def test_processing_deployment_is_separate_bounded_and_source_read_only() -> Non
     compose = Path("docker-compose.yml").read_text()
     worker = compose.split("  processing-worker:\n", 1)[1].split("\n  app:\n", 1)[0]
     app = compose.split("\n  app:\n", 1)[1].split("\nvolumes:\n", 1)[0]
-    assert 'command: ["python", "-m", "eolab_app.main", "processing-worker"]' in worker
+    assert 'command: ["python", "-m", "eolab_app.worker_cli"]' in worker
     assert "mem_limit: 2g" in worker
     assert "cpus: 2" in worker
     assert "read_only: true" in worker
@@ -102,6 +104,23 @@ def test_processing_deployment_is_separate_bounded_and_source_read_only() -> Non
     sql = Path("src/eolab_app/processing/schema.sql").read_text()
     assert "pgstac." not in sql.lower()
     assert "CREATE SCHEMA IF NOT EXISTS processing" in sql
+
+
+def test_spawned_worker_entry_does_not_import_application_composition() -> None:
+    """Child startup must not reload web routes, services or their model graphs."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys; "
+            "runpy.run_module('eolab_app.worker_cli', run_name='__mp_main__'); "
+            "assert 'eolab_app.main' not in sys.modules; "
+            "assert 'fastapi' not in sys.modules; "
+            "assert 'eolab_app.processing.worker' not in sys.modules",
+        ],
+        check=True,
+        timeout=15,
+    )
 
 
 def test_shared_job_models_and_storage_do_not_depend_on_clip_models() -> None:

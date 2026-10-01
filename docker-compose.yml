@@ -165,7 +165,7 @@ services:
       args:
         SOURCE_COMMIT: ${SOURCE_COMMIT:?SOURCE_COMMIT must identify the source revision}
     restart: unless-stopped
-    command: ["python", "-m", "eolab_app.main", "processing-worker"]
+    command: ["python", "-m", "eolab_app.worker_cli"]
     cpus: 2
     mem_limit: ${EOLAB_PROCESSING_CONTAINER_MEMORY-3g}
     memswap_limit: ${EOLAB_PROCESSING_CONTAINER_MEMORY-3g}

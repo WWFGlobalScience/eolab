@@ -92,6 +92,11 @@ reusable native Python process for both preparation and calculation. All loops
 claim jobs from the existing PostgreSQL queue; matching requests still share one
 calculation. Browser requests, progress, cancellation and downloads are unchanged.
 
+The container starts with `python -m eolab_app.worker_cli`. This entry point loads
+application composition only in the supervisor. Spawned native children import
+their operation modules without also loading web routes and unrelated services.
+The existing worker composition still owns startup reset and shutdown.
+
 Set these variables in Coolify, then redeploy:
 
 | Variable | Default | Meaning |
