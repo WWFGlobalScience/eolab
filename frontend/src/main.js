@@ -1096,7 +1096,7 @@ async function initializeCatalog(
         savedMapViewController?.scheduleRemember()
     );
     leafletMap.on("basemapchange", () => savedMapViewController?.scheduleRemember());
-    const rasterAreaSeries = new RasterSeriesCalculations({ api: processingApi, requests: calculationRequests });
+    const rasterAreaSeries = new RasterSeriesCalculations({ requests: calculationRequests });
     rasterSeries = new RasterSeriesController({
         areaStatistics: rasterAreaSeries,
         onEditArea: () => calculations.open(),

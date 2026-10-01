@@ -15,8 +15,12 @@ Raster styling, opacity and a simplified map outline do not change the result.
 ## Running and saving a calculation
 
 Edit a formula or choose an **Add statistic** preset. Formula checks wait for a
-700 ms pause in typing. Invalid formulas show an explanation. Choose **Calculate**
-when a card is ready. Opening the panel or renaming a card does not run it.
+700 ms pause in typing. Invalid formulas show an explanation. **Calculate** can
+submit immediately without waiting for this editor feedback; submission validates
+the complete request on the server. Unchecked formulas submit individually so an
+invalid card cannot reject a valid neighbor. Checked formulas on the same raster
+can share a scan. Changing only the raster or area reuses the editor feedback.
+Opening the panel or renaming a card does not run it.
 
 From a histogram, **Summarize this area** opens the cards and runs all configured
 valid statistics over that area. The first card
@@ -81,7 +85,10 @@ Previous plots are faded while replacements are pending. Visibility, plot assign
 axis scale, names, chart type and display order change without recalculating.
 
 With automatic updates enabled, inputs calculate after a 700 ms pause. Each selected raster
-requests its calculation independently, without waiting for the previous result.
+requests its calculation independently, without waiting for the previous result
+or making a preliminary formula-validation request. Submission errors appear in
+the panel; an identical error affecting the whole stack is shown once above the
+results. Correct the formula or choose **Calculate** to retry.
 The server queues one job per raster, including preparation and execution. Results appear as they finish; the
 table shows each raster's progress or error. Summary cards can run alongside a
 series. If the job queue is full, affected rasters show

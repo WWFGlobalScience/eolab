@@ -54,7 +54,7 @@ function fixture(overrides = {}, data = new Map()) {
         getItem:key=>data.get(key),setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)});
     const jobs=new ProcessingJobs(api,clock);
     const calculationRequests=new CalculationRequests({api,jobs,storage,now:()=>time,requestId:()=>"request-"+String(++serial).padStart(16,"0")});
-    const area=new RasterSeriesCalculations({api,requests:calculationRequests,clock,now:()=>time});
+    const area=new RasterSeriesCalculations({requests:calculationRequests,clock,now:()=>time});
     const view={bind(actions){this.actions=actions;},render(state){this.state=state;},downloadCsv(csv){this.csv=csv;}};
     const controller=new RasterSeriesController({view,areaStatistics:area,samplePoint:async()=>({inBounds:true,value:1}),onClose(){},onEditArea(){}});
     controller.updateAvailableRasters([source("1"),source("2")]); controller.setArea(box(0),"First box");
@@ -214,8 +214,8 @@ test("inline cached completions retain all source positions without queuing extr
     assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);h.close();
 });
 
-test("formula validation and five-formula limit apply before any raster submission",async()=>{
-    const h=fixture({validateCalculation:async()=>{throw Error("Unknown function bad");}});
+test("submission rejects invalid formulas with one shared explanation and retains the five-formula limit",async()=>{
+    const h=fixture({submitCalculation:async()=>{throw new ProcessingRequestError("Unknown function bad",422);}});
     h.controller.editFormula(1,{expression:"bad(a)"});
     for(let i=0;i<8;i++)h.controller.addFormula("mean");
     assert.equal(h.controller.formulas.length,5);
@@ -228,7 +228,38 @@ test("formula validation and five-formula limit apply before any raster submissi
     assert.equal(h.controller.formulas.length,5,"a sixth active formula is not accepted");
     await h.tick();
     assert.match(h.view.state.message,/Unknown function bad/);
-    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,0);h.close();
+    assert.equal(h.requests.filter(([kind])=>kind==="validate").length,0);
+    assert.equal(h.area.results.size,2);
+    assert.ok(h.view.state.rows.every(row=>row.errorMessage==="Not calculated. See the message above."));
+    assert.deepEqual(h.storage.savedClientNames(),[],"known rejection needs no recovery");h.close();
+});
+
+test("all 25 rasters submit without a formula preflight and an edited rejection can succeed",async()=>{
+    const h=fixture({validateCalculation:()=>{throw Error("Unexpected validation preflight");}});
+    h.controller.updateAvailableRasters(Array.from({length:25},(_,i)=>source(String(i))));
+    const submit=h.api.submitCalculation;
+    h.api.submitCalculation=async value=>{
+        if(value.calculations[0].expression==="bad(a)") throw new ProcessingRequestError("Unknown function bad",422);
+        return submit(value);
+    };
+    h.controller.editFormula(1,{expression:"bad(a)"});await h.open();
+    assert.equal(h.area.results.size,25);assert.match(h.area.commonError,/Unknown function bad/);
+    h.controller.editFormula(1,{expression:"mean(a)"});await h.tick();
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,25);
+    assert.equal(h.area.commonError,"");assert.equal(h.area.pending.size,25);
+    for(let i=0;i<25;i++) await h.finish();
+    assert.equal(h.area.complete,true);assert.equal(h.area.hasErrors,false);h.close();
+});
+
+test("mixed raster failures retain their own explanations instead of a shared formula error",async()=>{
+    const h=fixture();const submit=h.api.submitCalculation;
+    h.api.submitCalculation=async value=>{
+        if(value.source.itemId==="2") throw new ProcessingRequestError("Source is unavailable",404);
+        return submit(value);
+    };
+    await h.open();await h.finish();
+    assert.equal(h.area.commonError,"");assert.match(h.area.message,/Some rasters failed/);
+    assert.match(h.view.state.rows.find(row=>row.key==="2").errorMessage,/Source is unavailable/);h.close();
 });
 
 test("closing and reopening a completed area plot preserves its result and completion message",async()=>{
@@ -399,7 +430,7 @@ test("each raster's wait starts at dispatch, while whole-series time ends at the
     for(const result of h.area.results.values()) {
         const report=result.performanceLines.join(" ");
         assert.match(report,/Submission round trip: 0.000 s/);
-        assert.match(report,/Excludes earlier area selection, formula debounce and validation/);
+        assert.match(report,/Excludes earlier area selection, formula debounce, and subsequent UI rendering/);
         assert.doesNotMatch(report,/result displayed|including vector selection when requested here/);
     }
     h.close();
@@ -407,15 +438,14 @@ test("each raster's wait starts at dispatch, while whole-series time ends at the
 
 test("series report accounts for submission, queued preparation and result observation",async()=>{
     const h=fixture();h.controller.updateAvailableRasters([source("1")]);
-    const submit=h.api.submitCalculation,validate=h.api.validateCalculation;
-    h.api.validateCalculation=async formulas=>{h.elapse(700);return validate(formulas);};
+    const submit=h.api.submitCalculation;
     h.api.submitCalculation=async input=>{h.elapse(300);return submit(input);};
     await h.open();
     const job=[...h.server.values()][0];
     h.server.set(job.jobId,{...job,preparation:{seconds:.2,cacheHit:false,process:null}});
     h.elapse(3500);await h.finish();
     const result=h.area.results.get("1"),report=result.performanceLines.join(" ");
-    assert.equal(result.elapsedSeconds,3.9,"earlier validation is excluded");
+    assert.equal(result.elapsedSeconds,3.9,"validation is part of submission");
     assert.match(report,/Before submission: 0.000 s/);
     assert.doesNotMatch(report,/Planning round trip/);
     assert.match(report,/Submission round trip: 0.300 s/);

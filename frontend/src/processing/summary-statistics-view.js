@@ -187,7 +187,7 @@ export class SummaryStatisticsView {
             row.status.classList.toggle("is-awaiting-map", !!card.awaitingMap);
             row.status.classList.toggle("is-working", card.pending || !!card.requested || card.checking);
             row.run.hidden = !state.area || card.current || card.pending || !!card.requested || !!state.vectorSelecting;
-            row.run.disabled = !card.valid || card.checking || !card.source || !state.area || state.recoverable;
+            row.run.disabled = !card.expression.trim() || !card.source || !state.area || state.recoverable;
             row.stop.hidden = !card.pending && !card.requested && !state.vectorSelecting;
             row.statusRow.hidden = row.status.hidden && row.run.hidden && row.stop.hidden;
             const progress = card.progress;
