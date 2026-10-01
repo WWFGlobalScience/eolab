@@ -487,7 +487,7 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
 def test_job_store_admits_operation_data_without_raster_fields(
     store: PostgresJobStore,
 ) -> None:
-    """Apply shared scheduling and storage policy to operation-owned opaque data.
+    """Apply scheduling and ownership policy to operation-owned opaque data.
 
     Args:
         store: Disposable real PostgreSQL adapter with no raster collaborators.
@@ -508,10 +508,10 @@ def test_job_store_admits_operation_data_without_raster_fields(
         store.submit("owner", "summary-request", prepared, "fixture-input-hash")["id"]
         == submitted_job["id"]
     )
-    store.limits = replace(store.limits, max_stored_bytes=4096)
+    store.limits = replace(store.limits, max_owner_waiting_jobs=1)
     with pytest.raises(ProcessingError) as refused:
         store.submit("owner", "another-request", prepared, "fixture-input-hash")
-    assert refused.value.code == "storage_full"
+    assert refused.value.code == "owner_queue_full"
     claimed = store.claim_next_job()
     assert claimed["spec"] == prepared.specification
     assert store.heartbeat(
