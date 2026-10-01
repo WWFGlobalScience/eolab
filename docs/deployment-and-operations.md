@@ -97,6 +97,13 @@ application composition only in the supervisor. Spawned native children import
 their operation modules without also loading web routes and unrelated services.
 The existing worker composition still owns startup reset and shutdown.
 
+Native children remain warm regardless of their completed operation count. On
+Linux, a child whose peak resident memory exceeds 1 GiB is replaced after its
+operation finishes. This recycling threshold is not a hard allocation limit;
+the configured native address-space and container memory limits still apply.
+Cancellation, deadlines and crashes also retire the affected child before its
+worker can accept another operation.
+
 Set these variables in Coolify, then redeploy:
 
 | Variable | Default | Meaning |

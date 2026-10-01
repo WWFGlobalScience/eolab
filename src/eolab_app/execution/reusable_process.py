@@ -95,7 +95,7 @@ def _memory_exceeded(limit: int) -> bool:
 
     Returns:
         Whether this worker's peak RSS exceeds the recycling threshold. False
-        on other platforms, where operation-count recycling still applies.
+        on other platforms, which do not provide this Linux memory measurement.
 
     Raises:
         OSError: If Linux process-memory information cannot be read.
@@ -115,8 +115,7 @@ def _memory_exceeded(limit: int) -> bool:
 
 def _worker(
     connection: Connection,
-    targets: tuple[Callable, ...],
-    max_jobs: int,
+    targets: tuple[Callable[..., None], ...],
     recycle_bytes: int,
     address_space_bytes: int | None,
 ) -> None:
@@ -125,7 +124,6 @@ def _worker(
     Args:
         connection: Child-only endpoint; parent death produces EOF while idle.
         targets: Fixed preloaded entry points; requests select an index only.
-        max_jobs: Maximum completed operations before replacement.
         recycle_bytes: Linux peak-RSS threshold for between-job replacement.
         address_space_bytes: Optional Linux address-space ceiling including native
             libraries and preparation; other platforms retain container limits.
@@ -142,7 +140,7 @@ def _worker(
             )
             resource.setrlimit(resource.RLIMIT_AS, (ceiling, ceiling))
         connection.send("ready")
-        for number in range(1, max_jobs + 1):
+        while True:
             sequence, index, arguments, deadline = connection.recv()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -151,11 +149,7 @@ def _worker(
                 signal.signal(signal.SIGALRM, signal.SIG_DFL)
                 signal.setitimer(signal.ITIMER_REAL, remaining)
             value, elapsed = _invoke(targets[index], arguments)
-            recycle = (
-                "operation_limit"
-                if number == max_jobs
-                else "memory_limit" if _memory_exceeded(recycle_bytes) else None
-            )
+            recycle = "memory_limit" if _memory_exceeded(recycle_bytes) else None
             payload = pickle.dumps((sequence, value, elapsed, recycle))
             # No request frames, results or cycles survive into the next job.
             del value, arguments
@@ -204,10 +198,9 @@ class ReusableProcess:
 
     def __init__(
         self,
-        targets: tuple[Callable, ...],
+        targets: tuple[Callable[..., None], ...],
         *,
-        max_jobs: int = 100,
-        recycle_bytes: int = 512 * 1024**2,
+        recycle_bytes: int = 1024**3,
         startup_seconds: float = 15,
         address_space_bytes: int | None = None,
     ) -> None:
@@ -215,7 +208,6 @@ class ReusableProcess:
 
         Args:
             targets: Fixed operation entry points imported before readiness.
-            max_jobs: Periodic recycling bound.
             recycle_bytes: Linux peak-RSS recycling threshold, not an admission limit.
             startup_seconds: Maximum time to initialize a replacement process.
             address_space_bytes: Optional positive Linux address-space cap for
@@ -224,10 +216,9 @@ class ReusableProcess:
         Raises:
             ValueError: If targets or process limits are invalid.
         """
-        if not targets or max_jobs < 1 or recycle_bytes < 1 or startup_seconds <= 0:
+        if not targets or recycle_bytes < 1 or startup_seconds <= 0:
             raise ValueError("Reusable process limits and targets must be positive")
         self.targets = targets
-        self.max_jobs = max_jobs
         self.recycle_bytes = recycle_bytes
         self.startup_seconds = startup_seconds
         if address_space_bytes is not None and address_space_bytes < 1:
@@ -289,7 +280,6 @@ class ReusableProcess:
             args=(
                 child_pipe,
                 self.targets,
-                self.max_jobs,
                 self.recycle_bytes,
                 self.address_space_bytes,
             ),

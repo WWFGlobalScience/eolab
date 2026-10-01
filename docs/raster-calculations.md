@@ -234,8 +234,9 @@ and timings. These are wall times, including waiting within each operation:
 - Native-process time also includes communication and cleanup. Readiness wait
   includes any startup required for this request; earlier prewarming is excluded.
   API process timings also record `processId`, `operationNumber`, `startReason`
-  and `recycledFor` to distinguish initial startup, the operation-count limit,
-  the memory threshold and replacement after failure or cancellation.
+  and `recycledFor` to distinguish initial startup, the memory threshold and
+  replacement after failure or cancellation. Completed operation count does not
+  trigger recycling; historical results may still report `operation_limit`.
   `startupSeconds` measures the entire process startup, including prewarming;
   it overlaps readiness wait and must not be added to the per-call durations.
 - **Queued → ready** includes server queueing, preparation and execution.

@@ -60,32 +60,28 @@ async def started(path):
             await asyncio.sleep(0.01)
 
 
-def test_reuses_process_large_payloads_and_recycles() -> None:
-    """Reuse preloaded code but never reuse per-request results or pipe messages."""
+def test_reuses_process_beyond_one_hundred_operations() -> None:
+    """Keep the process warm without retaining earlier payloads or restarting by count."""
 
     async def scenario() -> None:
-        """Run three calls through a lane that recycles after two."""
-        lane = ReusableProcess((echo,), max_jobs=2)
+        """Cross the former count limit and verify each response and process identity."""
+        lane = ReusableProcess((echo,))
         lane.warm()
         try:
             first = await lane.run(echo, (b"x" * 2_000_000,), 10)
-            second = await lane.run(echo, ("second",), 10)
-            third = await lane.run(echo, ("third",), 10)
-            assert first.value[0] == second.value[0] != third.value[0]
             assert len(first.value[1]) == 2_000_000
-            assert second.value[1] == "second" and third.value[1] == "third"
             assert not first.timing.reusedProcess
-            assert second.timing.reusedProcess and not third.timing.reusedProcess
-            assert second.timing.readyWaitSeconds < 0.1
             assert first.timing.processId == first.value[0]
             assert first.timing.operationNumber == 1
-            assert second.timing.operationNumber == 2
-            assert third.timing.operationNumber == 1
             assert first.timing.startReason == "initial"
-            assert second.timing.recycledFor == "operation_limit"
-            assert third.timing.startReason == "operation_limit"
             assert first.timing.startupSeconds > 0
-            assert first.timing.startupSeconds == second.timing.startupSeconds
+            for number in range(2, 111):
+                result = await lane.run(echo, (number,), 10)
+                assert result.value == (first.value[0], number)
+                assert result.timing.reusedProcess
+                assert result.timing.operationNumber == number
+                assert result.timing.recycledFor is None
+                assert result.timing.startupSeconds == first.timing.startupSeconds
         finally:
             await lane.close()
         with pytest.raises(RuntimeError):
@@ -165,16 +161,16 @@ def test_failure_stops_old_work_before_replacement(tmp_path: Path, mode: str):
     asyncio.run(scenario())
 
 
-def test_shutdown_during_startup_and_between_recycling_calls():
+def test_shutdown_during_startup_and_between_calls() -> None:
     """Close also reaps children before their readiness reader starts."""
 
-    async def scenario():
-        """Cancel startup immediately, including any queued replacement callback."""
+    async def scenario() -> None:
+        """Close both an unready child and an idle child after its first result."""
         lane = ReusableProcess((echo,))
         lane.warm()
         await lane.close()
         assert lane.child is None
-        lane = ReusableProcess((echo,), max_jobs=1)
+        lane = ReusableProcess((echo,))
         await lane.run(echo, ("last",), 10)
         await lane.close()
         await asyncio.sleep(0)
@@ -236,6 +232,8 @@ def test_peak_memory_recycles_process() -> None:
             assert second.timing.startReason == "memory_limit"
         finally:
             await lane.close()
+        await asyncio.sleep(0)
+        assert lane.child is None
 
     asyncio.run(scenario())
 
