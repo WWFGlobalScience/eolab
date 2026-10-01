@@ -22,6 +22,7 @@ from eolab_app.processing.job_notifications import JOB_QUEUE_CHANNEL
 from eolab_app.processing.models import (
     Artifact,
     PreparedJobPlan,
+    JobSubmission,
     ProcessingError,
     ProcessingLimits,
 )
@@ -272,41 +273,68 @@ class PostgresJobStore:
             return cursor.fetchone()
 
     def submit(
-        self,
-        owner: str,
-        request_key: str,
-        expected: PreparedJobPlan,
-        request_hash: str,
+        self, owner: str, request_key: str, expected: PreparedJobPlan, request_hash: str
     ) -> dict[str, Any]:
-        """Subscribe to matching active work, or admit one new computation.
-
-        Joining, cancellation and completion serialize in a short transaction.
-        Storage treats work keys and presentation as opaque operation-owned data.
-        Each subscriber consumes a record and its owner's waiting allowance;
-        disk reservations belong to shared work and are admitted after preparation.
-        Metadata is bounded by record counts and individual request limits.
-        Independent reads and ordered writes are sent in two pipeline batches
-        under the same lock. Admission logs describe that transaction's counts
-        and are emitted after commit, without collecting logging-only totals.
+        """Admit one request using the same transaction as batch submissions.
 
         Args:
-            owner: Current browser session hash.
-            request_key: Stable retry key scoped to that browser.
-            expected: Validated inputs, storage reservation and optional work key.
-            request_hash: Exact request hash used to reject conflicting retries.
+            owner: Current session hash.
+            request_key: Stable retry identifier scoped to this owner.
+            expected: Validated operation inputs and shared-work identity.
+            request_hash: Complete request identity.
 
         Returns:
-            Owned subscriber handle joined with current computation state.
+            Owned subscriber row, including an existing idempotent retry.
 
         Raises:
-            ProcessingError: If retry inputs conflict or resource limits are full.
-            ValueError: If no request hash was supplied.
+            ProcessingError: If admission or storage fails.
+            ValueError: If the internal request hash is missing.
         """
-        if not request_hash:
+        result = self.submit_batch(
+            owner,
+            [JobSubmission(request_key, request_hash, expected.operation, expected)],
+        )[0]
+        if isinstance(result, ProcessingError):
+            raise result
+        return result
+
+    def submit_batch(
+        self, owner: str, submissions: list[JobSubmission]
+    ) -> list[dict[str, Any] | ProcessingError]:
+        """Admit up to fifty requests with one capacity snapshot and transaction.
+
+        The shared lock protects retry and work lookups, capacity decisions and
+        inserts. In-memory counts include earlier acceptances in this batch.
+        Duplicate work receives separate subscribers; duplicate retry keys reuse
+        their original subscriber. Rejections do not discard accepted neighbors.
+
+        Args:
+            owner: Current browser-session hash.
+            submissions: Validated operation inputs or sanitized resolution errors.
+
+        Returns:
+            Owned rows or rejections in input order, after accepted rows commit.
+
+        Raises:
+            ValueError: If batch length or an internal request hash is invalid.
+            ProcessingError: If the database transaction fails. No partial commit
+                is attempted; callers retry with the same per-item keys.
+        """
+        if not 1 <= len(submissions) <= 50:
+            raise ValueError("Submit between one and fifty jobs per transaction")
+        if any(not item.request_hash for item in submissions):
             raise ValueError("Direct jobs require a request hash")
+        work_keys = list(
+            {
+                item.prepared.work_key
+                for item in submissions
+                if isinstance(item.prepared, PreparedJobPlan) and item.prepared.work_key
+            }
+        )
+        outcomes: list[str | ProcessingError] = []
+        new_jobs: list[tuple[Any, ...]] = []
+        new_subscribers: list[tuple[Any, ...]] = []
         with self._transaction(acquire_lock=True) as cursor:
-            # Queue independent reads before waiting for their results. The lock
-            # protects the decisions and subsequent writes in this transaction.
             with (
                 cursor.connection.cursor() as work_cursor,
                 cursor.connection.cursor() as count_cursor,
@@ -314,14 +342,14 @@ class PostgresJobStore:
             ):
                 with cursor.connection.pipeline():
                     cursor.execute(
-                        "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND request_key=%s",
-                        (owner, request_key),
+                        "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND request_key=ANY(%s)",
+                        (owner, [item.request_key for item in submissions]),
                     )
                     work_cursor.execute(
-                        "SELECT id,status,(status='queued' OR "
+                        "SELECT id,work_key,status,(status='queued' OR "
                         "(lease_until>now() AND deadline_at>now())) AS can_join "
-                        "FROM processing.jobs WHERE work_key=%s AND status IN ('queued','running')",
-                        (expected.work_key,),
+                        "FROM processing.jobs WHERE work_key=ANY(%s) AND status IN ('queued','running')",
+                        (work_keys,),
                     )
                     count_cursor.execute(
                         "SELECT count(*) AS waiting FROM processing.jobs WHERE status='queued'"
@@ -331,61 +359,75 @@ class PostgresJobStore:
                         "FROM processing.subscribed_jobs",
                         (owner,),
                     )
-                existing = cursor.fetchone()
-                shared = work_cursor.fetchone()
-                count = count_cursor.fetchone()
+                existing_rows = cursor.fetchall()
+                requests = {row["request_key"]: row for row in existing_rows}
+                work = {row["work_key"]: row for row in work_cursor.fetchall()}
+                waiting = count_cursor.fetchone()["waiting"]
                 subscribers = subscriber_cursor.fetchone()
-            if existing:
-                if (
-                    existing["request_hash"] != request_hash
-                    or existing["operation"] != expected.operation
-                ):
-                    raise ProcessingError(
-                        "request_conflict",
-                        "That request ID already belongs to different job inputs.",
-                        409,
+            records, owned = subscribers["records"], subscribers["owned"]
+            for item in submissions:
+                existing = requests.get(item.request_key)
+                if existing:
+                    if (
+                        existing["request_hash"] != item.request_hash
+                        or existing["operation"] != item.operation
+                    ):
+                        outcomes.append(
+                            ProcessingError(
+                                "request_conflict",
+                                "That request ID already belongs to different job inputs.",
+                                409,
+                            )
+                        )
+                    else:
+                        outcomes.append(existing["id"])
+                    continue
+                expected = item.prepared
+                if isinstance(expected, ProcessingError):
+                    outcomes.append(expected)
+                    continue
+                shared = work.get(expected.work_key)
+                if shared and not shared["can_join"]:
+                    outcomes.append(
+                        ProcessingError(
+                            "previous_attempt_stopping",
+                            "Waiting for the previous attempt to stop. Retrying shortly.",
+                            429,
+                        )
                     )
-                return existing
-            # A lease-lost running attempt still owns its slot and work key until
-            # its deadline. Do not join it or create a conflicting replacement.
-            if shared and not shared["can_join"]:
-                raise ProcessingError(
-                    "previous_attempt_stopping",
-                    "Waiting for the previous attempt to stop. Retrying shortly.",
-                    429,
-                )
-            if (not shared or shared["status"] == "queued") and subscribers[
-                "owned"
-            ] >= self.limits.max_owner_waiting_jobs:
-                raise ProcessingError(
-                    "owner_queue_full",
-                    "This browser session has reached its waiting-job limit. Cancel a queued job or wait for one to start.",
-                    429,
-                )
-            if subscribers["records"] >= self.limits.max_job_records:
-                raise ProcessingError(
-                    "job_record_capacity",
-                    "Processing job history is full. Try later or increase its record limit.",
-                    429,
-                )
-            identifier = uuid4().hex
-            if shared:
-                job_id = shared["id"]
-            else:
-                if count["waiting"] >= self.limits.max_waiting_jobs:
-                    raise ProcessingError(
-                        "queue_full",
-                        "The processing waiting queue is full. Wait for a job to start.",
-                        429,
+                    continue
+                uses_waiting = not shared or shared["status"] == "queued"
+                if uses_waiting and owned >= self.limits.max_owner_waiting_jobs:
+                    outcomes.append(
+                        ProcessingError(
+                            "owner_queue_full",
+                            "This browser session has reached its waiting-job limit. Cancel a queued job or wait for one to start.",
+                            429,
+                        )
                     )
-                job_id = identifier
-            # PostgreSQL executes these in order. The subscriber insert therefore
-            # sees the job insert, and notifications are delivered only at commit.
-            with cursor.connection.pipeline():
+                    continue
+                if records >= self.limits.max_job_records:
+                    outcomes.append(
+                        ProcessingError(
+                            "job_record_capacity",
+                            "Processing job history is full. Try later or increase its record limit.",
+                            429,
+                        )
+                    )
+                    continue
+                if not shared and waiting >= self.limits.max_waiting_jobs:
+                    outcomes.append(
+                        ProcessingError(
+                            "queue_full",
+                            "The processing waiting queue is full. Wait for a job to start.",
+                            429,
+                        )
+                    )
+                    continue
+                identifier = uuid4().hex
+                job_id = shared["id"] if shared else identifier
                 if not shared:
-                    cursor.execute(
-                        "INSERT INTO processing.jobs(id,expires_at,status,spec,reserved_bytes,summary,operation,work_key) "
-                        "VALUES (%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s)",
+                    new_jobs.append(
                         (
                             job_id,
                             self.limits.result_ttl_seconds,
@@ -394,41 +436,69 @@ class PostgresJobStore:
                             Jsonb(expected.summary),
                             expected.operation,
                             expected.work_key,
-                        ),
+                        )
                     )
-                    cursor.execute("SELECT pg_notify(%s, '')", (JOB_QUEUE_CHANNEL,))
-                cursor.execute(
-                    "INSERT INTO processing.job_subscribers(id,job_id,owner,request_key,request_hash,presentation) VALUES (%s,%s,%s,%s,%s,%s)",
+                    waiting += 1
+                    if expected.work_key:
+                        work[expected.work_key] = {
+                            "id": job_id,
+                            "status": "queued",
+                            "can_join": True,
+                        }
+                new_subscribers.append(
                     (
                         identifier,
                         job_id,
                         owner,
-                        request_key,
-                        request_hash,
+                        item.request_key,
+                        item.request_hash,
                         (
                             Jsonb(expected.presentation)
                             if expected.presentation is not None
                             else None
                         ),
-                    ),
+                    )
                 )
+                requests[item.request_key] = {
+                    "id": identifier,
+                    "request_hash": item.request_hash,
+                    "operation": item.operation,
+                }
+                records += 1
+                owned += bool(uses_waiting)
+                outcomes.append(identifier)
+            with cursor.connection.pipeline():
+                if new_jobs:
+                    cursor.executemany(
+                        "INSERT INTO processing.jobs(id,expires_at,status,spec,reserved_bytes,summary,operation,work_key) "
+                        "VALUES (%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s)",
+                        new_jobs,
+                    )
+                if new_subscribers:
+                    cursor.executemany(
+                        "INSERT INTO processing.job_subscribers(id,job_id,owner,request_key,request_hash,presentation) "
+                        "VALUES (%s,%s,%s,%s,%s,%s)",
+                        new_subscribers,
+                    )
+                if new_jobs:
+                    cursor.execute("SELECT pg_notify(%s, '')", (JOB_QUEUE_CHANNEL,))
                 cursor.execute(
-                    "SELECT * FROM processing.subscribed_jobs WHERE id=%s",
-                    (identifier,),
+                    "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND id=ANY(%s)",
+                    (owner, [item for item in outcomes if isinstance(item, str)]),
                 )
-            row = cursor.fetchone()
+            rows = {row["id"]: row for row in cursor.fetchall()}
         LOGGER.info(
-            "Processing admission: waiting=%s/%s session_waiting=%s/%s "
-            "records=%s/%s shared=%s",
-            count["waiting"] + (not shared),
+            "Processing admission: waiting=%s/%s session_waiting=%s/%s records=%s/%s accepted=%s new_work=%s",
+            waiting,
             self.limits.max_waiting_jobs,
-            subscribers["owned"] + (not shared or shared["status"] == "queued"),
+            owned,
             self.limits.max_owner_waiting_jobs,
-            subscribers["records"] + 1,
+            records,
             self.limits.max_job_records,
-            bool(shared),
+            len(new_subscribers),
+            len(new_jobs),
         )
-        return row
+        return [rows[item] if isinstance(item, str) else item for item in outcomes]
 
     def save_prepared_job(
         self,

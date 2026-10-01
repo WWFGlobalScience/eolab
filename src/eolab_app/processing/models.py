@@ -31,6 +31,24 @@ class PreparedJobPlan:
     presentation: dict[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class JobSubmission:
+    """One retryable admission, including an optional input-resolution failure.
+
+    Attributes:
+        request_key: Owner-scoped retry identifier.
+        request_hash: Complete validated request identity.
+        operation: Expected operation, including when input resolution failed.
+        prepared: Operation data or its sanitized resolution error. Storage first
+            recovers an existing retry, which may outlive its original input.
+    """
+
+    request_key: str
+    request_hash: str
+    operation: str
+    prepared: "PreparedJobPlan | ProcessingError"
+
+
 class JobResultResponse(BaseModel):
     """Owned download metadata shared by operation-specific result contracts."""
 

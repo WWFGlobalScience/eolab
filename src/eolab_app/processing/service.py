@@ -16,6 +16,7 @@ from eolab_app.processing.request_timings import measure_request_stage
 from eolab_app.processing.models import (
     ArtifactDownload,
     PreparedJobPlan,
+    JobSubmission,
     ProcessingError,
 )
 from eolab_app.processing.clip_models import ClipInputs, ClipJobRequest, UnpreparedClip
@@ -331,49 +332,133 @@ class ProcessingService:
                         409,
                     )
                 return public_job(existing)
-            polygons = (
-                await self.read_polygon_area(owner, inputs.polygonArea)
-                if inputs.polygonArea
-                else None
+            submission = await self.build_calculation_submission(
+                owner, request, {}, request_hash
             )
-            queued = UnpreparedCalculation(request=inputs, polygonArea=polygons)
-            bounds = inputs.selectedBounds
-            if bounds:
-                area_summary = {
-                    "kind": "bounds",
-                    "bounds": (bounds.west, bounds.south, bounds.east, bounds.north),
-                }
-            elif polygons:
-                area_summary = {"kind": "polygons", "bounds": polygons.bounds}
-            elif inputs.catalogSelection:
-                area_summary = {"kind": "catalogSelection", "bounds": None}
-            else:
-                area_summary = {"kind": "wholeRaster", "bounds": None}
-            summary = {
-                "sources": {
-                    alias: source.model_dump(by_alias=True)
-                    for alias, source in inputs.sources.items()
-                },
-                "calculations": [item.model_dump() for item in inputs.calculations],
-                "grid": None,
-                "area": area_summary,
-            }
+            if isinstance(submission.prepared, ProcessingError):
+                raise submission.prepared
         with measure_request_stage("queueAdmission"):
             row = await asyncio.to_thread(
                 self.jobs.submit,
                 owner,
                 request.requestId,
-                PreparedJobPlan(
-                    specification=queued.model_dump(mode="json", by_alias=True),
-                    summary=summary,
-                    reserved_bytes=0,
-                    operation=queued.operation,
-                    work_key=identify_shared_calculation(queued),
-                    presentation={"calculations": summary["calculations"]},
-                ),
+                submission.prepared,
                 request_hash,
             )
         return public_job(row)
+
+    async def build_calculation_submission(
+        self,
+        owner: str,
+        request: AggregateJobRequest,
+        polygon_inputs: dict[PolygonAreaReference, AggregateArea | ProcessingError],
+        request_hash: str | None = None,
+    ) -> JobSubmission:
+        """Capture validated inputs and resolve each owned polygon reference once.
+
+        Args:
+            owner: Current session hash.
+            request: Already validated calculation request.
+            polygon_inputs: Request-local resolution results for repeated areas.
+            request_hash: Previously computed request identity for single-request recovery.
+
+        Returns:
+            Storage admission data, or a resolution error carried with its retry
+            identity so a previously accepted request can still be recovered.
+
+        Raises:
+            ValueError: If persisted polygon input violates its storage contract.
+        """
+        request_hash = (
+            request_hash
+            or hashlib.sha256(
+                json.dumps(
+                    request.model_dump(
+                        mode="json", by_alias=True, exclude={"requestId"}
+                    ),
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+        )
+        polygons = None
+        if request.polygonArea:
+            reference = request.polygonArea
+            if reference not in polygon_inputs:
+                try:
+                    polygon_inputs[reference] = await self.read_polygon_area(
+                        owner, reference
+                    )
+                except ProcessingError as error:
+                    polygon_inputs[reference] = error
+            polygons = polygon_inputs[reference]
+            if isinstance(polygons, ProcessingError):
+                return JobSubmission(
+                    request.requestId, request_hash, "raster.aggregate.v1", polygons
+                )
+        queued = UnpreparedCalculation(request=request, polygonArea=polygons)
+        bounds = request.selectedBounds
+        if bounds:
+            area_summary = {
+                "kind": "bounds",
+                "bounds": (bounds.west, bounds.south, bounds.east, bounds.north),
+            }
+        elif polygons:
+            area_summary = {"kind": "polygons", "bounds": polygons.bounds}
+        elif request.catalogSelection:
+            area_summary = {"kind": "catalogSelection", "bounds": None}
+        else:
+            area_summary = {"kind": "wholeRaster", "bounds": None}
+        summary = {
+            "sources": {
+                alias: source.model_dump(by_alias=True)
+                for alias, source in request.sources.items()
+            },
+            "calculations": [item.model_dump() for item in request.calculations],
+            "grid": None,
+            "area": area_summary,
+        }
+        prepared = PreparedJobPlan(
+            specification=queued.model_dump(mode="json", by_alias=True),
+            summary=summary,
+            reserved_bytes=0,
+            operation=queued.operation,
+            work_key=identify_shared_calculation(queued),
+            presentation={"calculations": summary["calculations"]},
+        )
+        return JobSubmission(
+            request.requestId, request_hash, queued.operation, prepared
+        )
+
+    async def submit_calculation_batch(
+        self, owner: str, requests: list[AggregateJobRequest]
+    ) -> list[dict[str, Any] | ProcessingError]:
+        """Submit independent calculations through one store admission transaction.
+
+        Args:
+            owner: Current browser-session hash.
+            requests: One to fifty requests validated at the HTTP boundary.
+
+        Returns:
+            Public job snapshots or sanitized per-item rejections, in input order.
+            Workers prepare and execute accepted jobs after admission commits.
+
+        Raises:
+            ProcessingError: If the shared admission transaction is unavailable.
+        """
+        polygon_inputs: dict[PolygonAreaReference, AggregateArea | ProcessingError] = {}
+        with measure_request_stage("admissionChecks"):
+            submissions = [
+                await self.build_calculation_submission(owner, request, polygon_inputs)
+                for request in requests
+            ]
+        with measure_request_stage("queueAdmission"):
+            results = await asyncio.to_thread(
+                self.jobs.submit_batch, owner, submissions
+            )
+        return [
+            result if isinstance(result, ProcessingError) else public_job(result)
+            for result in results
+        ]
 
     async def get(self, owner: str, identifier: str) -> dict[str, Any]:
         """Read one owner's public job state.

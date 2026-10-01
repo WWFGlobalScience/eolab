@@ -29,6 +29,206 @@ from test_raster_clips import SOURCE
 ENDPOINT = "/api/processing/raster-calculations"
 
 
+@pytest.mark.parametrize(
+    "limit,code",
+    [
+        ("max_waiting_jobs", "queue_full"),
+        ("max_owner_waiting_jobs", "owner_queue_full"),
+        ("max_job_records", "job_record_capacity"),
+    ],
+)
+def test_batch_admission_is_one_transaction_with_partial_errors_and_safe_retries(
+    boundary: Any, store: Any, monkeypatch: pytest.MonkeyPatch, limit: str, code: str
+) -> None:
+    """Batch admission counts once, preserves neighbors and recovers lost replies.
+
+    Args:
+        boundary: Real HTTP and Processing components.
+        store: Disposable PostgreSQL adapter.
+        monkeypatch: Observe transaction entry without replacing its behavior.
+        limit: Capacity budget reduced to two records.
+        code: Expected per-item capacity rejection.
+    """
+    from contextlib import contextmanager
+
+    client, _, _, _, _ = boundary
+    store.limits = replace(store.limits, **{limit: 2})
+    transactions = []
+    original = store._transaction
+
+    @contextmanager
+    def observe(acquire_lock: bool = False) -> Any:
+        """Record the transaction contract while using the real database.
+
+        Args:
+            acquire_lock: Whether admission requests the shared lock.
+
+        Yields:
+            Real transactional cursor.
+        """
+        transactions.append(acquire_lock)
+        with original(acquire_lock=acquire_lock) as cursor:
+            yield cursor
+
+    monkeypatch.setattr(store, "_transaction", observe)
+    items = [
+        {
+            **request_body(wholeRaster=True),
+            "requestId": uuid4().hex,
+            "calculations": [{"label": "Result", "expression": expression}],
+        }
+        for expression in ["mean(a)", "bad(a)", "max(a)", "min(a)"]
+    ]
+    response = client.post(ENDPOINT + "/batch", json={"items": items}, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    outcomes = response.json()["items"]
+    assert transactions == [True]
+    assert [item["index"] for item in outcomes] == [0, 1, 2, 3]
+    assert outcomes[1]["error"]["status"] == 422
+    assert outcomes[3]["error"]["code"] == code
+    assert outcomes[3]["error"]["retryAfterSeconds"] == 5
+    jobs = [outcomes[i]["job"] for i in [0, 2]]
+    retry = client.post(
+        ENDPOINT + "/batch", json={"items": items}, headers=HEADERS
+    ).json()["items"]
+    assert [retry[i]["job"]["jobId"] for i in [0, 2]] == [job["jobId"] for job in jobs]
+    changed = {
+        **items[0],
+        "calculations": [{"label": "Changed", "expression": "sum(a)"}],
+    }
+    conflict = client.post(
+        ENDPOINT + "/batch", json={"items": [changed]}, headers=HEADERS
+    ).json()["items"][0]
+    assert conflict["error"]["code"] == "request_conflict"
+    assert (
+        client.post(
+            f"/api/processing/jobs/{jobs[0]['jobId']}/cancel", headers=HEADERS
+        ).status_code
+        == 202
+    )
+    if limit == "max_job_records":
+        store.limits = replace(store.limits, max_job_records=3)
+    accepted = client.post(
+        ENDPOINT + "/batch", json={"items": [items[3]]}, headers=HEADERS
+    ).json()["items"][0]
+    assert accepted["job"]["status"] == "queued"
+
+
+def test_batch_joins_duplicate_work_and_preserves_independent_ownership(
+    boundary: Any, store: Any
+) -> None:
+    """Equal work shares execution across and within batches; handles stay owned.
+
+    Args:
+        boundary: Real HTTP, native worker and sources.
+        store: Disposable PostgreSQL storage.
+    """
+    client, worker, _, _, app = boundary
+    item = {**request_body(wholeRaster=True), "requestId": uuid4().hex}
+    second = {**item, "requestId": uuid4().hex}
+    outcomes = client.post(
+        ENDPOINT + "/batch", json={"items": [item, item, second]}, headers=HEADERS
+    ).json()["items"]
+    first_id, repeated_id, second_id = [row["job"]["jobId"] for row in outcomes]
+    assert first_id == repeated_id != second_id
+    with TestClient(app, base_url="https://testserver") as other:
+        foreign = other.post(
+            ENDPOINT + "/batch", json={"items": [item]}, headers=HEADERS
+        ).json()["items"][0]["job"]
+        with psycopg.connect(store.conninfo) as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM processing.jobs"
+            ).fetchone() == (1,)
+            assert connection.execute(
+                "SELECT count(*) FROM processing.job_subscribers"
+            ).fetchone() == (3,)
+        assert client.get(f"/api/processing/jobs/{foreign['jobId']}").status_code == 404
+        client.post(f"/api/processing/jobs/{first_id}/cancel", headers=HEADERS)
+        assert asyncio.run(worker.run_once())
+        assert (
+            client.get(f"/api/processing/jobs/{second_id}").json()["status"] == "ready"
+        )
+        assert (
+            other.get(f"/api/processing/jobs/{foreign['jobId']}").json()["status"]
+            == "ready"
+        )
+        assert (
+            client.get(f"/api/processing/jobs/{first_id}").json()["status"]
+            == "cancelled"
+        )
+
+
+def test_batch_bounds_and_origin_checks_precede_admission(
+    boundary: Any, store: Any
+) -> None:
+    """Reject oversized envelopes and hostile origins; isolate malformed items.
+
+    Args:
+        boundary: Real HTTP and Processing components.
+        store: Disposable PostgreSQL to verify rejected envelopes create no work.
+    """
+    client, _, _, _, _ = boundary
+    item = {**request_body(), "requestId": uuid4().hex}
+    for items in [[], [item] * 51]:
+        assert (
+            client.post(
+                ENDPOINT + "/batch", json={"items": items}, headers=HEADERS
+            ).status_code
+            == 422
+        )
+    assert (
+        client.post(
+            ENDPOINT + "/batch", content="x" * (802 * 1024), headers=HEADERS
+        ).status_code
+        == 413
+    )
+    assert client.post(ENDPOINT + "/batch", json={"items": [item]}).status_code == 403
+    with psycopg.connect(store.conninfo) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM processing.jobs"
+        ).fetchone() == (0,)
+    reply = client.post(
+        ENDPOINT + "/batch",
+        json={"items": [None, {"huge": "x" * 17000}, item]},
+        headers=HEADERS,
+    ).json()["items"]
+    assert [reply[i]["error"]["status"] for i in [0, 1]] == [422, 413]
+    assert reply[2]["job"]["status"] == "queued"
+
+
+def test_batch_retry_recovers_after_polygon_upload_expires(
+    boundary: Any, store: Any
+) -> None:
+    """An accepted retry survives deletion of its temporary polygon reference.
+
+    Args:
+        boundary: Real HTTP and owned polygon-input storage.
+        store: Disposable database shared by the request lifecycle.
+    """
+    client, _, _, _, _ = boundary
+    area = client.post(
+        "/api/processing/polygon-areas",
+        json={
+            "polygons": [
+                {"type": "Polygon", "coordinates": [[[0, 9], [1, 9], [1, 10], [0, 9]]]}
+            ]
+        },
+        headers=HEADERS,
+    ).json()["polygonArea"]
+    item = {**request_body(polygonArea=area), "requestId": uuid4().hex}
+    first = client.post(
+        ENDPOINT + "/batch", json={"items": [item]}, headers=HEADERS
+    ).json()["items"][0]["job"]
+    client.delete("/api/processing/polygon-areas/" + area["id"], headers=HEADERS)
+    results = client.post(
+        ENDPOINT + "/batch",
+        json={"items": [item, {**item, "requestId": uuid4().hex}]},
+        headers=HEADERS,
+    ).json()["items"]
+    assert results[0]["job"]["jobId"] == first["jobId"]
+    assert results[1]["error"]["status"] == 409
+
+
 def request_body(**selection: Any) -> dict:
     """Build explicit calculation intent for the signed fixture raster.
 

@@ -152,6 +152,27 @@ class AggregateJobRequest(AggregatePlanRequest):
     ]
 
 
+MAX_CALCULATION_BATCH_ITEMS = 50
+MAX_CALCULATION_ITEM_BYTES = 16 * 1024
+MAX_CALCULATION_BATCH_BYTES = (
+    MAX_CALCULATION_BATCH_ITEMS * MAX_CALCULATION_ITEM_BYTES + 1024
+)
+
+
+class AggregateBatchRequest(BaseModel):
+    """Bound the envelope; the HTTP boundary validates each item independently.
+
+    Unvalidated items are intentional: an invalid formula must not reject the
+    other calculations. No item reaches the service without AggregateJobRequest
+    validation. The request body is also bounded before JSON parsing.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    items: Annotated[
+        tuple[Any, ...], Field(min_length=1, max_length=MAX_CALCULATION_BATCH_ITEMS)
+    ]
+
+
 class AggregateArea(BaseModel):
     """Exact calculation area: a box, catalog selection, uploaded polygons or whole raster."""
 
@@ -540,6 +561,35 @@ class AggregateJobResponse(JobResponse):
     preparation: CalculationPreparation | None = None
     progress: AggregateProgress
     result: AggregateResultResponse | None
+
+
+class CalculationAdmissionError(BaseModel):
+    """Sanitized per-item rejection, including existing capacity-retry advice."""
+
+    status: Annotated[int, Field(ge=400, le=599)]
+    code: str
+    message: str
+    retryAfterSeconds: Annotated[int, Field(ge=0)] | None
+
+
+class AcceptedCalculation(BaseModel):
+    """An owned job associated with its zero-based position in the request."""
+
+    index: Annotated[int, Field(ge=0, lt=MAX_CALCULATION_BATCH_ITEMS)]
+    job: AggregateJobResponse
+
+
+class RejectedCalculation(BaseModel):
+    """An independent rejection associated with its position in the request."""
+
+    index: Annotated[int, Field(ge=0, lt=MAX_CALCULATION_BATCH_ITEMS)]
+    error: CalculationAdmissionError
+
+
+class AggregateBatchResponse(BaseModel):
+    """One indexed outcome for every item; accepted jobs execute independently."""
+
+    items: list[AcceptedCalculation | RejectedCalculation]
 
 
 @dataclass(frozen=True)

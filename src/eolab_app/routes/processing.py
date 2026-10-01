@@ -8,6 +8,7 @@ prepares and executes each request under the same job ID.
 import asyncio
 from contextlib import suppress
 import hashlib
+import json
 import re
 import secrets
 import time
@@ -17,7 +18,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Path, Request, Response
 from fastapi.routing import APIRoute
-from pydantic import Field
+from pydantic import Field, ValidationError
 from starlette.responses import FileResponse, StreamingResponse
 
 from eolab_app.processing.models import (
@@ -32,6 +33,10 @@ from eolab_app.processing.aggregate_models import (
     AggregateJobResponse,
     AggregateJobRequest,
     AggregateValidationRequest,
+    AggregateBatchRequest,
+    AggregateBatchResponse,
+    MAX_CALCULATION_BATCH_BYTES,
+    MAX_CALCULATION_ITEM_BYTES,
 )
 from eolab_app.processing.polygon_areas import (
     MAX_POLYGON_AREA_BYTES,
@@ -67,7 +72,7 @@ class BoundedProcessingRoute(APIRoute):
     """Bound calculation requests and polygon uploads before parsing their JSON."""
 
     def get_route_handler(self) -> Callable[[Request], Awaitable[Response]]:
-        """Limit polygon uploads to 8 MiB and other POST bodies to 16 KiB.
+        """Apply upload, batch and single-request byte limits before parsing JSON.
 
         Returns:
             Handler retaining normal validation and disconnect semantics.
@@ -91,7 +96,11 @@ class BoundedProcessingRoute(APIRoute):
             limit = (
                 MAX_POLYGON_AREA_BYTES
                 if request.url.path == "/api/processing/polygon-areas"
-                else 16 * 1024
+                else (
+                    MAX_CALCULATION_BATCH_BYTES
+                    if request.url.path == "/api/processing/raster-calculations/batch"
+                    else 16 * 1024
+                )
             )
             body = bytearray()
             async for chunk in request.stream():
@@ -466,6 +475,75 @@ def create_processing_router(service: ProcessingService) -> APIRouter:
         )
         response.headers["Location"] = f"/api/processing/jobs/{job['jobId']}"
         return job
+
+    @router.post(
+        "/raster-calculations/batch",
+        response_model=AggregateBatchResponse,
+        openapi_extra=MUTATION_SCHEMA,
+    )
+    async def submit_raster_calculation_batch(
+        body: AggregateBatchRequest, request: Request, response: Response
+    ) -> dict[str, Any]:
+        """Validate independent calculations and admit their jobs in one transaction.
+
+        Args:
+            body: Bounded list of raw items, each checked by AggregateJobRequest.
+            request: Same-origin session and Processing header.
+            response: Private cache and session-cookie response.
+
+        Returns:
+            HTTP 200 with one indexed job or error per item. A malformed envelope
+            rejects the request; individual failures preserve valid neighbors.
+
+        Raises:
+            HTTPException: If ownership checks or the shared transaction fail.
+        """
+        owner = _owner(request, response)
+        results: list[dict[str, Any]] = []
+        valid: list[AggregateJobRequest] = []
+        indices: list[int] = []
+        for index, item in enumerate(body.items):
+            results.append({"index": index})
+            if (
+                len(
+                    json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode()
+                )
+                > MAX_CALCULATION_ITEM_BYTES
+            ):
+                results[index]["error"] = {
+                    "status": 413,
+                    "code": "request_too_large",
+                    "message": "Each calculation must fit within 16 KiB.",
+                    "retryAfterSeconds": None,
+                }
+                continue
+            try:
+                valid.append(AggregateJobRequest.model_validate(item))
+                indices.append(index)
+            except ValidationError as error:
+                results[index]["error"] = {
+                    "status": 422,
+                    "code": "invalid_calculation",
+                    "message": "; ".join(
+                        part["msg"] for part in error.errors(include_input=False)
+                    ),
+                    "retryAfterSeconds": None,
+                }
+        if valid:
+            outcomes = await _result(service.submit_calculation_batch(owner, valid))
+            for index, outcome in zip(indices, outcomes, strict=True):
+                if isinstance(outcome, ProcessingError):
+                    results[index]["error"] = {
+                        "status": outcome.status,
+                        "code": outcome.code,
+                        "message": outcome.detail,
+                        "retryAfterSeconds": (
+                            5 if outcome.status in {429, 503} else None
+                        ),
+                    }
+                else:
+                    results[index]["job"] = outcome
+        return {"items": results}
 
     @router.get("/jobs", response_model=JobListResponse[SupportedJobResponse])
     async def jobs(request: Request, response: Response) -> dict[str, Any]:

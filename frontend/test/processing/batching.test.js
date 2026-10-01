@@ -58,7 +58,7 @@ test("API transmits opt-in batch tuning and keeps omitted legacy requests compat
     const bodies=[];
     const api=new ProcessingApiClient(async(path,options)=>{
         if(path.endsWith("/jobs"))return Response.json({jobs:[]});
-        bodies.push(JSON.parse(options.body));return Response.json(plan);
+        bodies.push(JSON.parse(options.body).items[0]);return Response.json({items:[{index:0,job:plan}]});
     });
     await api.submitCalculation({...calculationIntent({...intent,targetChunkPixels:65536}),requestId:"r".repeat(32)});
     await api.submitCalculation({...calculationIntent(intent),requestId:"s".repeat(32)});
