@@ -164,13 +164,15 @@ def test_release_wakes_idle_workers_before_fallback(store: PostgresJobStore) -> 
         runner.run(scenario())
 
 
+@pytest.mark.parametrize("batch", [False, True])
 def test_two_real_native_workers_execute_and_deduplicate(
-    boundary: Any, store: PostgresJobStore
+    boundary: Any, store: PostgresJobStore, batch: bool
 ) -> None:
     """Distinct jobs use separate native children; matching requests use one job.
 
     Args:
         boundary: Real HTTP service, raster source and Processing worker dependencies.
+        batch: Use one batch admission or independent legacy HTTP submissions.
         store: Disposable PostgreSQL queue.
     """
     client, template, _, _, _ = boundary
@@ -178,17 +180,21 @@ def test_two_real_native_workers_execute_and_deduplicate(
         store.limits, worker_count=2, max_execution_memory_bytes=4 * 1024**3
     )
     payload = request_body()
-    first = client.post(
-        ENDPOINT, json={**payload, "requestId": uuid4().hex}, headers=HEADERS
-    ).json()
-    duplicate = client.post(
-        ENDPOINT, json={**payload, "requestId": uuid4().hex}, headers=HEADERS
-    ).json()
-    second = client.post(
-        ENDPOINT,
-        json={**request_body(wholeRaster=True), "requestId": uuid4().hex},
-        headers=HEADERS,
-    ).json()
+    inputs = [
+        {**payload, "requestId": uuid4().hex},
+        {**payload, "requestId": uuid4().hex},
+        {**request_body(wholeRaster=True), "requestId": uuid4().hex},
+    ]
+    if batch:
+        response = client.post(
+            ENDPOINT + "/batch", json={"items": inputs}, headers=HEADERS
+        )
+        assert response.status_code == 200, response.text
+        first, duplicate, second = [item["job"] for item in response.json()["items"]]
+    else:
+        first, duplicate, second = [
+            client.post(ENDPOINT, json=item, headers=HEADERS).json() for item in inputs
+        ]
 
     async def scenario() -> None:
         """Use two native processes and inspect simultaneous durable claims."""

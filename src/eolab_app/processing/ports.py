@@ -2,7 +2,13 @@
 
 from typing import Protocol, Any
 from pathlib import Path
-from eolab_app.processing.models import Artifact, PreparedJobPlan, ProcessingLimits
+from eolab_app.processing.models import (
+    Artifact,
+    PreparedJobPlan,
+    ProcessingLimits,
+    JobSubmission,
+    ProcessingError,
+)
 
 
 class JobSubscription(Protocol):
@@ -172,6 +178,26 @@ class JobStore(Protocol):
 
         Raises:
             ProcessingError: If global or owner limits are full.
+        """
+        ...
+
+    def submit_batch(
+        self, owner: str, submissions: list[JobSubmission]
+    ) -> list[dict[str, Any] | ProcessingError]:
+        """Admit independent requests under one connection, lock and transaction.
+
+        Args:
+            owner: Current session hash.
+            submissions: One to fifty validated requests, in admission order.
+
+        Returns:
+            One owned row or sanitized rejection per input, in the same order.
+            Accepted entries commit together; an unexpected storage failure rolls
+            back the transaction. Retries retain each request's original identity.
+
+        Raises:
+            ProcessingError: If the transaction fails without a known outcome.
+            ValueError: If the batch size or internal request identity is invalid.
         """
         ...
 

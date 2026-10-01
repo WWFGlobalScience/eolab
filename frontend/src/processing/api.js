@@ -172,6 +172,7 @@ export class ProcessingApiClient {
         this.diagnostics = new ProcessingDiagnostics();
         this.requestSequence = 0;
         this.requestsInFlight = 0;
+        this.pendingCalculations = [];
     }
 
     /** Share one event stream for planning and job observers after cookie setup.
@@ -322,7 +323,8 @@ export class ProcessingApiClient {
         return this.request(`/polygon-areas/${opaqueId(id)}`, "DELETE");
     }
 
-    /** Queue complete calculation inputs for preparation and execution.
+    /** Queue complete inputs, coalescing submissions ready in the same microtask turn.
+     * Each caller retains its independent promise, retry key and cancellation lifecycle.
      * @param {Object} submission Source, area, formulas and stable requestId.
      * @return {Promise<Object>} Owned job with preparation details once the worker produces them.
      * @throws {ProcessingRequestError|Error} If admission fails or the response is invalid.
@@ -339,7 +341,51 @@ export class ProcessingApiClient {
                 : area.kind === "catalogSelection" ? {catalogSelection: area.catalogSelection}
                 : area.kind === "polygonArea" ? {polygonArea: area.polygonArea} : {wholeRaster: true}),
         };
-        return validateJob(await this.request("/raster-calculations", "POST", body));
+        if (new TextEncoder().encode(JSON.stringify(body)).length > 16 * 1024) {
+            throw new ProcessingRequestError("Each calculation must fit within 16 KiB.", 413, "request_too_large");
+        }
+        return new Promise((resolve, reject) => {
+            this.pendingCalculations.push({body, resolve, reject});
+            if (this.pendingCalculations.length === 1) queueMicrotask(() => {
+                const pending = this.pendingCalculations;
+                this.pendingCalculations = [];
+                for (let offset = 0; offset < pending.length; offset += 50)
+                    void this.sendCalculationBatch(pending.slice(offset, offset + 50));
+            });
+        });
+    }
+
+    /** Send one bounded admission batch and settle every independent submission.
+     * Unknown outcomes reject with the original transport error so executors retain
+     * their saved keys. Per-item capacity errors reuse the existing retry behavior.
+     * @param {{body:Object, resolve:function(Object):void, reject:function(Error):void}[]} pending One to fifty submissions.
+     * @return {Promise<void>} All entries settled; callers observe their own promises.
+     */
+    async sendCalculationBatch(pending) {
+        try {
+            const response = await this.request("/raster-calculations/batch", "POST", {items: pending.map(item => item.body)});
+            const items = response.items;
+            if (!Array.isArray(items) || items.length !== pending.length ||
+                new Set(items.map(item => item?.index)).size !== pending.length ||
+                items.some(item => !Number.isSafeInteger(item?.index) || item.index < 0 || item.index >= pending.length ||
+                    Boolean(item.job) === Boolean(item.error))) {
+                throw new Error("Incomplete calculation admission response. Retry to recover your jobs.");
+            }
+            for (const item of items) {
+                const caller = pending[item.index];
+                try {
+                    if (item.job) caller.resolve(validateJob(item.job));
+                    else {
+                        const {message, status, code, retryAfterSeconds} = item.error;
+                        if (typeof message !== "string" || !Number.isInteger(status) || status < 400 || status > 599 ||
+                            typeof code !== "string" || !(retryAfterSeconds === null ||
+                            Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0 && retryAfterSeconds <= 86400))
+                            throw new Error("Invalid calculation rejection. Retry to recover your jobs.");
+                        caller.reject(new ProcessingRequestError(message, status, code, retryAfterSeconds));
+                    }
+                } catch (error) { caller.reject(error); }
+            }
+        } catch (error) { for (const caller of pending) caller.reject(error); }
     }
 
     /** Read a tracked job even if it falls outside recent history. @param {string} id Job ID. @return {Promise<Object>} Owned job. */

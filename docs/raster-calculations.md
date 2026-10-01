@@ -85,8 +85,9 @@ Previous plots are faded while replacements are pending. Visibility, plot assign
 axis scale, names, chart type and display order change without recalculating.
 
 With automatic updates enabled, inputs calculate after a 700 ms pause. Each selected raster
-requests its calculation independently, without waiting for the previous result
-or making a preliminary formula-validation request. Submission errors appear in
+retains an independent calculation; submissions ready together travel in one HTTP
+batch of up to 50 rasters. Larger stacks use additional batches without dropping
+rasters. No preliminary formula-validation request is needed. Submission errors appear in
 the panel; an identical error affecting the whole stack is shown once above the
 results. Correct the formula or choose **Calculate** to retry.
 The server queues one job per raster, including preparation and execution. Results appear as they finish; the
@@ -323,3 +324,30 @@ polygons. **Mask preparation** measures creating the temporary mask.
 
 After upgrading, an older queued job may need more disk space than it originally
 reserved. If the job reports insufficient reserved space, run the calculation again.
+
+## Batch submission API
+
+`POST /api/processing/raster-calculations/batch` accepts `{"items": [...]}`,
+with 1–50 complete single-calculation request objects. Each retains its own
+`requestId`. The envelope is limited to 801 KiB before JSON parsing, and each
+item's compact UTF-8 JSON to 16 KiB. The existing same-origin Processing header
+and owner cookie apply. The single-calculation endpoint remains available.
+
+A valid envelope returns HTTP 200 and one `items` entry per input, identified by
+its zero-based `index`. An entry contains either `job` (the normal owned job
+snapshot) or `error` with `status`, `code`, `message`, and nullable
+`retryAfterSeconds`. Invalid items do not prevent valid neighbors from being
+admitted. Envelope/origin errors reject the request. Unexpected transaction
+failure rolls back its accepted inserts; a lost response remains uncertain, so
+clients retry with the original per-item keys. A retry returns the accepted job
+even if the queue filled or its temporary polygon upload expired afterward.
+
+Admission borrows one pooled connection, takes the shared lock once, reads retry
+and work identities together, and reads capacity counts once. It updates those
+counts for each acceptance before batching job/subscriber inserts and committing.
+Uploaded polygon areas are resolved once per distinct reference before that
+transaction, using their existing ownership boundary. The lock is not held while
+resolving inputs or running native work. There is no batch scheduler or batch job:
+existing workers, fairness, deduplication, SSE/status observation, and per-job
+cancellation still apply. Browser executors retain accepted handles and retry
+only capacity-rejected items; failed transport retains keys for explicit recovery.

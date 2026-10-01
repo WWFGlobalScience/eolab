@@ -11,7 +11,12 @@ import pytest
 
 import eolab_app.processing.job_store as job_store_module
 from eolab_app.processing.job_store import PostgresJobStore
-from eolab_app.processing.models import Artifact, PreparedJobPlan, ProcessingError
+from eolab_app.processing.models import (
+    Artifact,
+    PreparedJobPlan,
+    ProcessingError,
+    JobSubmission,
+)
 from test_processing_jobs import boundary, store, clip_inputs, HEADERS
 from test_processing_calculations import calculation_inputs
 
@@ -255,20 +260,31 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
     )
 
 
+@pytest.mark.parametrize("batch", [False, True])
 def test_failed_subscriber_insert_rolls_back_the_entire_submission(
-    store: PostgresJobStore, caplog: pytest.LogCaptureFixture
+    store: PostgresJobStore, caplog: pytest.LogCaptureFixture, batch: bool
 ) -> None:
     """A later pipeline failure leaves neither orphan work nor an admission log.
 
     Args:
         store: Disposable PostgreSQL with the real subscriber size constraint.
         caplog: Captured admission log records.
+        batch: Include a valid neighbor in the transaction that must roll back.
     """
     caplog.set_level("INFO", logger="eolab_app.processing.job_store")
     plan = PreparedJobPlan({}, {}, 0, work_key="atomic")
     oversized = replace(plan, presentation={"label": "x" * 32769})
     with pytest.raises(ProcessingError) as failed:
-        store.submit("owner", "retry", oversized, "hash")
+        if batch:
+            store.submit_batch(
+                "owner",
+                [
+                    JobSubmission("valid", "valid-hash", plan.operation, plan),
+                    JobSubmission("retry", "hash", oversized.operation, oversized),
+                ],
+            )
+        else:
+            store.submit("owner", "retry", oversized, "hash")
     assert failed.value.code == "processing_unavailable"
     with psycopg.connect(store.conninfo) as connection:
         assert connection.execute(

@@ -410,8 +410,8 @@ test("polygon uploads use owned transport and recovery stores only their small r
     const api = new ProcessingApiClient(async (url, options) => {
         requests.push({url, ...options});
         const response = url.endsWith("/jobs") ? {jobs:[]} : url.endsWith("/polygon-areas") && options.method === "POST"
-            ? {polygonArea,bbox:[0,0,1,1],matched:1} : url.endsWith("/raster-calculations")
-                ? {jobId:"d".repeat(32),operation:"raster.aggregate.v1",status:"queued",sources:{a:source},calculations:[{label:"Mean",expression:"mean(a)"}],area:{kind:"polygons",bounds:[0,0,1,1]},grid:null,progress:{},result:null} : {deleted:true};
+            ? {polygonArea,bbox:[0,0,1,1],matched:1} : url.endsWith("/raster-calculations/batch")
+                ? {items:[{index:0,job:{jobId:"d".repeat(32),operation:"raster.aggregate.v1",status:"queued",sources:{a:source},calculations:[{label:"Mean",expression:"mean(a)"}],area:{kind:"polygons",bounds:[0,0,1,1]},grid:null,progress:{},result:null}}]} : {deleted:true};
         return new Response(JSON.stringify(response), {status:200,headers:{"Content-Type":"application/json"}});
     });
     const polygons = [{type:"Polygon",coordinates:[[[0,0],[1,0],[1,1],[0,0]]]}];
@@ -422,7 +422,7 @@ test("polygon uploads use owned transport and recovery stores only their small r
     assert.equal(requests[0].url,"/api/processing/jobs");
     assert.deepEqual(JSON.parse(requests[1].body),{polygons});
     assert.equal(requests[1].headers["X-EOLab-Processing"],"1");
-    const planned = JSON.parse(requests[2].body);
+    const planned = JSON.parse(requests[2].body).items[0];
     assert.deepEqual(planned.polygonArea,polygonArea);
     assert.equal(planned.wholeRaster,undefined);
     assert.equal(planned.polygons,undefined);
