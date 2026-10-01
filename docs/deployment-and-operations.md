@@ -360,6 +360,21 @@ See [clip limits](raster-clips.md#storage-and-limits),
 
 ## Processing storage and recovery
 
+Processing reuses PostgreSQL connections per process. The API and Processing
+worker each own a separate pool: two connections are prepared at startup, growing
+to at most eight under concurrent demand. Up to 64 borrowers may wait, each for
+at most three seconds; exhaustion uses the existing storage-unavailable response.
+These are connection limits, not calculation-worker or job-queue limits. Allow
+for up to 16 pooled connections across the two processes, plus dedicated job
+notification connections and connections used by other application capabilities.
+
+Each transaction exclusively borrows one connection and commits or rolls back
+before returning it. Checkout checks detect broken connections; the pool replaces
+them. SQL retains its five-second statement timeout and three-second lock timeout.
+Startup opens the pool without gating unrelated routes on database readiness;
+shutdown closes it after consumers stop. This does not change admission queries,
+cleanup scheduling, advisory locks or worker execution capacity.
+
 The named Processing volume is mounted at `/processing-data`, writable by
 `processing-worker` and read-only in the app. Keep it outside the source mount.
 The 20 GiB reservation budget does not allocate or cap the underlying disk;

@@ -17,6 +17,7 @@ dependencies = [
     "ijson>=3.5,<4",
     "numpy>=1.26,<3",
     "psycopg[binary]>=3.2,<4",
+    "psycopg_pool>=3.3.3,<4",
     "pyproj>=3.7,<4",
     "rasterio>=1.5,<2",
     "shapely>=2.1,<3",
