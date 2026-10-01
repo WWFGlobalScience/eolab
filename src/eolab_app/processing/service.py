@@ -448,9 +448,7 @@ class ProcessingService:
         polygon_inputs: dict[PolygonAreaReference, AggregateArea | ProcessingError] = {}
         with measure_request_stage("admissionChecks"):
             submissions = [
-                await self.build_calculation_submission(
-                    owner, request, polygon_inputs
-                )
+                await self.build_calculation_submission(owner, request, polygon_inputs)
                 for request in requests
             ]
         with measure_request_stage("queueAdmission"):
