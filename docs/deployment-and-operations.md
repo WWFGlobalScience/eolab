@@ -439,10 +439,11 @@ records are discarded; completed job downloads and calculation caches remain.
 Preparation retains a 15-second timeout within the job's overall deadline.
 Status reads use the existing owner-scoped SSE hints and polling fallback.
 
-Calculation submissions retry `owner_queue_full` and `queue_full` with the same
-request key, using cancellable backoff and `Retry-After`. Downloads retains an
-unconfirmed submission for an explicit retry. Retained-input, result-storage and
-job-history exhaustion remain explicit errors requiring attention.
+Calculation submissions retry `owner_queue_full`, `queue_full` and
+`previous_attempt_stopping` with the same request key, using cancellable backoff
+and `Retry-After`. Downloads retains an unconfirmed submission for an explicit
+retry. Result-storage and job-history exhaustion remain explicit errors requiring
+attention.
 
 ### Durable calculation and clip queues
 
@@ -470,11 +471,16 @@ the oldest queued job. Each start counts as a turn even if execution fails or is
 cancelled. Running work is never preempted, so another session can still wait
 up to the current job's execution deadline. This shares turns, not CPU seconds.
 Unfinished jobs are interrupted on worker startup. Deploy the app and worker
-together. The migration counts
-existing inputs; a database trigger accounts for inserted inputs and their cleanup.
+together. Metadata retention is bounded by job/subscriber counts and individual
+request limits. Submission batches the job and subscriber accounting queries on
+one connection under the existing advisory lock; it does not measure or sum JSON
+bytes. The migration removes the old `input_bytes` column and measurement trigger.
+`EOLAB_PROCESSING_MAX_JOB_INPUT_BYTES` is retired and can be removed from Coolify.
+Disk admission happens after preparation, when the scratch/output reservation is
+known; that reservation remains held until files are cleaned up.
 
 The defaults admit a burst of 32 jobs from one session plus four jobs each from
-twelve other sessions (80 waiting jobs), provided storage budgets also fit.
+twelve other sessions (80 waiting jobs). Execution waits for disk reservations to fit.
 `tests/test_processing_admission_postgres.py` exercises that workload with a held
 execution lane, then checks session turns and FIFO order within each session.
 Raising the backlog limits does not add workers or make individual jobs faster.
@@ -488,7 +494,6 @@ fail startup. Omitted values use the defaults below.
 | `EOLAB_PROCESSING_MAX_WAITING_JOBS` | 128 | Global queued jobs, excluding running/cancelling work |
 | `EOLAB_PROCESSING_MAX_OWNER_WAITING_JOBS` | 32 | Queued jobs per browser session |
 | `EOLAB_PROCESSING_MAX_JOB_RECORDS` | 4096 | Subscriber handles, including retained results and idempotency records |
-| `EOLAB_PROCESSING_MAX_JOB_INPUT_BYTES` | 134217728 | Shared job inputs/summaries plus retained subscriber formula labels |
 | `EOLAB_PROCESSING_MAX_STORED_BYTES` | 21474836480 | Artifact/scratch disk reservations, unchanged 20 GiB default |
 | `EOLAB_PROCESSING_FREE_SPACE_FLOOR_BYTES` | 2147483648 | Physical free space to leave unused; zero disables the floor |
 | `EOLAB_PROCESSING_EXECUTION_TIMEOUT_SECONDS` | 600 | Maximum duration of an executing job, excluding queue wait |

@@ -20,15 +20,17 @@ test("the executor does not import the statistics controller or its view", () =>
 
 test("job queue capacity waits automatically, keeps the request key, and can be cancelled",async context=>{
     context.mock.timers.enable({apis:["setTimeout"]});
-    for(const cancel of [false,true]) {
+    for(const code of ["owner_queue_full", "previous_attempt_stopping"]) for(const cancel of [false,true]) {
+        const message = code === "previous_attempt_stopping" ? "Waiting for the previous attempt to stop. Retrying shortly." : "Queue full";
         const h=fixture(), submit=h.api.submitCalculation, attempts=[];
         h.api.submitCalculation=async request=>{
             attempts.push(request);
-            if(attempts.length===1) throw new ProcessingRequestError("Queue full",429,"owner_queue_full",5);
+            if(attempts.length===1) throw new ProcessingRequestError(message,429,code,5);
             return submit(request);
         };
         await h.run(true);
-        assert.match(h.controller.snapshot.message,/Waiting for server capacity/);
+        if(code === "previous_attempt_stopping") assert.equal(h.controller.snapshot.message, message);
+        else assert.match(h.controller.snapshot.message,/Waiting for server capacity/);
         assert.equal(h.controller.snapshot.recoverable,false);
         assert.ok(h.storage.read()?.pending);
         if(cancel) {

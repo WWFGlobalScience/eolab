@@ -91,7 +91,7 @@ class PostgresJobStore:
 
     @contextmanager
     def _transaction(
-        self, locked: bool = False
+        self, acquire_lock: bool = False
     ) -> Iterator[psycopg.Cursor[dict[str, Any]]]:
         """Borrow a connection for one optionally locked transaction.
 
@@ -99,7 +99,7 @@ class PostgresJobStore:
         transaction advisory lock. Broken connections are replaced by the pool.
 
         Args:
-            locked: Acquire Processing's database-wide transaction advisory lock.
+            acquire_lock: Acquire Processing's database-wide transaction advisory lock.
 
         Yields:
             Dictionary-row cursor; all operations are committed or rolled back.
@@ -111,7 +111,7 @@ class PostgresJobStore:
         try:
             with self._pool.connection() as connection:
                 with connection.cursor() as cursor:
-                    if locked:
+                    if acquire_lock:
                         cursor.execute(
                             "SELECT pg_advisory_xact_lock(%s)",
                             (PROCESSING_ADVISORY_LOCK_ID,),
@@ -131,7 +131,7 @@ class PostgresJobStore:
             ProcessingError: If the database cannot apply the schema.
         """
         sql = files("eolab_app.processing").joinpath("schema.sql").read_text()
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(sql)
 
     def interrupt_unfinished_jobs_on_restart(self) -> int:
@@ -149,7 +149,7 @@ class PostgresJobStore:
         Raises:
             ProcessingError: If PostgreSQL cannot update the jobs.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "UPDATE processing.jobs SET status='interrupted',error=%s,"
                 "updated_at=clock_timestamp() "
@@ -186,7 +186,7 @@ class PostgresJobStore:
                 "This processing input exceeds the 8 MiB storage limit.",
                 413,
             )
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute("DELETE FROM processing.inputs WHERE expires_at <= now()")
             cursor.execute(
                 "SELECT count(*) AS total, count(*) FILTER (WHERE owner=%s) AS owned, coalesce(sum(bytes),0) AS bytes FROM processing.inputs",
@@ -248,7 +248,7 @@ class PostgresJobStore:
         Raises:
             ProcessingError: If storage is unavailable.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "DELETE FROM processing.inputs WHERE id=%s AND owner=%s",
                 (identifier, owner),
@@ -283,7 +283,8 @@ class PostgresJobStore:
         Joining, cancellation and completion serialize in a short transaction.
         Storage treats work keys and presentation as opaque operation-owned data.
         Each subscriber consumes a record and its owner's waiting allowance;
-        shared computation inputs and disk reservations are counted only once.
+        disk reservations belong to shared work and are admitted after preparation.
+        Metadata is bounded by record counts and individual request limits.
 
         Args:
             owner: Current browser session hash.
@@ -300,7 +301,7 @@ class PostgresJobStore:
         """
         if not request_hash:
             raise ValueError("Direct jobs require a request hash")
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND request_key=%s",
                 (owner, request_key),
@@ -333,22 +334,25 @@ class PostgresJobStore:
                 )
                 if cursor.fetchone():
                     raise ProcessingError(
-                        "queue_full",
-                        "Matching work is stopping. Try again shortly.",
+                        "previous_attempt_stopping",
+                        "Waiting for the previous attempt to stop. Retrying shortly.",
                         429,
                     )
-            cursor.execute(
-                "SELECT count(*) FILTER (WHERE status='queued') AS waiting, "
-                "COALESCE(sum(input_bytes),0) AS inputs, COALESCE(sum(reserved_bytes),0) AS bytes "
-                "FROM processing.jobs"
-            )
-            count = cursor.fetchone()
-            cursor.execute(
-                "SELECT count(*) AS records, count(*) FILTER (WHERE owner=%s AND status='queued') AS owned "
-                "FROM processing.subscribed_jobs",
-                (owner,),
-            )
-            subscribers = cursor.fetchone()
+            # Send both independent aggregates before waiting for their results.
+            # Both cursors use this transaction's connection and advisory lock.
+            with cursor.connection.cursor() as subscriber_cursor:
+                with cursor.connection.pipeline():
+                    cursor.execute(
+                        "SELECT count(*) FILTER (WHERE status='queued') AS waiting, "
+                        "COALESCE(sum(reserved_bytes),0) AS bytes FROM processing.jobs"
+                    )
+                    subscriber_cursor.execute(
+                        "SELECT count(*) AS records, count(*) FILTER (WHERE owner=%s AND status='queued') AS owned "
+                        "FROM processing.subscribed_jobs",
+                        (owner,),
+                    )
+                count = cursor.fetchone()
+                subscribers = subscriber_cursor.fetchone()
             if (not shared or shared["status"] == "queued") and subscribers[
                 "owned"
             ] >= self.limits.max_owner_waiting_jobs:
@@ -363,36 +367,6 @@ class PostgresJobStore:
                     "Processing job history is full. Try later or increase its record limit.",
                     429,
                 )
-            cursor.execute(
-                "SELECT coalesce(sum(octet_length(presentation::text)),0) AS bytes FROM processing.job_subscribers"
-            )
-            presentation_bytes = cursor.fetchone()["bytes"]
-            cursor.execute(
-                "SELECT octet_length(%s::jsonb::text)+octet_length(%s::jsonb::text) AS inputs, "
-                "coalesce(octet_length(%s::jsonb::text),0) AS presentation",
-                (
-                    Jsonb(expected.specification),
-                    Jsonb(expected.summary),
-                    (
-                        Jsonb(expected.presentation)
-                        if expected.presentation is not None
-                        else None
-                    ),
-                ),
-            )
-            sizes = cursor.fetchone()
-            if (
-                count["inputs"]
-                + presentation_bytes
-                + sizes["presentation"]
-                + (0 if shared else sizes["inputs"])
-                > self.limits.max_job_input_bytes
-            ):
-                raise ProcessingError(
-                    "job_input_capacity",
-                    "Processing input storage is full. Delete an earlier result or wait for cleanup.",
-                    429,
-                )
             identifier = uuid4().hex
             if shared:
                 job_id = shared["id"]
@@ -403,19 +377,10 @@ class PostgresJobStore:
                         "The processing waiting queue is full. Wait for a job to start.",
                         429,
                     )
-                if (
-                    count["bytes"] + expected.reserved_bytes
-                    > self.limits.max_stored_bytes
-                ):
-                    raise ProcessingError(
-                        "storage_full",
-                        "Temporary processing storage is full. Delete an earlier result or try later.",
-                        429,
-                    )
                 job_id = identifier
                 cursor.execute(
-                    "INSERT INTO processing.jobs(id,expires_at,status,spec,reserved_bytes,summary,operation,input_bytes,work_key) "
-                    "VALUES (%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s,%s)",
+                    "INSERT INTO processing.jobs(id,expires_at,status,spec,reserved_bytes,summary,operation,work_key) "
+                    "VALUES (%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s)",
                     (
                         job_id,
                         self.limits.result_ttl_seconds,
@@ -423,7 +388,6 @@ class PostgresJobStore:
                         expected.reserved_bytes,
                         Jsonb(expected.summary),
                         expected.operation,
-                        sizes["inputs"],
                         expected.work_key,
                     ),
                 )
@@ -448,7 +412,7 @@ class PostgresJobStore:
             )
             LOGGER.info(
                 "Processing admission: waiting=%s/%s session_waiting=%s/%s "
-                "waiting_sessions=%s records=%s/%s input_bytes=%s/%s reserved_bytes=%s/%s shared=%s",
+                "waiting_sessions=%s records=%s/%s reserved_bytes=%s/%s shared=%s",
                 count["waiting"] + (not shared),
                 self.limits.max_waiting_jobs,
                 subscribers["owned"] + (not shared or shared["status"] == "queued"),
@@ -456,11 +420,6 @@ class PostgresJobStore:
                 cursor.fetchone()["owners"],
                 subscribers["records"] + 1,
                 self.limits.max_job_records,
-                count["inputs"]
-                + presentation_bytes
-                + sizes["presentation"]
-                + (0 if shared else sizes["inputs"]),
-                self.limits.max_job_input_bytes,
                 count["bytes"] + (0 if shared else expected.reserved_bytes),
                 self.limits.max_stored_bytes,
                 bool(shared),
@@ -490,10 +449,10 @@ class PostgresJobStore:
             it to queued without an attempt; preparation created no attempt files.
 
         Raises:
-            ProcessingError: If ownership was lost, cancellation won, or the new
-                inputs exceed capacity or this job alone exceeds the disk budget.
+            ProcessingError: If ownership was lost, cancellation won, or this job
+                alone exceeds the disk budget.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "SELECT * FROM processing.jobs WHERE id=%s AND attempt_id=%s "
                 "AND status='running' AND lease_until>now() AND deadline_at>now() FOR UPDATE",
@@ -504,25 +463,11 @@ class PostgresJobStore:
                     "job_cancelled", "Job stopped during preparation.", 409
                 )
             cursor.execute(
-                "SELECT COALESCE(sum(reserved_bytes),0) AS bytes,COALESCE(sum(input_bytes),0) + "
-                "(SELECT coalesce(sum(octet_length(presentation::text)),0) FROM processing.job_subscribers) AS inputs "
+                "SELECT COALESCE(sum(reserved_bytes),0) AS bytes "
                 "FROM processing.jobs WHERE id<>%s",
                 (identifier,),
             )
             used = cursor.fetchone()
-            cursor.execute(
-                "SELECT octet_length(%s::jsonb::text)+octet_length(%s::jsonb::text) AS bytes",
-                (Jsonb(prepared.specification), Jsonb(prepared.summary)),
-            )
-            if (
-                used["inputs"] + cursor.fetchone()["bytes"]
-                > self.limits.max_job_input_bytes
-            ):
-                raise ProcessingError(
-                    "job_input_capacity",
-                    "Prepared job exceeds available input storage.",
-                    429,
-                )
             if prepared.reserved_bytes > self.limits.max_stored_bytes:
                 raise ProcessingError(
                     "storage_full",
@@ -640,7 +585,7 @@ class PostgresJobStore:
         Raises:
             ProcessingError: If the handle is unowned or deletion targets active work.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "SELECT * FROM processing.subscribed_jobs WHERE id=%s AND owner=%s",
                 (identifier, owner),
@@ -701,7 +646,7 @@ class PostgresJobStore:
             ProcessingError: If the database cannot complete the claim.
         """
 
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "UPDATE processing.jobs SET status='interrupted',error=%s,updated_at=now() WHERE status IN ('running','cancelling') AND deadline_at<now()",
                 (
@@ -816,7 +761,7 @@ class PostgresJobStore:
         Returns:
             True only if the still-current attempt reached the requested state.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "SELECT * FROM processing.jobs WHERE id=%s AND attempt_id=%s AND status IN ('running','cancelling') FOR UPDATE",
                 (identifier, attempt),
@@ -927,7 +872,7 @@ class PostgresJobStore:
         Raises:
             ProcessingError: If the result is unavailable or transfer capacity is full.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute("DELETE FROM processing.transfers WHERE expires_at<=now()")
             cursor.execute(
                 "SELECT * FROM processing.subscribed_jobs WHERE id=%s AND owner=%s",
@@ -999,7 +944,7 @@ class PostgresJobStore:
         Raises:
             ProcessingError: If the database cannot update expiration or read jobs.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute("DELETE FROM processing.inputs WHERE expires_at<=now()")
             cursor.execute("DELETE FROM processing.transfers WHERE expires_at<=now()")
             cursor.execute(
@@ -1016,9 +961,9 @@ class PostgresJobStore:
         Args:
             identifier: Terminal job with completed cleanup.
         """
-        with self._transaction(locked=True) as cursor:
+        with self._transaction(acquire_lock=True) as cursor:
             cursor.execute(
-                "UPDATE processing.jobs SET reserved_bytes=0,input_bytes=0,spec=NULL,artifact=NULL WHERE id=%s AND status NOT IN ('queued','running','cancelling','ready') AND NOT EXISTS (SELECT 1 FROM processing.transfers WHERE job_id=%s)",
+                "UPDATE processing.jobs SET reserved_bytes=0,spec=NULL,artifact=NULL WHERE id=%s AND status NOT IN ('queued','running','cancelling','ready') AND NOT EXISTS (SELECT 1 FROM processing.transfers WHERE job_id=%s)",
                 (identifier, identifier),
             )
             self._delete_old_job_records(cursor)

@@ -63,25 +63,12 @@ INSERT INTO processing.schema_version VALUES (5) ON CONFLICT DO NOTHING;
 
 INSERT INTO processing.schema_version VALUES (6) ON CONFLICT DO NOTHING;
 
--- Job input storage and session turns are separate from native execution limits.
-ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS input_bytes bigint;
-UPDATE processing.jobs SET input_bytes = CASE WHEN spec IS NULL THEN 0 ELSE
-    octet_length(spec::text)::bigint + octet_length(summary::text) END
-    WHERE input_bytes IS NULL;
-ALTER TABLE processing.jobs ALTER COLUMN input_bytes SET DEFAULT 0;
-ALTER TABLE processing.jobs ALTER COLUMN input_bytes SET NOT NULL;
--- Keep accounting correct while an older app/worker overlaps this migration.
--- Old writers do not know input_bytes, but still insert/clear these JSON columns.
-CREATE OR REPLACE FUNCTION processing.measure_job_input_bytes() RETURNS trigger AS $$
-BEGIN
-    NEW.input_bytes := CASE WHEN NEW.spec IS NULL THEN 0 ELSE
-        octet_length(NEW.spec::text)::bigint + octet_length(NEW.summary::text) END;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- Metadata retention uses record counts and individual payload limits, not a
+-- cumulative JSON byte budget. Recreate the dependent view below in this transaction.
+DROP VIEW IF EXISTS processing.subscribed_jobs;
 DROP TRIGGER IF EXISTS processing_job_input_bytes ON processing.jobs;
-CREATE TRIGGER processing_job_input_bytes BEFORE INSERT OR UPDATE OF spec,summary
-    ON processing.jobs FOR EACH ROW EXECUTE FUNCTION processing.measure_job_input_bytes();
+DROP FUNCTION IF EXISTS processing.measure_job_input_bytes();
+ALTER TABLE processing.jobs DROP COLUMN IF EXISTS input_bytes;
 ALTER TABLE processing.jobs ADD COLUMN IF NOT EXISTS started_at timestamptz;
 -- Earlier jobs have no recorded start time. Their last update supplies a
 -- one-time approximation for scheduling history, never calculation timing.
@@ -149,7 +136,7 @@ SELECT s.id,s.owner,s.request_key,s.request_hash,s.presentation,s.job_id,
        j.operation,CASE WHEN j.spec IS NULL THEN NULL ELSE j.summary END AS spec,
        j.reserved_bytes,j.attempt_id,j.lease_until,j.deadline_at,j.progress,j.preparation,
        CASE WHEN s.status IS NULL THEN j.artifact END AS artifact,
-       CASE WHEN s.status IS NULL THEN j.error END AS error,j.input_bytes
+       CASE WHEN s.status IS NULL THEN j.error END AS error
 FROM processing.job_subscribers s JOIN processing.jobs j ON j.id=s.job_id;
 
 CREATE OR REPLACE FUNCTION processing.notify_job_change() RETURNS trigger
@@ -190,3 +177,4 @@ DROP TRIGGER IF EXISTS processing_capacity_change ON processing.jobs;
 CREATE TRIGGER processing_capacity_change AFTER UPDATE OF status,reserved_bytes ON processing.jobs
 FOR EACH ROW EXECUTE FUNCTION processing.notify_execution_capacity();
 INSERT INTO processing.schema_version VALUES (12) ON CONFLICT DO NOTHING;
+INSERT INTO processing.schema_version VALUES (13) ON CONFLICT DO NOTHING;

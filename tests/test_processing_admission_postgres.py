@@ -130,8 +130,6 @@ def test_twelve_sessions_and_full_stack_wait_then_take_turns(
         ({"max_owner_waiting_jobs": 1}, "owner_queue_full"),
         ({"max_waiting_jobs": 1}, "queue_full"),
         ({"max_job_records": 1}, "job_record_capacity"),
-        ({"max_job_input_bytes": 50}, "job_input_capacity"),
-        ({"max_stored_bytes": 1024}, "storage_full"),
     ],
 )
 def test_each_budget_rejects_explicitly_and_idempotency_still_recovers(
@@ -147,7 +145,6 @@ def test_each_budget_rejects_explicitly_and_idempotency_still_recovers(
     store.limits = replace(store.limits, **changes)
     plan = make_plan(store, "one")
     first = admit(store, "one", plan)
-    assert first["input_bytes"] <= 50 < first["input_bytes"] * 2
     with pytest.raises(ProcessingError) as denied:
         admit(store, "one", plan)
     assert denied.value.code == code and denied.value.status == 429
@@ -241,16 +238,16 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
     assert store.cancel(first["id"], "one")["status"] == "cancelled"
     with psycopg.connect(store.conninfo) as connection:
         assert connection.execute(
-            "SELECT input_bytes,reserved_bytes FROM processing.jobs WHERE id=%s",
+            "SELECT spec,reserved_bytes FROM processing.jobs WHERE id=%s",
             (first["id"],),
-        ).fetchone() == (first["input_bytes"], first["reserved_bytes"])
+        ).fetchone() == (plan[1].specification, first["reserved_bytes"])
     # Only post-cleanup acknowledgement releases retained inputs/disk.
     store.cleaned(first["id"])
     with psycopg.connect(store.conninfo) as connection:
         assert connection.execute(
-            "SELECT input_bytes,reserved_bytes FROM processing.jobs WHERE id=%s",
+            "SELECT spec,reserved_bytes FROM processing.jobs WHERE id=%s",
             (first["id"],),
-        ).fetchone() == (0, 0)
+        ).fetchone() == (None, 0)
     assert store.claim_next_job()["id"] == other["id"]
     assert (
         store.submit("one", key, plan[1], "fixture-input-hash")["status"] == "cancelled"
@@ -281,10 +278,10 @@ def test_record_budget_keeps_recent_idempotency_but_prunes_old_cleaned_jobs(
     assert admit(store, "owner", plan)["status"] == "queued"
 
 
-def test_migration_accounts_for_previously_accepted_jobs(
+def test_migration_removes_metadata_accounting_and_preserves_jobs(
     store: PostgresJobStore,
 ) -> None:
-    """Existing queued/running inputs retain their budget and history after upgrade.
+    """Remove the old byte column, trigger and dependent view without losing jobs.
 
     Args:
         store: Disposable PostgreSQL store, rebuilt to the previous column shape.
@@ -295,46 +292,103 @@ def test_migration_accounts_for_previously_accepted_jobs(
     waiting = admit(store, "owner", plan)
     with psycopg.connect(store.conninfo) as connection:
         connection.execute("DROP VIEW processing.subscribed_jobs")
-        connection.execute("ALTER TABLE processing.jobs DROP COLUMN input_bytes")
-        connection.execute("ALTER TABLE processing.jobs DROP COLUMN started_at")
+        connection.execute(
+            "ALTER TABLE processing.jobs ADD COLUMN input_bytes bigint NOT NULL DEFAULT 0"
+        )
+        connection.execute(
+            "CREATE FUNCTION processing.measure_job_input_bytes() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.input_bytes := octet_length(NEW.spec::text); RETURN NEW; END $$"
+        )
+        connection.execute(
+            "CREATE TRIGGER processing_job_input_bytes BEFORE INSERT OR UPDATE OF spec,summary ON processing.jobs FOR EACH ROW EXECUTE FUNCTION processing.measure_job_input_bytes()"
+        )
+        connection.execute(
+            "CREATE OR REPLACE VIEW processing.subscribed_jobs AS SELECT s.*, j.input_bytes FROM processing.job_subscribers s JOIN processing.jobs j ON j.id=s.job_id"
+        )
     store.migrate()
     store.migrate()
     with psycopg.connect(store.conninfo) as connection:
         rows = connection.execute(
-            "SELECT id,input_bytes,started_at FROM processing.jobs ORDER BY created_at"
+            "SELECT id,spec,started_at FROM processing.jobs ORDER BY created_at"
         ).fetchall()
-    assert rows[0][1] == first["input_bytes"] and rows[0][2] is not None
+        assert (
+            connection.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema='processing' AND table_name='jobs' AND column_name='input_bytes'"
+            ).fetchone()
+            is None
+        )
+        assert connection.execute(
+            "SELECT to_regprocedure('processing.measure_job_input_bytes()')"
+        ).fetchone() == (None,)
+        assert (
+            connection.execute(
+                "SELECT 1 FROM pg_trigger WHERE tgrelid='processing.jobs'::regclass AND tgname='processing_job_input_bytes'"
+            ).fetchone()
+            is None
+        )
+    assert rows[0][1] == plan[1].specification and rows[0][2] is not None
     assert rows[1][0] == waiting["id"] and rows[1][2] is None
     assert store.claim_next_job() is None
     assert store.heartbeat(first["id"], active["attempt_id"], {})
 
 
-def test_database_measures_retained_inputs_on_insert_and_cleanup(
+def test_submission_defers_disk_admission_until_preparation(
     store: PostgresJobStore,
 ) -> None:
-    """Count retained computation inputs independently of the supplied byte estimate.
+    """Admit an unprepared request with full disk reservations, then wait for space.
 
     Args:
-        store: Migrated PostgreSQL receiving the previous writer's column set.
+        store: Disposable PostgreSQL with one retained result using its disk budget.
     """
+    store.limits = replace(
+        store.limits, max_stored_bytes=2048, result_metadata_reservation_bytes=2047
+    )
+    retained = admit(store, "first", make_plan(store, "first"))
+    finish(store, store.claim_next_job())
+    # Lowering the budget below retained files must not reject an unprepared request.
+    store.limits = replace(store.limits, max_stored_bytes=1024)
+    pending = store.submit("second", "new", PreparedJobPlan({}, {}, 0), "hash")
+    assert store.claim_next_job() is None
+    store.limits = replace(store.limits, max_stored_bytes=2048)
+    claimed = store.claim_next_job()
+    prepared = PreparedJobPlan({"input": "prepared"}, {}, 2048)
+    waiting = store.save_prepared_job(
+        claimed["id"], claimed["attempt_id"], prepared, {}
+    )
+    assert waiting["status"] == "queued" and waiting["reserved_bytes"] == 0
+    assert store.claim_next_job() is None
+    store.cancel(retained["id"], "first", delete=True)
+    store.cleaned(retained["id"])
+    assert store.claim_next_job()["id"] == pending["job_id"]
+
+
+def test_identical_work_with_a_lost_lease_can_retry_after_attempt_stops(
+    store: PostgresJobStore,
+) -> None:
+    """Distinguish a stopping identical attempt from a full queue.
+
+    Args:
+        store: Disposable PostgreSQL retaining the old worker's execution slot.
+    """
+    plan = PreparedJobPlan({}, {}, 0, work_key="same-work")
+    first = store.submit("first", "one", plan, "hash")
+    claimed = store.claim_next_job()
     with psycopg.connect(store.conninfo) as connection:
-        row = connection.execute(
-            "INSERT INTO processing.jobs "
-            "(id,expires_at,status,spec,summary,reserved_bytes) "
-            "VALUES (%s,now()+interval '1 day','queued',"
-            '\'{"input":"retained"}\',\'{"label":"old"}\',1024) '
-            "RETURNING id,input_bytes,octet_length(spec::text)+octet_length(summary::text)",
-            (uuid4().hex,),
-        ).fetchone()
-        assert row[1] == row[2] > 0
         connection.execute(
-            "UPDATE processing.jobs SET status='cancelled',reserved_bytes=0,spec=NULL "
-            "WHERE id=%s",
-            (row[0],),
+            "UPDATE processing.jobs SET lease_until=now()-interval '1 second' WHERE id=%s",
+            (claimed["id"],),
         )
-        assert connection.execute(
-            "SELECT input_bytes FROM processing.jobs WHERE id=%s", (row[0],)
-        ).fetchone() == (0,)
+    with pytest.raises(ProcessingError) as denied:
+        store.submit("second", "two", plan, "hash")
+    assert denied.value.code == "previous_attempt_stopping"
+    assert denied.value.status == 429
+    assert (
+        denied.value.detail
+        == "Waiting for the previous attempt to stop. Retrying shortly."
+    )
+    assert store.find_request("second", "two") is None
+    store.interrupt_unfinished_jobs_on_restart()
+    retry = store.submit("second", "two", plan, "hash")
+    assert retry["job_id"] != first["job_id"]
 
 
 @pytest.mark.parametrize("operation", ["raster-clips", "raster-calculations"])

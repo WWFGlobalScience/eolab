@@ -16,12 +16,12 @@ export class ProcessingRequestError extends Error {
         this.code = code;
         this.retryAfterSeconds = retryAfterSeconds;
     }
-    /** Whether capacity, rather than the calculation's inputs, prevented admission.
+    /** Whether queue capacity or a stopping attempt temporarily prevented admission.
      * Storage exhaustion and unknown errors require attention instead of automatic retry.
-     * @return {boolean} True only for a classified temporary job queue limit.
+     * @return {boolean} True when admission can be retried with the same request ID.
      */
     get isCapacityRejection() {
-        return this.status === 429 && ["owner_queue_full", "queue_full"].includes(this.code);
+        return this.status === 429 && ["owner_queue_full", "queue_full", "previous_attempt_stopping"].includes(this.code);
     }
 }
 

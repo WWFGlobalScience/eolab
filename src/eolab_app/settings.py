@@ -34,7 +34,6 @@ def load_processing_limits() -> RasterClipLimits:
         "PROCESSING_MAX_WAITING_JOBS": ("max_waiting_jobs", 1),
         "PROCESSING_MAX_OWNER_WAITING_JOBS": ("max_owner_waiting_jobs", 1),
         "PROCESSING_MAX_JOB_RECORDS": ("max_job_records", 1),
-        "PROCESSING_MAX_JOB_INPUT_BYTES": ("max_job_input_bytes", 1),
         "PROCESSING_MAX_STORED_BYTES": ("max_stored_bytes", 1),
         "PROCESSING_FREE_SPACE_FLOOR_BYTES": ("free_space_floor", 0),
         "PROCESSING_EXECUTION_TIMEOUT_SECONDS": ("runtime_seconds", 1),

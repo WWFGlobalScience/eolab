@@ -910,8 +910,8 @@ def test_worker_restart_interrupts_unfinished_jobs(
     assert store.get(pending["id"], "other-owner")["reserved_bytes"] == 0
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
-            "SELECT input_bytes,spec FROM processing.jobs WHERE id=%s", (pending["id"],)
-        ).fetchone() == (0, None)
+            "SELECT spec FROM processing.jobs WHERE id=%s", (pending["id"],)
+        ).fetchone() == (None,)
     assert store.get(completed["id"], "owner") == ready
     assert store.get_cached_calculation_results(list(cached)) == cached
     assert store.interrupt_unfinished_jobs_on_restart() == 0
