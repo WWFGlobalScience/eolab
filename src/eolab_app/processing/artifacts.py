@@ -1,4 +1,4 @@
-"""Confined private artifact storage, atomic publication, and disk accounting."""
+"""Confined private artifact storage, atomic publication, and free-space checks."""
 
 import json
 from pathlib import Path
@@ -81,26 +81,26 @@ class LocalJobArtifacts:
         return candidate
 
     def prepare(self, attempt: str, reservation: int, limits: ProcessingLimits) -> Path:
-        """Check actual disk headroom and create one unique private attempt.
+        """Check physical free space and create one unique private attempt.
+
+        Retained outputs are not traversed or totaled. The caller has already
+        admitted this job's reservation through the job store.
 
         Args:
             attempt: Fenced worker attempt ID.
             reservation: Admitted worst-case scratch/output byte reservation.
-            limits: Free-space floor and global on-disk ceiling.
+            limits: Settings whose free_space_floor is the minimum number of bytes
+                that must remain free after allowing for this job's reservation.
 
         Returns:
             Empty attempt directory.
 
         Raises:
             ProcessingError: If physical disk headroom is insufficient.
+            ValueError: If the attempt ID or resolved path is not confined.
+            OSError: If free space cannot be read or the directory cannot be created.
         """
-        used = sum(
-            path.stat().st_size for path in self.root.glob("*/*/*") if path.is_file()
-        )
-        if (
-            shutil.disk_usage(self.root).free < reservation + limits.free_space_floor
-            or used + reservation > limits.max_stored_bytes
-        ):
+        if shutil.disk_usage(self.root).free < reservation + limits.free_space_floor:
             raise ProcessingError(
                 "storage_full",
                 "There is not enough temporary storage for this job.",

@@ -351,3 +351,20 @@ resolving inputs or running native work. There is no batch scheduler or batch jo
 existing workers, fairness, deduplication, SSE/status observation, and per-job
 cancellation still apply. Browser executors retain accepted handles and retry
 only capacity-rejected items; failed transport retains keys for explicit recovery.
+
+
+### Worker preparation measurements
+
+Successful uncached results also partition worker preparation into plan
+preparation (including saving its database state), persisted-input validation and
+source authorization, scratch preparation, and the final cache lookup. These
+four intervals add up to worker preparation; they are not additional elapsed
+time. Older stored results may omit them.
+
+Scratch preparation checks the filesystem's available space against the job's
+reservation plus the physical free-space floor, then creates its private attempt
+directory. It does not traverse or total retained result files. Database
+reservations continue to govern concurrent admission, and publication checks
+the completed attempt against its own reservation. Existing cleanup still
+removes expired and orphaned files; it is not needed to calculate a volume-wide
+byte total before each job.

@@ -398,18 +398,24 @@ class JobArtifactStore(Protocol):
     """Storage capability; implementations do not invoke application services."""
 
     def prepare(self, attempt: str, reservation: int, limits: ProcessingLimits) -> Path:
-        """Check actual disk headroom and create one unique private attempt.
+        """Check physical free space and create one unique private attempt.
+
+        The job store owns reservation admission. Preparation must not traverse
+        retained outputs to recalculate their total size.
 
         Args:
             attempt: Fenced worker attempt ID.
             reservation: Admitted worst-case scratch/output byte reservation.
-            limits: Free-space floor and global on-disk ceiling.
+            limits: Settings whose free_space_floor is the minimum number of bytes
+                that must remain free after allowing for this job's reservation.
 
         Returns:
             Empty attempt directory.
 
         Raises:
             ProcessingError: If physical disk headroom is insufficient.
+            ValueError: If the attempt ID or resolved path is not confined.
+            OSError: If free space cannot be read or the directory cannot be created.
         """
         ...
 

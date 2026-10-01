@@ -522,11 +522,22 @@ class CalculationPreparation(BaseModel):
 
 
 class AggregateExecutionTiming(BaseModel):
-    """Worker stages and database-clock queue interval for one successful attempt."""
+    """Worker stages and database-clock queue interval for one successful attempt.
+
+    The four optional preparation intervals partition preparationSeconds:
+    plan preparation (including storing it), persisted-spec validation and source
+    authorization, private scratch preparation, and the final result-cache lookup.
+    These include waiting within each operation, not just its CPU time. Older
+    results omit the breakdown.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     queueSeconds: StageSeconds
     preparationSeconds: StageSeconds
+    planPreparationSeconds: StageSeconds | None = None
+    sourceAuthorizationSeconds: StageSeconds | None = None
+    scratchPreparationSeconds: StageSeconds | None = None
+    resultCacheLookupSeconds: StageSeconds | None = None
     nativeProcessSeconds: StageSeconds
     publicationSeconds: StageSeconds
     process: NativeProcessTiming | None = None
