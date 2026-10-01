@@ -363,7 +363,10 @@ time. Older stored results may omit them.
 
 Scratch preparation checks physical free space and measures existing files in
 the Processing volume before creating the new attempt. It uses directory-entry
-metadata to avoid repeated path/stat work for every retained result. This still
+metadata to avoid repeated path/stat work for every retained result. Workers
+that reach this check during the same scan share that in-progress measurement;
+later calls scan again. Every caller still checks its own physical headroom and
+uses its already-admitted database reservation. This still
 counts retained and orphaned files and enforces the same disk ceiling; it is not
 a cached or approximate storage total. Database reservations continue to govern
 concurrent admission. A very large retained directory can therefore still add

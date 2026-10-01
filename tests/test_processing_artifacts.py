@@ -1,5 +1,7 @@
 """Artifact-volume accounting at the worker storage boundary."""
 
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -88,3 +90,88 @@ def test_prepare_fails_if_volume_cannot_be_inspected(
     monkeypatch.setattr("eolab_app.processing.artifacts.os.scandir", denied)
     with pytest.raises(PermissionError):
         artifacts.prepare("a" * 32, 1, ProcessingLimits())
+
+
+@pytest.mark.parametrize("scan_fails", [False, True])
+def test_concurrent_preparation_shares_only_in_progress_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scan_fails: bool
+) -> None:
+    """Concurrent jobs share one measurement, including its failure, then refresh.
+
+    Args:
+        tmp_path: Isolated artifact volume.
+        monkeypatch: Controlled scan and notification of a waiting caller.
+        scan_fails: Simulate an unreadable volume during the shared measurement.
+    """
+    import eolab_app.processing.artifacts as module
+
+    artifacts = LocalJobArtifacts(tmp_path)
+    artifacts.initialize()
+    started, release, joined = Event(), Event(), Event()
+    original_scan = artifacts._scan_stored_file_bytes
+    scans = 0
+
+    class ObservedRead(Future[int]):
+        """Notify the test when the second worker waits for the shared scan."""
+
+        def result(self, timeout: float | None = None) -> int:
+            """Wait for the measurement using the real Future implementation.
+
+            Args:
+                timeout: Maximum seconds to wait, or no deadline.
+
+            Returns:
+                Measured byte total.
+
+            Raises:
+                Exception: The scanner's error or a wait timeout.
+            """
+            joined.set()
+            return super().result(timeout)
+
+    def scan() -> int:
+        """Pause the first real scan until another worker joins it.
+
+        Returns:
+            Actual volume bytes.
+
+        Raises:
+            PermissionError: When the parameter requests a failed measurement.
+            TimeoutError: If the test does not release the scanner.
+        """
+        nonlocal scans
+        scans += 1
+        started.set()
+        if not release.wait(5):
+            raise TimeoutError("scanner not released")
+        if scan_fails:
+            raise PermissionError("unreadable volume")
+        return original_scan()
+
+    monkeypatch.setattr(module, "Future", ObservedRead)
+    monkeypatch.setattr(artifacts, "_scan_stored_file_bytes", scan)
+    limits = replace(ProcessingLimits(), free_space_floor=0, max_stored_bytes=20)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(artifacts.prepare, "a" * 32, 1, limits)
+        try:
+            assert started.wait(5)
+            second = workers.submit(artifacts.prepare, "b" * 32, 1, limits)
+            assert joined.wait(5)
+        finally:
+            release.set()
+        if scan_fails:
+            for result in (first, second):
+                with pytest.raises(PermissionError):
+                    result.result(5)
+        else:
+            assert first.result(5).is_dir()
+            assert second.result(5).is_dir()
+    assert scans == 1
+    # A later call must remeasure new files, or recover from the previous error.
+    monkeypatch.setattr(artifacts, "_scan_stored_file_bytes", original_scan)
+    directory = tmp_path / "results" / ("c" * 32)
+    directory.mkdir()
+    (directory / "result.csv").write_bytes(b"x" * 20)
+    with pytest.raises(ProcessingError) as rejected:
+        artifacts.prepare("d" * 32, 1, limits)
+    assert rejected.value.code == "storage_full"
