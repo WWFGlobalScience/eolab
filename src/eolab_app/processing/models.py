@@ -116,8 +116,8 @@ class ProcessingLimits:
     max_execution_memory_bytes bounds their combined native address-space limits;
     container memory must additionally cover idle processes and the supervisor.
     max_job_records includes finished jobs and seven-day idempotency records.
-    max_job_input_bytes bounds retained job specifications and summaries until
-    cleanup releases them, independently of artifact disk reservations.
+    Metadata retention uses record counts and individual request size limits.
+    max_stored_bytes bounds artifact and scratch disk reservations after preparation.
 
     calculation_cache_capacity bounds the number of shared numerical results;
     zero disables cache reads and writes. calculation_cache_ttl_seconds limits
@@ -134,7 +134,6 @@ class ProcessingLimits:
     max_waiting_jobs: int = 128
     max_owner_waiting_jobs: int = 32
     max_job_records: int = 4096
-    max_job_input_bytes: int = 128 * 1024**2
     max_stored_bytes: int = 20 * 1024**3
     free_space_floor: int = 2 * 1024**3
     result_metadata_reservation_bytes: int = 9 * 1024**2

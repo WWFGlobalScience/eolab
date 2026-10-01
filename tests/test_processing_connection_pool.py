@@ -30,7 +30,7 @@ def test_reuses_connections_and_rolls_back_before_return(
             assert row["statement"] == "5s" and row["lock"] == "3s"
     assert len(pids) <= 8
     with pytest.raises(RuntimeError, match="rollback"):
-        with store._transaction(locked=True) as cursor:
+        with store._transaction(acquire_lock=True) as cursor:
             cursor.execute(
                 "INSERT INTO processing.calculation_results(cache_key,payload,expires_at) VALUES (%s,'{}',now()+interval '1 hour')",
                 ("a" * 64,),

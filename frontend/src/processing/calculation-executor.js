@@ -124,7 +124,7 @@ export class CalculationExecutor {
                     const wait = this.#capacityWait = new AbortController();
                     if (saved.cancelRequested || this.destroyed) wait.abort();
                     this.#status.phase = "waiting";
-                    this.#status.message = "Waiting for server capacity; retrying automatically…";
+                    this.#status.message = error.code === "previous_attempt_stopping" ? error.message : "Waiting for server capacity; retrying automatically…";
                     this.#notify();
                     const started = this.now();
                     try { await waitBeforeCapacityRetry(error, attempt, wait.signal); continue; }

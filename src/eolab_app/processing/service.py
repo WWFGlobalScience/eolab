@@ -308,7 +308,7 @@ class ProcessingService:
 
         Raises:
             ProcessingError: For conflicting retries, unavailable polygon inputs,
-                or exhausted queue and input-storage capacity.
+                or exhausted queue and job-record capacity.
         """
         inputs = AggregatePlanRequest.model_validate(
             request.model_dump(exclude={"requestId"}, by_alias=True)
