@@ -60,10 +60,10 @@ async def started(path):
             await asyncio.sleep(0.01)
 
 
-def test_reuses_process_large_payloads_and_recycles():
+def test_reuses_process_large_payloads_and_recycles() -> None:
     """Reuse preloaded code but never reuse per-request results or pipe messages."""
 
-    async def scenario():
+    async def scenario() -> None:
         """Run three calls through a lane that recycles after two."""
         lane = ReusableProcess((echo,), max_jobs=2)
         lane.warm()
@@ -77,6 +77,15 @@ def test_reuses_process_large_payloads_and_recycles():
             assert not first.timing.reusedProcess
             assert second.timing.reusedProcess and not third.timing.reusedProcess
             assert second.timing.readyWaitSeconds < 0.1
+            assert first.timing.processId == first.value[0]
+            assert first.timing.operationNumber == 1
+            assert second.timing.operationNumber == 2
+            assert third.timing.operationNumber == 1
+            assert first.timing.startReason == "initial"
+            assert second.timing.recycledFor == "operation_limit"
+            assert third.timing.startReason == "operation_limit"
+            assert first.timing.startupSeconds > 0
+            assert first.timing.startupSeconds == second.timing.startupSeconds
         finally:
             await lane.close()
         with pytest.raises(RuntimeError):
@@ -212,10 +221,10 @@ def test_parent_memory_does_not_recycle_small_child() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux RSS recycling policy")
-def test_peak_memory_recycles_process():
+def test_peak_memory_recycles_process() -> None:
     """Crossing the RSS threshold retires the process before the next request."""
 
-    async def scenario():
+    async def scenario() -> None:
         """Use a one-byte threshold so even an empty interpreter must recycle."""
         lane = ReusableProcess((echo,), recycle_bytes=1)
         try:
@@ -223,6 +232,8 @@ def test_peak_memory_recycles_process():
             second = await lane.run(echo, ("second",), 10)
             assert first.value[0] != second.value[0]
             assert not second.timing.reusedProcess
+            assert first.timing.recycledFor == "memory_limit"
+            assert second.timing.startReason == "memory_limit"
         finally:
             await lane.close()
 

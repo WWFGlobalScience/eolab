@@ -20,12 +20,23 @@ from eolab_app.execution.bounded_process import (
 
 @dataclass(frozen=True)
 class ProcessTiming:
-    """Durations for readiness, full target invocation and communication/cleanup."""
+    """Per-call durations and the identity of the process that performed the call.
+
+    The first three durations partition the call. startupSeconds measures the
+    whole process startup, including any prewarming before this call; it must
+    not be added to the call durations. startReason explains why this process
+    was created, and recycledFor explains replacement after this operation.
+    """
 
     readyWaitSeconds: float
     operationSeconds: float
     overheadSeconds: float
     reusedProcess: bool
+    processId: int | None = None
+    operationNumber: int | None = None
+    startupSeconds: float | None = None
+    startReason: str | None = None
+    recycledFor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,7 +151,11 @@ def _worker(
                 signal.signal(signal.SIGALRM, signal.SIG_DFL)
                 signal.setitimer(signal.ITIMER_REAL, remaining)
             value, elapsed = _invoke(targets[index], arguments)
-            recycle = number == max_jobs or _memory_exceeded(recycle_bytes)
+            recycle = (
+                "operation_limit"
+                if number == max_jobs
+                else "memory_limit" if _memory_exceeded(recycle_bytes) else None
+            )
             payload = pickle.dumps((sequence, value, elapsed, recycle))
             # No request frames, results or cycles survive into the next job.
             del value, arguments
@@ -177,7 +192,10 @@ class _Child:
 
     process: Any
     connection: Connection
+    started: float
+    start_reason: str
     startup: asyncio.Task | None = None
+    startup_seconds: float | None = None
     completed: int = 0
 
 
@@ -219,16 +237,19 @@ class ReusableProcess:
         self.active: asyncio.Task | None = None
         self.closed = False
         self.sequence = 0
+        self.next_start_reason = "initial"
 
-    def _retire(self, child: _Child) -> None:
+    def _retire(self, child: _Child, reason: str = "failure") -> None:
         """Confirm native exit synchronously before allowing admission to release.
 
         Args:
             child: Exact process generation to terminate and reap.
+            reason: Lifecycle event requiring replacement, recorded on the next child.
         """
         if self.child is not child:
             return
         self.child = None
+        self.next_start_reason = reason
         if child.startup and child.startup is not asyncio.current_task():
             child.startup.cancel()
         process = child.process
@@ -252,6 +273,7 @@ class ReusableProcess:
             async with asyncio.timeout(self.startup_seconds):
                 if await asyncio.to_thread(child.connection.recv) != "ready":
                     raise ProcessDeadlineError("Native process did not become ready")
+                child.startup_seconds = time.perf_counter() - child.started
         except BaseException:
             self._retire(child)
             raise
@@ -273,7 +295,7 @@ class ReusableProcess:
             ),
             daemon=True,
         )
-        child = _Child(process, parent)
+        child = _Child(process, parent, time.perf_counter(), self.next_start_reason)
         self.child = child
         try:
             process.start()
@@ -335,8 +357,9 @@ class ReusableProcess:
                     )
                 reused = child.completed > 0
                 child.completed += 1
+                process_id = child.process.pid
                 if recycle:
-                    self._retire(child)
+                    self._retire(child, recycle)
                 finished = time.perf_counter()
                 return ProcessOutcome(
                     value,
@@ -345,11 +368,16 @@ class ReusableProcess:
                         operation,
                         max(0, finished - ready - operation),
                         reused,
+                        process_id,
+                        child.completed,
+                        child.startup_seconds,
+                        child.start_reason,
+                        recycle,
                     ),
                 )
         except asyncio.CancelledError:
             if child is not None:
-                self._retire(child)
+                self._retire(child, "cancelled")
             raise
         except (TimeoutError, EOFError, OSError, ValueError) as error:
             if child is not None:

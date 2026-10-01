@@ -503,13 +503,27 @@ class AggregateSpec(BaseModel):
 
 
 class NativeProcessTiming(BaseModel):
-    """Optional reusable-process timings, nested inside the native call duration."""
+    """Call durations and optional process-generation diagnostics.
+
+    Readiness, operation and overhead partition the native call. startupSeconds
+    covers the entire process startup, including earlier prewarming, and overlaps
+    those durations. Process identity and operation count explain reuse;
+    startReason and recycledFor explain replacement before and after this call.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     readyWaitSeconds: StageSeconds
     operationSeconds: StageSeconds
     overheadSeconds: StageSeconds
     reusedProcess: Annotated[bool, Field(strict=True)]
+    processId: Annotated[int, Field(strict=True, gt=0)] | None = None
+    operationNumber: Annotated[int, Field(strict=True, gt=0)] | None = None
+    startupSeconds: StageSeconds | None = None
+    startReason: (
+        Literal["initial", "operation_limit", "memory_limit", "failure", "cancelled"]
+        | None
+    ) = None
+    recycledFor: Literal["operation_limit", "memory_limit"] | None = None
 
 
 class CalculationPreparation(BaseModel):
