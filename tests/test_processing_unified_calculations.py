@@ -2,20 +2,81 @@
 
 import asyncio
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from unittest.mock import patch
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
 from eolab_app.routes.processing import COOKIE
+from eolab_app.processing import aggregate_models
+from eolab_app.processing.aggregate_models import (
+    AggregateJobRequest,
+    AggregatePlanRequest,
+)
+from eolab_app.processing.job_store import PostgresJobStore
+from eolab_app.processing.service import ProcessingService
 from test_processing_jobs import boundary, store, HEADERS
 from test_processing_calculations import request_body, ENDPOINT
 from test_processing_jobs import write_geopackage_layer, register_selection
 import eolab_app.processing.worker as worker_module
+
+
+def test_http_and_direct_submission_reuse_validated_inputs(
+    boundary: Any, store: PostgresJobStore
+) -> None:
+    """Keep legacy request hashes while validating each caller's inputs only once.
+
+    Args:
+        boundary: Real HTTP route, source and worker composition.
+        store: Disposable PostgreSQL job store shared by HTTP and direct callers.
+    """
+    client, _, _, artifacts, _ = boundary
+    body = {**request_body(), "requestId": uuid4().hex}
+    original_inputs = AggregatePlanRequest.model_validate(request_body())
+    original_hash = hashlib.sha256(
+        json.dumps(
+            original_inputs.model_dump(mode="json", by_alias=True), sort_keys=True
+        ).encode()
+    ).hexdigest()
+    with patch.object(
+        aggregate_models,
+        "compile_expression",
+        wraps=aggregate_models.compile_expression,
+    ) as compiler:
+        response = client.post(ENDPOINT, json=body, headers=HEADERS)
+        assert response.status_code == 202, response.text
+        assert compiler.call_count == len(body["calculations"])
+        request = AggregateJobRequest(**{**body, "requestId": uuid4().hex})
+        validated_calls = compiler.call_count
+        service = ProcessingService(store, artifacts)
+        direct = asyncio.run(service.submit_calculation_inputs("direct-owner", request))
+        assert compiler.call_count == validated_calls
+        assert (
+            asyncio.run(service.submit_calculation_inputs("direct-owner", request))[
+                "jobId"
+            ]
+            == direct["jobId"]
+        )
+        assert compiler.call_count == validated_calls
+    owner = hashlib.sha256(client.cookies[COOKIE].encode()).hexdigest()
+    http_row = store.get(response.json()["jobId"], owner)
+    direct_row = store.get(direct["jobId"], "direct-owner")
+    assert http_row["request_hash"] == direct_row["request_hash"] == original_hash
+    assert http_row["job_id"] == direct_row["job_id"]
+    assert http_row["id"] != direct_row["id"]
+    with psycopg.connect(store.conninfo) as connection:
+        stored_spec = connection.execute(
+            "SELECT spec FROM processing.jobs WHERE id=%s", (http_row["job_id"],)
+        ).fetchone()[0]
+    assert stored_spec["request"] == original_inputs.model_dump(
+        mode="json", by_alias=True
+    )
 
 
 def test_summary_prepares_and_calculates_without_a_plan_request(

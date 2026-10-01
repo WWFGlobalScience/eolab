@@ -23,7 +23,6 @@ from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateJobRequest,
     UnpreparedCalculation,
-    AggregatePlanRequest,
 )
 from eolab_app.processing.polygon_areas import PolygonAreaReference, PolygonSummaryInput
 from eolab_app.processing.ports import (
@@ -301,7 +300,9 @@ class ProcessingService:
 
         Args:
             owner: Current browser-session hash.
-            request: Catalog source, selected area, formulas and stable retry key.
+            request: Validated catalog source, selected area, formulas and stable
+                retry key. Direct callers must construct AggregateJobRequest
+                through its normal validation, just as the HTTP boundary does.
 
         Returns:
             The caller's handle and labels, or the same handle after a retry.
@@ -310,12 +311,11 @@ class ProcessingService:
             ProcessingError: For conflicting retries, unavailable polygon inputs,
                 or exhausted queue and job-record capacity.
         """
-        inputs = AggregatePlanRequest.model_validate(
-            request.model_dump(exclude={"requestId"}, by_alias=True)
-        )
+        inputs = request
         request_hash = hashlib.sha256(
             json.dumps(
-                inputs.model_dump(mode="json", by_alias=True), sort_keys=True
+                inputs.model_dump(mode="json", by_alias=True, exclude={"requestId"}),
+                sort_keys=True,
             ).encode()
         ).hexdigest()
         with measure_request_stage("admissionChecks"):

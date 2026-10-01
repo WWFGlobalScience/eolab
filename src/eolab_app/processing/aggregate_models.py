@@ -2,12 +2,13 @@
 
 from eolab_app.catalog_selection import CatalogSelection, ResolvedCatalogSelection
 from dataclasses import dataclass, field, fields
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     SerializerFunctionWrapHandler,
     model_serializer,
     model_validator,
@@ -97,24 +98,39 @@ class AggregatePlanRequest(BaseModel):
     wholeRaster: Literal[True] | None = None
     targetChunkPixels: ChunkPixels | None = None
 
-    @model_validator(mode="after")
-    def validate_intent(self) -> "AggregatePlanRequest":
-        """Validate area and reuse the I/O-free expression contract.
+    @model_validator(mode="wrap")
+    @classmethod
+    def validate_intent(
+        cls, value: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        """Validate new inputs once and reuse already validated request instances.
+
+        HTTP and persisted dictionaries receive all field, area and language
+        checks. Internal callers may pass an existing validated request without
+        repeating its area and language checks; they must not mutate its inputs
+        or construct it with Pydantic's unchecked construction/copy methods.
+
+        Args:
+            value: Raw input or an already validated calculation request.
+            handler: Pydantic's field validation and model construction handler.
 
         Returns:
             The checked request.
 
         Raises:
-            ValueError: For ambiguous area or invalid calculation language.
+            ValueError: For invalid fields, ambiguous area or calculation language.
         """
+        request = handler(value)
+        if request is value:
+            return request
         if (
             sum(
                 value is not None
                 for value in (
-                    self.selectedBounds,
-                    self.catalogSelection,
-                    self.wholeRaster,
-                    self.polygonArea,
+                    request.selectedBounds,
+                    request.catalogSelection,
+                    request.wholeRaster,
+                    request.polygonArea,
                 )
             )
             != 1
@@ -123,9 +139,9 @@ class AggregatePlanRequest(BaseModel):
                 "Choose one box, vector selection, polygon area, or whole raster"
             )
         AggregateValidationRequest(
-            alias=next(iter(self.sources)), calculations=self.calculations
+            alias=next(iter(request.sources)), calculations=request.calculations
         )
-        return self
+        return request
 
 
 class AggregateJobRequest(AggregatePlanRequest):
