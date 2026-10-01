@@ -1,6 +1,7 @@
 """Confined private artifact storage, atomic publication, and disk accounting."""
 
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -94,9 +95,7 @@ class LocalJobArtifacts:
         Raises:
             ProcessingError: If physical disk headroom is insufficient.
         """
-        used = sum(
-            path.stat().st_size for path in self.root.glob("*/*/*") if path.is_file()
-        )
+        used = self._stored_file_bytes()
         if (
             shutil.disk_usage(self.root).free < reservation + limits.free_space_floor
             or used + reservation > limits.max_stored_bytes
@@ -109,6 +108,47 @@ class LocalJobArtifacts:
         path = self._directory(attempt, False)
         path.mkdir(exist_ok=False)
         return path
+
+    def _stored_file_bytes(self) -> int:
+        """Measure files in the private volume without repeated path metadata reads.
+
+        Count files at the parent/attempt/file depth used by scratch and results,
+        including orphaned attempts until cleanup removes them. Directory entries
+        supply file types and reuse cached metadata instead of constructing Path
+        objects and asking for each file's metadata twice. Concurrent publication
+        and cleanup may move/remove directories, as with the previous glob scan;
+        database reservations remain the authority for concurrent admission.
+
+        Returns:
+            Actual bytes in files at the artifact depth.
+
+        Raises:
+            OSError: If storage cannot be inspected, other than a concurrently
+                removed file or directory.
+        """
+        total = 0
+        with os.scandir(self.root) as parents:
+            for parent in parents:
+                if not parent.is_dir():
+                    continue
+                try:
+                    with os.scandir(parent.path) as attempts:
+                        for attempt in attempts:
+                            if not attempt.is_dir():
+                                continue
+                            try:
+                                with os.scandir(attempt.path) as entries:
+                                    for entry in entries:
+                                        try:
+                                            if entry.is_file():
+                                                total += entry.stat().st_size
+                                        except FileNotFoundError:
+                                            continue
+                            except FileNotFoundError:
+                                continue
+                except FileNotFoundError:
+                    continue
+        return total
 
     def publish(self, attempt: str, reservation: int) -> None:
         """Atomically rename a closed, validated attempt on the same volume.

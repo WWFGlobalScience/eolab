@@ -400,7 +400,8 @@ class ProcessingWorker:
                     ),
                     preparationSeconds=prepared - started,
                     planPreparationSeconds=preparation_completed - started,
-                    sourceAuthorizationSeconds=sources_authorized - preparation_completed,
+                    sourceAuthorizationSeconds=sources_authorized
+                    - preparation_completed,
                     scratchPreparationSeconds=scratch_prepared - sources_authorized,
                     resultCacheLookupSeconds=prepared - scratch_prepared,
                     nativeProcessSeconds=calculated - prepared,

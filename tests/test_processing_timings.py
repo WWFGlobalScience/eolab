@@ -74,6 +74,18 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
     assert asyncio.run(worker.run_once())
     artifact = store.finish.call_args.args[2]
     assert artifact.execution_timing["queueSeconds"] == 2
+    timings = artifact.execution_timing
+    assert sum(
+        timings[name]
+        for name in (
+            "planPreparationSeconds",
+            "sourceAuthorizationSeconds",
+            "scratchPreparationSeconds",
+            "resultCacheLookupSeconds",
+        )
+    ) == pytest.approx(timings["preparationSeconds"])
+    assert timings["planPreparationSeconds"] >= row["preparation"]["seconds"]
+
     assert (
         artifact.execution_timing["nativeProcessSeconds"]
         >= artifact.performance["kernelSeconds"]
