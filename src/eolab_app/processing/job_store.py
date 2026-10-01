@@ -285,6 +285,9 @@ class PostgresJobStore:
         Each subscriber consumes a record and its owner's waiting allowance;
         disk reservations belong to shared work and are admitted after preparation.
         Metadata is bounded by record counts and individual request limits.
+        Independent reads and ordered writes are sent in two pipeline batches
+        under the same lock. Admission logs describe that transaction's counts
+        and are emitted after commit, without collecting logging-only totals.
 
         Args:
             owner: Current browser session hash.
@@ -302,11 +305,36 @@ class PostgresJobStore:
         if not request_hash:
             raise ValueError("Direct jobs require a request hash")
         with self._transaction(acquire_lock=True) as cursor:
-            cursor.execute(
-                "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND request_key=%s",
-                (owner, request_key),
-            )
-            existing = cursor.fetchone()
+            # Queue independent reads before waiting for their results. The lock
+            # protects the decisions and subsequent writes in this transaction.
+            with (
+                cursor.connection.cursor() as work_cursor,
+                cursor.connection.cursor() as count_cursor,
+                cursor.connection.cursor() as subscriber_cursor,
+            ):
+                with cursor.connection.pipeline():
+                    cursor.execute(
+                        "SELECT * FROM processing.subscribed_jobs WHERE owner=%s AND request_key=%s",
+                        (owner, request_key),
+                    )
+                    work_cursor.execute(
+                        "SELECT id,status,(status='queued' OR "
+                        "(lease_until>now() AND deadline_at>now())) AS can_join "
+                        "FROM processing.jobs WHERE work_key=%s AND status IN ('queued','running')",
+                        (expected.work_key,),
+                    )
+                    count_cursor.execute(
+                        "SELECT count(*) AS waiting FROM processing.jobs WHERE status='queued'"
+                    )
+                    subscriber_cursor.execute(
+                        "SELECT count(*) AS records, count(*) FILTER (WHERE owner=%s AND status='queued') AS owned "
+                        "FROM processing.subscribed_jobs",
+                        (owner,),
+                    )
+                existing = cursor.fetchone()
+                shared = work_cursor.fetchone()
+                count = count_cursor.fetchone()
+                subscribers = subscriber_cursor.fetchone()
             if existing:
                 if (
                     existing["request_hash"] != request_hash
@@ -318,40 +346,14 @@ class PostgresJobStore:
                         409,
                     )
                 return existing
-            cursor.execute(
-                "SELECT id,status FROM processing.jobs WHERE work_key=%s AND status IN ('queued','running') "
-                "AND (status='queued' OR (lease_until>now() AND deadline_at>now()))",
-                (expected.work_key,),
-            )
-            shared = cursor.fetchone()
             # A lease-lost running attempt still owns its slot and work key until
             # its deadline. Do not join it or create a conflicting replacement.
-            if expected.work_key and not shared:
-                cursor.execute(
-                    "SELECT 1 FROM processing.jobs WHERE work_key=%s AND status='running'",
-                    (expected.work_key,),
+            if shared and not shared["can_join"]:
+                raise ProcessingError(
+                    "previous_attempt_stopping",
+                    "Waiting for the previous attempt to stop. Retrying shortly.",
+                    429,
                 )
-                if cursor.fetchone():
-                    raise ProcessingError(
-                        "previous_attempt_stopping",
-                        "Waiting for the previous attempt to stop. Retrying shortly.",
-                        429,
-                    )
-            # Send both independent aggregates before waiting for their results.
-            # Both cursors use this transaction's connection and advisory lock.
-            with cursor.connection.cursor() as subscriber_cursor:
-                with cursor.connection.pipeline():
-                    cursor.execute(
-                        "SELECT count(*) FILTER (WHERE status='queued') AS waiting, "
-                        "COALESCE(sum(reserved_bytes),0) AS bytes FROM processing.jobs"
-                    )
-                    subscriber_cursor.execute(
-                        "SELECT count(*) AS records, count(*) FILTER (WHERE owner=%s AND status='queued') AS owned "
-                        "FROM processing.subscribed_jobs",
-                        (owner,),
-                    )
-                count = cursor.fetchone()
-                subscribers = subscriber_cursor.fetchone()
             if (not shared or shared["status"] == "queued") and subscribers[
                 "owned"
             ] >= self.limits.max_owner_waiting_jobs:
@@ -377,56 +379,56 @@ class PostgresJobStore:
                         429,
                     )
                 job_id = identifier
+            # PostgreSQL executes these in order. The subscriber insert therefore
+            # sees the job insert, and notifications are delivered only at commit.
+            with cursor.connection.pipeline():
+                if not shared:
+                    cursor.execute(
+                        "INSERT INTO processing.jobs(id,expires_at,status,spec,reserved_bytes,summary,operation,work_key) "
+                        "VALUES (%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s)",
+                        (
+                            job_id,
+                            self.limits.result_ttl_seconds,
+                            Jsonb(expected.specification),
+                            expected.reserved_bytes,
+                            Jsonb(expected.summary),
+                            expected.operation,
+                            expected.work_key,
+                        ),
+                    )
+                    cursor.execute("SELECT pg_notify(%s, '')", (JOB_QUEUE_CHANNEL,))
                 cursor.execute(
-                    "INSERT INTO processing.jobs(id,expires_at,status,spec,reserved_bytes,summary,operation,work_key) "
-                    "VALUES (%s,now()+%s*interval '1 second','queued',%s,%s,%s,%s,%s)",
+                    "INSERT INTO processing.job_subscribers(id,job_id,owner,request_key,request_hash,presentation) VALUES (%s,%s,%s,%s,%s,%s)",
                     (
+                        identifier,
                         job_id,
-                        self.limits.result_ttl_seconds,
-                        Jsonb(expected.specification),
-                        expected.reserved_bytes,
-                        Jsonb(expected.summary),
-                        expected.operation,
-                        expected.work_key,
+                        owner,
+                        request_key,
+                        request_hash,
+                        (
+                            Jsonb(expected.presentation)
+                            if expected.presentation is not None
+                            else None
+                        ),
                     ),
                 )
-                cursor.execute("SELECT pg_notify(%s, '')", (JOB_QUEUE_CHANNEL,))
-            cursor.execute(
-                "INSERT INTO processing.job_subscribers(id,job_id,owner,request_key,request_hash,presentation) VALUES (%s,%s,%s,%s,%s,%s)",
-                (
-                    identifier,
-                    job_id,
-                    owner,
-                    request_key,
-                    request_hash,
-                    (
-                        Jsonb(expected.presentation)
-                        if expected.presentation is not None
-                        else None
-                    ),
-                ),
-            )
-            cursor.execute(
-                "SELECT count(DISTINCT owner) AS owners FROM processing.subscribed_jobs WHERE status='queued'"
-            )
-            LOGGER.info(
-                "Processing admission: waiting=%s/%s session_waiting=%s/%s "
-                "waiting_sessions=%s records=%s/%s reserved_bytes=%s/%s shared=%s",
-                count["waiting"] + (not shared),
-                self.limits.max_waiting_jobs,
-                subscribers["owned"] + (not shared or shared["status"] == "queued"),
-                self.limits.max_owner_waiting_jobs,
-                cursor.fetchone()["owners"],
-                subscribers["records"] + 1,
-                self.limits.max_job_records,
-                count["bytes"] + (0 if shared else expected.reserved_bytes),
-                self.limits.max_stored_bytes,
-                bool(shared),
-            )
-            cursor.execute(
-                "SELECT * FROM processing.subscribed_jobs WHERE id=%s", (identifier,)
-            )
-            return cursor.fetchone()
+                cursor.execute(
+                    "SELECT * FROM processing.subscribed_jobs WHERE id=%s",
+                    (identifier,),
+                )
+            row = cursor.fetchone()
+        LOGGER.info(
+            "Processing admission: waiting=%s/%s session_waiting=%s/%s "
+            "records=%s/%s shared=%s",
+            count["waiting"] + (not shared),
+            self.limits.max_waiting_jobs,
+            subscribers["owned"] + (not shared or shared["status"] == "queued"),
+            self.limits.max_owner_waiting_jobs,
+            subscribers["records"] + 1,
+            self.limits.max_job_records,
+            bool(shared),
+        )
+        return row
 
     def save_prepared_job(
         self,

@@ -9,6 +9,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
+import eolab_app.processing.job_store as job_store_module
 from eolab_app.processing.job_store import PostgresJobStore
 from eolab_app.processing.models import Artifact, PreparedJobPlan, ProcessingError
 from test_processing_jobs import boundary, store, clip_inputs, HEADERS
@@ -89,7 +90,7 @@ def test_twelve_sessions_and_full_stack_wait_then_take_turns(
     assert len(jobs) == 80 and all(job["status"] == "queued" for job in jobs)
     assert store.claim_next_job() is None
     assert "waiting=80/128" in caplog.text
-    assert "waiting_sessions=13" in caplog.text
+    assert "records=81/4096" in caplog.text
 
     finish(store, active)
     # A replacement worker uses the same durable turn history after deployment.
@@ -252,6 +253,100 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
     assert (
         store.submit("one", key, plan[1], "fixture-input-hash")["status"] == "cancelled"
     )
+
+
+def test_failed_subscriber_insert_rolls_back_the_entire_submission(
+    store: PostgresJobStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A later pipeline failure leaves neither orphan work nor an admission log.
+
+    Args:
+        store: Disposable PostgreSQL with the real subscriber size constraint.
+        caplog: Captured admission log records.
+    """
+    caplog.set_level("INFO", logger="eolab_app.processing.job_store")
+    plan = PreparedJobPlan({}, {}, 0, work_key="atomic")
+    oversized = replace(plan, presentation={"label": "x" * 32769})
+    with pytest.raises(ProcessingError) as failed:
+        store.submit("owner", "retry", oversized, "hash")
+    assert failed.value.code == "processing_unavailable"
+    with psycopg.connect(store.conninfo) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM processing.jobs"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT count(*) FROM processing.job_subscribers"
+        ).fetchone() == (0,)
+    assert "Processing admission:" not in caplog.text
+    accepted = store.submit("owner", "retry", plan, "hash")
+    assert accepted["status"] == "queued"
+    assert store.find_request("owner", "retry")["id"] == accepted["id"]
+
+
+def test_admission_logging_runs_after_commit_and_lock_release(
+    store: PostgresJobStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Logging observes committed work without retaining the admission mutex.
+
+    Args:
+        store: Disposable PostgreSQL store.
+        monkeypatch: Replace only the admission log sink with an independent reader.
+    """
+    observed = []
+
+    def observe_log(message: str, *args: Any) -> None:
+        """Check committed visibility and lock availability at the log boundary.
+
+        Args:
+            message: Admission log format.
+            args: Non-sensitive counts supplied by the completed transaction.
+        """
+        with psycopg.connect(store.conninfo) as connection:
+            assert connection.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)",
+                (job_store_module.PROCESSING_ADVISORY_LOCK_ID,),
+            ).fetchone() == (True,)
+            assert connection.execute(
+                "SELECT count(*) FROM processing.job_subscribers WHERE owner='owner' AND request_key='logged'"
+            ).fetchone() == (1,)
+        observed.append(message % args)
+
+    monkeypatch.setattr(job_store_module.LOGGER, "info", observe_log)
+    store.submit("owner", "logged", PreparedJobPlan({}, {}, 0), "hash")
+    assert len(observed) == 1
+    assert "waiting=1/128" in observed[0]
+    assert "reserved_bytes" not in observed[0]
+    assert "waiting_sessions" not in observed[0]
+
+
+def test_retry_precedes_stopping_work_and_capacity_decisions(
+    store: PostgresJobStore,
+) -> None:
+    """Batched lookups must preserve retry recovery and conflicting-input errors.
+
+    Args:
+        store: Disposable PostgreSQL store with one expired-lease worker.
+    """
+    store.limits = replace(store.limits, max_job_records=1)
+    plan = PreparedJobPlan({}, {}, 0, work_key="retry-work")
+    original = store.submit("owner", "retry", plan, "hash")
+    assert store.claim_next_job()["id"] == original["job_id"]
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.jobs SET lease_until=now()-interval '1 second' WHERE id=%s",
+            (original["job_id"],),
+        )
+    assert store.submit("owner", "retry", plan, "hash")["id"] == original["id"]
+    for changed_plan, changed_hash in (
+        (plan, "different-inputs"),
+        (replace(plan, operation="different-operation"), "hash"),
+    ):
+        with pytest.raises(ProcessingError) as conflict:
+            store.submit("owner", "retry", changed_plan, changed_hash)
+        assert conflict.value.code == "request_conflict"
+    with pytest.raises(ProcessingError) as stopping:
+        store.submit("other-owner", "fresh", plan, "hash")
+    assert stopping.value.code == "previous_attempt_stopping"
 
 
 def test_record_capacity_recovers_after_worker_maintenance(

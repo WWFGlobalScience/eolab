@@ -521,10 +521,16 @@ that the one worker is merely busy. Existing accepted IDs/status/results and
 cancellation routes are unchanged. A cached calculation still needs its own
 bounded job record and download reservation.
 
-At INFO level, app admission logs report waiting jobs/sessions, session allowance,
-record/input usage and artifact reservations. Worker claim logs report remaining
-backlog and that job's queue wait. They include no session identities or source
-inputs. Existing calculation timing continues to separate queue and execution.
+At INFO level, app admission logs report waiting jobs, the submitting session's
+waiting allowance, retained subscriber records and whether work was shared.
+These are counts from the admission transaction, logged after commit; they are
+not a fresh global snapshot. Admission does not sum disk reservations or count
+distinct sessions just for logging. Independent admission reads and ordered writes
+use two Psycopg pipeline batches under the existing transaction advisory lock.
+Capacity checks, deduplication and insertion remain atomic. Worker claim logs
+report remaining backlog and that job's queue wait. Logs include no session
+identities or source inputs. Existing calculation timing continues to separate
+queue and execution.
 
 ## Troubleshooting
 
