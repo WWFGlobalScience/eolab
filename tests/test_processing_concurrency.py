@@ -37,7 +37,12 @@ def claim_from_process(
         The claimed row, or None when other processes consumed capacity.
     """
     dsn, limits = arguments
-    return PostgresJobStore(limits, dsn).claim_next_job()
+    jobs = PostgresJobStore(limits, dsn)
+    try:
+        jobs.open()
+        return jobs.claim_next_job()
+    finally:
+        jobs.close()
 
 
 def test_cross_process_claims_bound_memory_and_preserve_fairness(

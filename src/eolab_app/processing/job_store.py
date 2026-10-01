@@ -16,6 +16,7 @@ from uuid import uuid4
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 from eolab_app.processing.job_notifications import JOB_QUEUE_CHANNEL
 
 from eolab_app.processing.models import (
@@ -37,7 +38,11 @@ UNFINISHED = ("queued", "running", "cancelling")
 
 
 class PostgresJobStore:
-    """Keep processing state independent of catalog persistence implementations."""
+    """Own Processing transactions and a bounded, process-local connection pool.
+
+    Composition opens the pool before use and closes it on shutdown. Connections
+    are borrowed exclusively per transaction, never retained by jobs or callers.
+    """
 
     def __init__(self, limits: ProcessingLimits, conninfo: str = "") -> None:
         """Configure the adapter without opening a startup-time connection.
@@ -48,10 +53,50 @@ class PostgresJobStore:
         """
         self.limits = limits
         self.conninfo = conninfo
+        self._pool: ConnectionPool[psycopg.Connection[dict[str, Any]]] = ConnectionPool(
+            conninfo,
+            kwargs={
+                "connect_timeout": 3,
+                "row_factory": dict_row,
+                "options": "-c statement_timeout=5000 -c lock_timeout=3000",
+            },
+            min_size=2,
+            max_size=8,
+            timeout=3,
+            max_waiting=64,
+            check=ConnectionPool.check_connection,
+            open=False,
+            name="processing",
+        )
+
+    def open(self) -> None:
+        """Start preparing reusable connections without waiting for the database.
+
+        Transactions wait at most three seconds for an available connection;
+        startup can therefore continue serving unrelated application capabilities.
+        Calling this again while the pool is open has no effect.
+
+        Raises:
+            psycopg_pool.PoolClosed: If this store was already closed.
+        """
+        self._pool.open()
+
+    def close(self) -> None:
+        """Release idle connections and pool threads after consumers stop.
+
+        A borrowed connection is closed when its transaction returns it. Calling
+        this again is harmless; this store cannot be reopened after shutdown.
+        """
+        self._pool.close()
 
     @contextmanager
-    def _transaction(self, locked: bool = False) -> Iterator[Any]:
-        """Open a bounded transaction, optionally serializing admission changes.
+    def _transaction(
+        self, locked: bool = False
+    ) -> Iterator[psycopg.Cursor[dict[str, Any]]]:
+        """Borrow a connection for one optionally locked transaction.
+
+        Commit or roll back before returning the connection, releasing any
+        transaction advisory lock. Broken connections are replaced by the pool.
 
         Args:
             locked: Acquire Processing's database-wide transaction advisory lock.
@@ -60,15 +105,11 @@ class PostgresJobStore:
             Dictionary-row cursor; all operations are committed or rolled back.
 
         Raises:
-            ProcessingError: If processing storage is unavailable or times out.
+            ProcessingError: If the pool is closed, saturated or unavailable,
+                or a database operation fails or times out.
         """
         try:
-            with psycopg.connect(
-                self.conninfo,
-                connect_timeout=3,
-                row_factory=dict_row,
-                options="-c statement_timeout=5000 -c lock_timeout=3000",
-            ) as connection:
+            with self._pool.connection() as connection:
                 with connection.cursor() as cursor:
                     if locked:
                         cursor.execute(

@@ -283,6 +283,8 @@ def create_app(
             Control while the application serves requests.
         """
         async with AsyncExitStack() as client_stack:
+            client_stack.push_async_callback(asyncio.to_thread, processing_store.close)
+            processing_store.open()
             client_stack.push_async_callback(processing_events.close)
             processing_events.start()
             for client in (
@@ -334,8 +336,9 @@ def create_app(
     application.include_router(create_vector_sampling_router(vector_selection_reader))
     processing_limits = load_processing_limits()
     processing_events = PostgresJobEvents()
+    processing_store = PostgresJobStore(processing_limits)
     processing_service = ProcessingService(
-        PostgresJobStore(processing_limits),
+        processing_store,
         LocalJobArtifacts(
             app_global_configuration.processing_data_path,
             (Path.cwd(), app_global_configuration.scan_mount_path),
@@ -483,6 +486,8 @@ async def run_processing_worker() -> None:
     artifacts.initialize()
     jobs = PostgresJobStore(limits)
     async with httpx2.AsyncClient(timeout=10) as client, AsyncExitStack() as lifecycle:
+        lifecycle.push_async_callback(asyncio.to_thread, jobs.close)
+        jobs.open()
         authorizer = CatalogRasterSourceAuthorizer(
             StacRasterCatalog(client, settings.catalog_internal_url),
             MountedRasterResolver(settings.scan_mount_path),

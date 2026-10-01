@@ -178,8 +178,24 @@ def test_load_settings_reads_scan_operational_limits(
 def test_app_closes_every_http_pool_when_lifespan_exits_with_an_error(
     configured_environment: None,
     version_file_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Keep connection-pool cleanup unconditional during abnormal shutdown."""
+    """Close HTTP and Processing database pools during abnormal shutdown.
+
+    Args:
+        configured_environment: Valid application settings.
+        version_file_path: Runtime version fixture.
+        monkeypatch: Observe database-pool lifecycle without requiring PostgreSQL.
+    """
+    from eolab_app.processing.job_store import PostgresJobStore
+
+    database_lifecycle = []
+    monkeypatch.setattr(
+        PostgresJobStore, "open", lambda self: database_lifecycle.append("open")
+    )
+    monkeypatch.setattr(
+        PostgresJobStore, "close", lambda self: database_lifecycle.append("close")
+    )
 
     class ClosingTransport(httpx2.AsyncBaseTransport):
         def __init__(self) -> None:
@@ -211,6 +227,7 @@ def test_app_closes_every_http_pool_when_lifespan_exits_with_an_error(
     assert catalog_transport.close_count == 1
     assert geoserver_transport.close_count == 2
     assert diagnostics_transport.close_count == 1
+    assert database_lifecycle == ["open", "close"]
 
 
 def test_scan_status_is_available_before_first_scan(

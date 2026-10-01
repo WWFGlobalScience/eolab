@@ -14,6 +14,7 @@ SUITES = (
     "test_processing_unified_calculations.py",
     "test_processing_shared_jobs.py",
     "test_processing_concurrency.py",
+    "test_processing_connection_pool.py",
     "test_calculation_cache_postgres.py",
     "test_polygon_summary_areas_postgres.py",
     "test_processing_events_postgres.py",

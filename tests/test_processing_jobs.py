@@ -81,6 +81,8 @@ def store(request: pytest.FixtureRequest) -> PostgresJobStore:
                 "Processing tests require a disposable eolab_processing_test* database"
             )
     result = PostgresJobStore(getattr(request, "param", RasterClipLimits()), dsn)
+    request.addfinalizer(result.close)
+    result.open()
     result.migrate()
     result.migrate()  # Exercise redeployment of an already initialized schema.
     with psycopg.connect(dsn) as connection:
@@ -425,13 +427,14 @@ def test_queued_cancellation_never_publishes(boundary: Any) -> None:
 
 
 def test_global_admission_concurrency_fencing_and_restart_recovery(
-    store: PostgresJobStore, tmp_path: Path
+    store: PostgresJobStore, tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
     """Exercise actual concurrent transactions across independent worker adapters.
 
     Args:
         store: Disposable real PostgreSQL adapter.
         tmp_path: Source grid for a real plan specification.
+        request: Owns cleanup of the independent worker adapter.
     """
     path = write_source(tmp_path / "source.tif", numpy.ones((100, 100), dtype="uint8"))
     spec = prepare_clip_job(
@@ -448,8 +451,12 @@ def test_global_admission_concurrency_fencing_and_restart_recovery(
         )
     assert len({job["id"] for job in jobs}) == 1
     other_store = PostgresJobStore(store.limits, store.conninfo)
+    request.addfinalizer(other_store.close)
+    other_store.open()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        claims = list(pool.map(lambda adapter: adapter.claim_next_job(), (store, other_store)))
+        claims = list(
+            pool.map(lambda adapter: adapter.claim_next_job(), (store, other_store))
+        )
     assert sum(claim is not None for claim in claims) == 1
     claim = next(claim for claim in claims if claim)
     assert not store.heartbeat(claim["id"], "stale-token", {})
@@ -780,6 +787,7 @@ def test_worker_composition_requires_only_catalog_and_processing_configuration(
     assert len(composed_workers) == 2
     assert composed_workers[0].native is not composed_workers[1].native
     assert cleanup_locks[0] is cleanup_locks[1]
+    assert store._pool.closed
 
 
 def test_queue_notification_is_committed_with_admission(store, tmp_path, monkeypatch):

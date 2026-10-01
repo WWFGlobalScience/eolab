@@ -62,13 +62,16 @@ def finish(store: PostgresJobStore, job: dict[str, Any]) -> None:
 
 
 def test_twelve_sessions_and_full_stack_wait_then_take_turns(
-    store: PostgresJobStore, caplog: pytest.LogCaptureFixture
+    store: PostgresJobStore,
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Admit a 32-job stack plus twelve four-job bursts while execution is held.
 
     Args:
         store: Real PostgreSQL with deployment defaults.
         caplog: Captured backlog logs, excluding session IDs and input payloads.
+        request: Owns cleanup of the replacement worker adapter.
     """
     caplog.set_level("INFO", logger="eolab_app.processing.job_store")
     blocker = admit(store, "blocker", make_plan(store, "blocker"))
@@ -91,6 +94,8 @@ def test_twelve_sessions_and_full_stack_wait_then_take_turns(
     finish(store, active)
     # A replacement worker uses the same durable turn history after deployment.
     worker_store = PostgresJobStore(store.limits, store.conninfo)
+    request.addfinalizer(worker_store.close)
+    worker_store.open()
     expected = {
         owner: sorted(
             (job for job in jobs if job["owner"] == owner),
