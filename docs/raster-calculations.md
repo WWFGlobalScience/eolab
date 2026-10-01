@@ -361,13 +361,10 @@ source authorization, scratch preparation, and the final cache lookup. These
 four intervals add up to worker preparation; they are not additional elapsed
 time. Older stored results may omit them.
 
-Scratch preparation checks physical free space and measures existing files in
-the Processing volume before creating the new attempt. It uses directory-entry
-metadata to avoid repeated path/stat work for every retained result. Workers
-that reach this check during the same scan share that in-progress measurement;
-later calls scan again. Every caller still checks its own physical headroom and
-uses its already-admitted database reservation. This still
-counts retained and orphaned files and enforces the same disk ceiling; it is not
-a cached or approximate storage total. Database reservations continue to govern
-concurrent admission. A very large retained directory can therefore still add
-filesystem work, even when the requested calculation is tiny.
+Scratch preparation checks the filesystem's available space against the job's
+reservation plus the physical free-space floor, then creates its private attempt
+directory. It does not traverse or total retained result files. Database
+reservations continue to govern concurrent admission, and publication checks
+the completed attempt against its own reservation. Existing cleanup still
+removes expired and orphaned files; it is not needed to calculate a volume-wide
+byte total before each job.

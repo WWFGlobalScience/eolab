@@ -1,13 +1,10 @@
-"""Confined private artifact storage, atomic publication, and disk accounting."""
+"""Confined private artifact storage, disk headroom, and atomic publication."""
 
-from concurrent.futures import Future
 import json
-import os
 from pathlib import Path
 import re
 import shutil
 import time
-from threading import Lock
 from typing import Any
 
 from eolab_app.processing.models import ProcessingError, ProcessingLimits
@@ -45,8 +42,6 @@ class LocalJobArtifacts:
         if not root.is_absolute():
             raise ValueError("Processing storage must be an absolute path")
         self.root = root.resolve()
-        self._usage_lock = Lock()
-        self._pending_usage: Future[int] | None = None
         for forbidden in forbidden_roots:
             other = forbidden.resolve()
             if self.root.is_relative_to(other) or other.is_relative_to(self.root):
@@ -86,24 +81,25 @@ class LocalJobArtifacts:
         return candidate
 
     def prepare(self, attempt: str, reservation: int, limits: ProcessingLimits) -> Path:
-        """Check actual disk headroom and create one unique private attempt.
+        """Check physical free space and create one unique private attempt.
+
+        Retained outputs are not traversed or totaled. The caller has already
+        admitted this job's reservation through the job store.
 
         Args:
             attempt: Fenced worker attempt ID.
             reservation: Admitted worst-case scratch/output byte reservation.
-            limits: Free-space floor and global on-disk ceiling.
+            limits: Processing limits supplying the physical free-space floor.
 
         Returns:
             Empty attempt directory.
 
         Raises:
             ProcessingError: If physical disk headroom is insufficient.
+            ValueError: If the attempt ID or resolved path is not confined.
+            OSError: If free space cannot be read or the directory cannot be created.
         """
-        used = self._stored_file_bytes()
-        if (
-            shutil.disk_usage(self.root).free < reservation + limits.free_space_floor
-            or used + reservation > limits.max_stored_bytes
-        ):
+        if shutil.disk_usage(self.root).free < reservation + limits.free_space_floor:
             raise ProcessingError(
                 "storage_full",
                 "There is not enough temporary storage for this job.",
@@ -112,79 +108,6 @@ class LocalJobArtifacts:
         path = self._directory(attempt, False)
         path.mkdir(exist_ok=False)
         return path
-
-    def _stored_file_bytes(self) -> int:
-        """Share an in-progress volume measurement between concurrent workers.
-
-        No completed measurement is retained for future calls. The shared scan
-        is a filesystem snapshot, not a reservation: each caller still checks
-        its own physical free space, and PostgreSQL serializes disk reservations.
-        Errors wake every waiting caller and allow the next call to try again.
-
-        Returns:
-            Bytes measured by this call or an overlapping scan of this volume.
-
-        Raises:
-            OSError: If the shared volume scan fails.
-        """
-        with self._usage_lock:
-            pending = self._pending_usage
-            starts_scan = pending is None
-            if pending is None:
-                pending = self._pending_usage = Future()
-        if not starts_scan:
-            return pending.result()
-        try:
-            total = self._scan_stored_file_bytes()
-            pending.set_result(total)
-            return total
-        except BaseException as error:
-            pending.set_exception(error)
-            raise
-        finally:
-            with self._usage_lock:
-                self._pending_usage = None
-
-    def _scan_stored_file_bytes(self) -> int:
-        """Measure files in the private volume without repeated path metadata reads.
-
-        Count files at the parent/attempt/file depth used by scratch and results,
-        including orphaned attempts until cleanup removes them. Directory entries
-        supply file types and reuse cached metadata instead of constructing Path
-        objects and asking for each file's metadata twice. Concurrent publication
-        and cleanup may move/remove directories, as with the previous glob scan;
-        database reservations remain the authority for concurrent admission.
-
-        Returns:
-            Actual bytes in files at the artifact depth.
-
-        Raises:
-            OSError: If storage cannot be inspected, other than a concurrently
-                removed file or directory.
-        """
-        total = 0
-        with os.scandir(self.root) as parents:
-            for parent in parents:
-                if not parent.is_dir():
-                    continue
-                try:
-                    with os.scandir(parent.path) as attempts:
-                        for attempt in attempts:
-                            if not attempt.is_dir():
-                                continue
-                            try:
-                                with os.scandir(attempt.path) as entries:
-                                    for entry in entries:
-                                        try:
-                                            if entry.is_file():
-                                                total += entry.stat().st_size
-                                        except FileNotFoundError:
-                                            continue
-                            except FileNotFoundError:
-                                continue
-                except FileNotFoundError:
-                    continue
-        return total
 
     def publish(self, attempt: str, reservation: int) -> None:
         """Atomically rename a closed, validated attempt on the same volume.
