@@ -285,7 +285,8 @@ class ProcessingWorker:
 
         Returns:
             Result-file metadata, or None after preparation returns the job to
-            the existing queue until its disk reservation fits.
+            the existing queue until its disk reservation fits. Successful calculations
+            include disjoint preparation intervals measured by this worker.
 
         Raises:
             ProcessingError: If the source, resources, or native operation fail.
@@ -296,6 +297,7 @@ class ProcessingWorker:
             await self._prepare_calculation(row)
         elif operation == "raster.clip.v1" and "request" in row["spec"]:
             await self._prepare_clip(row)
+        preparation_completed = time.perf_counter()
         if row["status"] == "queued":
             return None
         if operation == "raster.clip.v1":
@@ -344,12 +346,14 @@ class ProcessingWorker:
                 }
             )
         authorized = await self.authorizer.authorize(source)
+        sources_authorized = time.perf_counter()
         directory = await asyncio.to_thread(
             self.artifacts.prepare,
             row["attempt_id"],
             row["reserved_bytes"],
             self.limits,
         )
+        scratch_prepared = time.perf_counter()
         if operation == "raster.aggregate.v1":
             if spec.cachedRows is not None:
                 cached_rows = [row.model_dump(mode="json") for row in spec.cachedRows]
@@ -395,6 +399,10 @@ class ProcessingWorker:
                         0, (row["updated_at"] - row["created_at"]).total_seconds()
                     ),
                     preparationSeconds=prepared - started,
+                    planPreparationSeconds=preparation_completed - started,
+                    sourceAuthorizationSeconds=sources_authorized - preparation_completed,
+                    scratchPreparationSeconds=scratch_prepared - sources_authorized,
+                    resultCacheLookupSeconds=prepared - scratch_prepared,
                     nativeProcessSeconds=calculated - prepared,
                     publicationSeconds=time.perf_counter() - calculated,
                     process=asdict(outcome.timing) if outcome.timing else None,
