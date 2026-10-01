@@ -89,7 +89,8 @@ class LocalJobArtifacts:
         Args:
             attempt: Fenced worker attempt ID.
             reservation: Admitted worst-case scratch/output byte reservation.
-            limits: Processing limits supplying the physical free-space floor.
+            limits: Settings whose free_space_floor is the minimum number of bytes
+                that must remain free after allowing for this job's reservation.
 
         Returns:
             Empty attempt directory.
