@@ -337,7 +337,10 @@ class JobStore(Protocol):
         ...
 
     def cleanup_candidates(self) -> list[dict[str, Any]]:
-        """Expire abandoned plans and results, then find job files safe to remove.
+        """Prune old job records, expire inputs/results, and find removable files.
+
+        Retain cleaned terminal records for seven days after their last update
+        and while a transfer is active. Run pruning even without removable files.
 
         Returns:
             At most 100 rows with no active transfer; budgets remain reserved

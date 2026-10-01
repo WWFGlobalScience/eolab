@@ -503,8 +503,14 @@ Counts, durations and byte limits must be positive integers (the free-space
 floor may be zero; durations cannot exceed one year). Pending input reservations
 remain held after cancellation until cleanup succeeds. Small summaries and idempotency records remain bounded
 by the record limit after input payloads are removed. Cleaned terminal records
-expire after seven days; recent request keys remain recoverable even when new
-admission is full. Deleting a result releases its input/artifact reservations
+become eligible for removal seven days after their last update. The existing
+worker maintenance pass prunes them, including when there are no files to remove.
+Submission and individual file-cleanup acknowledgements do not prune history.
+Recent request keys remain recoverable even when new admission is full. If the
+record limit is reached before maintenance reclaims eligible records, submission
+returns `job_record_capacity`; retry after maintenance runs. All workers busy
+with long jobs can delay maintenance until a worker returns to its loop.
+Deleting a result releases its input/artifact reservations
 after cleanup, but does not immediately discard its idempotency record.
 
 Submission returns distinct 429 error codes: `owner_queue_full` for the session's

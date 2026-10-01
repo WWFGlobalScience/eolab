@@ -318,7 +318,6 @@ class PostgresJobStore:
                         409,
                     )
                 return existing
-            self._delete_old_job_records(cursor)
             cursor.execute(
                 "SELECT id,status FROM processing.jobs WHERE work_key=%s AND status IN ('queued','running') "
                 "AND (status='queued' OR (lease_until>now() AND deadline_at>now()))",
@@ -935,7 +934,11 @@ class PostgresJobStore:
             return cursor.fetchone() is not None
 
     def cleanup_candidates(self) -> list[dict[str, Any]]:
-        """Expire abandoned plans and results, then find job files safe to remove.
+        """Prune old job records, expire inputs/results, and find removable files.
+
+        Already-cleaned terminal jobs are forgotten seven days after their last
+        update, provided no transfer is active. Pruning runs even when no files need
+        removal; submission and individual cleanup acknowledgements do not prune.
 
         Returns:
             At most 100 rows with no active transfer; budgets remain reserved
@@ -947,6 +950,7 @@ class PostgresJobStore:
         with self._transaction(acquire_lock=True) as cursor:
             cursor.execute("DELETE FROM processing.inputs WHERE expires_at<=now()")
             cursor.execute("DELETE FROM processing.transfers WHERE expires_at<=now()")
+            self._delete_old_job_records(cursor)
             cursor.execute(
                 "UPDATE processing.jobs SET status='expired',updated_at=now() WHERE status='ready' AND expires_at<=now()"
             )
@@ -966,13 +970,13 @@ class PostgresJobStore:
                 "UPDATE processing.jobs SET reserved_bytes=0,spec=NULL,artifact=NULL WHERE id=%s AND status NOT IN ('queued','running','cancelling','ready') AND NOT EXISTS (SELECT 1 FROM processing.transfers WHERE job_id=%s)",
                 (identifier, identifier),
             )
-            self._delete_old_job_records(cursor)
 
     def _delete_old_job_records(self, cursor: Any) -> None:
         """Forget cleaned terminal jobs after their seven-day idempotency lifetime.
 
         Args:
-            cursor: Cursor inside the existing locked admission/cleanup transaction.
+            cursor: Cursor inside the worker maintenance transaction holding the
+                Processing advisory lock.
         """
         cursor.execute(
             "DELETE FROM processing.jobs WHERE reserved_bytes=0 AND spec IS NULL "
