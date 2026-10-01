@@ -1,4 +1,4 @@
-"""Confined private artifact storage, disk headroom, and atomic publication."""
+"""Confined private artifact storage, atomic publication, and free-space checks."""
 
 import json
 from pathlib import Path
