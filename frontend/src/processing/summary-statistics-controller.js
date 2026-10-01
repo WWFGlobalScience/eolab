@@ -365,7 +365,9 @@ export class SummaryStatisticsController {
         this.render(); this.view.focusStatistic?.(card.id);
     }
 
-    /** Server grammar remains authoritative; one invalid statistic never invalidates its peers.
+    /** Schedule editor feedback, reusing successful feedback for an unchanged formula.
+     * Source and area changes do not change the fixed alias or formula grammar.
+     * Submission always validates the complete inputs again on the server.
      * @param {Object} card Owned statistic card.
      * @param {boolean} requestAutomatic Whether a complete edit requests an automatic update.
      * @return {void}
@@ -376,9 +378,20 @@ export class SummaryStatisticsController {
         card.valid = false; card.checking = true; card.error = false;
         card.cancelled = false;
         if (requestAutomatic) { card.requested = "automatic"; card.requestStarted = this.now(); card.vectorSelectionSeconds = undefined; }
+        if (card.validatedExpression === card.expression.trim()) {
+            card.valid = true; card.checking = false;
+            if (card.result?.key === this.key(card)) card.requested = null;
+            this.scheduleNextBatch();
+            return;
+        }
         card.message = "Checking formula…";
         card.timer = this.clock.setTimeout(() => void this.validate(card, version), 700);
     }
+    /** Check a paused editor value without overriding a newer edit or explicit submission.
+     * @param {Object} card Owned statistic card.
+     * @param {number} version Editor revision captured when the check was scheduled.
+     * @return {Promise<void>} Feedback update; transport and formula errors are displayed.
+     */
     async validate(card, version) {
         card.abort = new AbortController();
         try {
@@ -386,6 +399,7 @@ export class SummaryStatisticsController {
             await this.api.validateCalculation([{ label: this.label(card), expression: card.expression }], card.abort.signal);
             if (this.destroyed || version !== card.version || !this.state.statistics.includes(card)) return;
             card.valid = true; card.checking = false; card.message = "Ready to calculate";
+            card.validatedExpression = card.expression.trim();
             if (card.result?.key === this.key(card)) card.requested = null;
         } catch (error) {
             if (this.destroyed || version !== card.version || error.name === "AbortError" || !this.state.statistics.includes(card)) return;
@@ -394,7 +408,9 @@ export class SummaryStatisticsController {
         }
         this.render(); this.scheduleNextBatch();
     }
-    /** Queue one card; an explicit manual action already authorizes submission.
+    /** Queue one card; explicit actions submit without waiting for editor validation.
+     * Automatic typing still waits for debounced feedback. A manual submission
+     * supersedes any pending feedback so a late response cannot change its state.
      * @param {number} id Stable card identity.
      * @param {string} kind Manual or automatic execution intent.
      * @param {boolean} [debounce=false] Whether formula validation must wait for editing.
@@ -407,7 +423,10 @@ export class SummaryStatisticsController {
         card.requested = kind; card.error = false; card.cancelled = false;
         card.requestStarted = this.now();
         card.vectorSelectionSeconds = undefined;
-        if (debounce) this.validateLater(card, false);
+        if (kind === "manual") {
+            this.clock.clearTimeout(card.timer); card.abort?.abort(); card.version++;
+            card.checking = false;
+        } else if (debounce) this.validateLater(card, false);
         else if (!card.valid && !card.checking) this.validateLater(card, false);
         this.render(); this.scheduleNextBatch();
     }
@@ -446,13 +465,15 @@ export class SummaryStatisticsController {
         this.batchStartScheduled = true;
         queueMicrotask(() => { this.batchStartScheduled = false; this.startNextBatch(); });
     }
-    /** Submit the next compatible statistic batch when execution is idle.
+    /** Submit compatible statistics, isolating manually requested unchecked formulas.
+     * Previously checked formulas may share a scan. An unchecked manual formula
+     * is submitted alone so its server rejection cannot block valid peers.
      * @return {void}
      */
     startNextBatch() {
         const execution = this.executor.snapshot;
         if (this.destroyed || this.batch || !execution.isIdle) return;
-        const eligible = this.state.statistics.filter(card => card.requested && card.valid && !card.checking && card.source && this.state.area &&
+        const eligible = this.state.statistics.filter(card => card.requested && (card.valid || (card.requested === "manual" && card.expression.trim())) && !card.checking && card.source && this.state.area &&
             (["manual", "review"].includes(card.requested) || (this.isActive && this.state.automatic)));
         const first = eligible[0];
         if (!first) return;
@@ -464,12 +485,19 @@ export class SummaryStatisticsController {
         const labels = new Set();
         const group = eligible.filter(card => {
             const label = this.label(card);
+            if (card !== first && (!first.valid || !card.valid)) return false;
             if (card.requested !== first.requested || sourceKey(card.source) !== sourceKey(first.source) || labels.has(label)) return false;
             labels.add(label); return true;
         });
-        const intent = calculationIntent({ source: first.source, area: this.state.area,
-            targetChunkPixels: this.state.targetChunkPixels,
-            calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
+        let intent;
+        try {
+            intent = calculationIntent({ source: first.source, area: this.state.area,
+                targetChunkPixels: this.state.targetChunkPixels,
+                calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
+        } catch (error) {
+            for (const card of group) { card.requested = null; card.error = true; card.message = error.message; }
+            this.render(); this.scheduleNextBatch(); return;
+        }
         this.batch = { intent, previousJobId: execution.completedJob?.jobId, automatic: first.requested !== "manual", obsolete: false,
             cards: group.map(card => ({ id: card.id, key: this.key(card), requestStarted: card.requestStarted, vectorSelectionSeconds: card.vectorSelectionSeconds })) };
         for (const card of group) { card.requested = null; card.pending = true; card.error = false; card.message = "Preparing calculation…"; }
@@ -506,6 +534,9 @@ export class SummaryStatisticsController {
                 const card = this.state.statistics.find(item => item.id === entry.id);
                 if (!card) return;
                 if (!batch.obsolete && this.key(card) === entry.key) {
+                    if (execution.currentJob || matching) {
+                        card.valid = true; card.validatedExpression = card.expression.trim();
+                    }
                     card.message = execution.message || (execution.currentJob?.status === "running" ? "Calculating…" : "Waiting to calculate…");
                     card.progress = execution.currentJob?.progress ?? null;
                     card.error = execution.phase === "error";

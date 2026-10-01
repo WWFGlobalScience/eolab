@@ -9,7 +9,7 @@ import { SummaryStatisticsView } from "../../src/processing/summary-statistics-v
 import { CalculationSessionStorage } from "../../src/processing/calculation-session.js";
 import { describeJobProgress } from "../../src/processing/presentation.js";
 import { ProcessingJobs } from "../../src/processing/jobs.js";
-import { ProcessingApiClient } from "../../src/processing/api.js";
+import { ProcessingApiClient, ProcessingRequestError } from "../../src/processing/api.js";
 import { SummaryControlDocument, SUMMARY_MARKUP } from "../../test-support/processing/summary-document.js";
 
 const source = { collectionId: "rasters", itemId: "hfp", label: "Human footprint" };
@@ -28,6 +28,42 @@ test("the first active map click calculates and an unchanged completed box reuse
     h.controller.calculateSelection(); await h.tick();
     assert.equal(h.submits(), 1);
     assert.equal(h.controller.state.statistics[0].current, true);
+});
+
+test("manual Calculate bypasses pending editor feedback and ignores its late error",async()=>{
+    const response=deferred();const h=fixture();await h.open();h.controller.setAutomatic(false);
+    const card=h.controller.state.statistics[0];
+    h.api.validateCalculation=()=>response.promise;
+    h.controller.editStatistic(card.id,{expression:"sum(a)"});await h.tick();
+    assert.equal(card.checking,true);
+    const run=h.view.cards.get(card.id).run;
+    assert.equal(Boolean(run.disabled),false,"Calculate need not wait for the optional editor check");
+    run.dispatchEvent(new Event("click"));await flush();
+    assert.equal(h.submits(),1);assert.equal(card.pending,true);
+    response.reject(Error("Obsolete editor response"));await flush();
+    assert.equal(card.error,false);await h.finish();assert.equal(card.current,true);h.controller.destroy();
+});
+
+test("changing only a raster or sampling area reuses formula feedback without another HTTP check",async()=>{
+    const h=fixture();await h.open();const card=h.controller.state.statistics[0];
+    const checks=h.requests.filter(([kind])=>kind==="validate").length;
+    h.controller.setSelection(box(80));await flush();
+    assert.equal(h.submits(),1);await h.finish();
+    h.controller.editStatistic(card.id,{source:resistance});await flush();
+    assert.equal(h.submits(),2);
+    assert.equal(h.requests.filter(([kind])=>kind==="validate").length,checks);
+    await h.finish();h.controller.destroy();
+});
+
+test("unchecked manual formulas are isolated so rejection does not block a valid requested peer",async()=>{
+    const h=fixture();h.controller.open();h.controller.setAutomatic(false);h.controller.addStatistic("sum");
+    const [bad,good]=h.controller.state.statistics;
+    h.controller.editStatistic(bad.id,{expression:"bad(a)"});
+    h.controller.request(bad.id,"manual");h.controller.request(good.id,"manual");await flush();
+    assert.equal(h.requests.filter(([kind])=>kind==="validate").length,0);
+    assert.equal(bad.error,true);assert.equal(good.pending,true);
+    assert.deepEqual(h.requests.filter(([kind])=>kind==="submit").map(([,value])=>value.calculations.length),[1,1]);
+    await h.finish();assert.equal(good.current,true);assert.equal(bad.result,null);h.controller.destroy();
 });
 
 test("closed summary retains completed manual results without drawing and shows them on reopening", async () => {
@@ -137,7 +173,7 @@ test("late formula checks and plans cannot submit after leaving the summary pane
         const response = deferred(); const h = fixture(); await h.open();
         const original = h.api[stage];
         h.api[stage] = async value => { const result = await original(value); await response.promise; return result; };
-        h.controller.calculateSelection(); await h.tick();
+        h.controller.editStatistic(h.controller.state.statistics[0].id,{expression:"sum(a)"}); await h.tick();
         h.controller.setActive(false);
         response.resolve(); await flush();
         assert.equal(h.submits(), 0);
@@ -175,6 +211,7 @@ function fixture(overrides = {}, data = new Map(), browserContext = {}, context 
         validateCalculation: async rows => { requests.push(["validate", rows]); if (rows.some(row=>row.expression.includes("bad"))) throw Error("Unknown function bad"); return {valid:true}; },
         submitCalculation: async submission => {
             requests.push(["submit",submission]);
+            if (submission.calculations.some(row=>row.expression.includes("bad"))) throw new ProcessingRequestError("Unknown function bad",422);
             const intent = submission;
             const job = { jobId:String(++jobSerial).padStart(32,"0"),operation:"raster.aggregate.v1",status:"running",sources:{a:intent.source},calculations:intent.calculations,
                 area:{kind:"bounds",bounds:[77,22,78,23]},grid,createdAt:"2026-09-08T00:00:00Z",progress:{phase:"calculating",totalBlocks:4,completedBlocks:0},result:null };
@@ -505,12 +542,13 @@ test("histogram action opens and runs all valid configured cards without Calcula
     assert.equal(h.submits(), 1, "repeat clicks during validation do not duplicate work");
     assert.equal(h.requests.find(([kind])=>kind==="submit")[1].calculations[0].expression, "mean(a)");
     assert.deepEqual(h.requests.find(([kind])=>kind==="submit")[1].area, box(80));
-    assert.equal(invalid.error, true);
-    assert.match(h.view.cards.get(invalid.id).status.textContent, /Unknown function bad/);
     await h.finish("ready", ["4"]);
     assert.equal(h.submits(), 2);
     assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.source.itemId, resistance.itemId);
     await h.finish("ready", ["20"]);
+    assert.equal(h.submits(),3,"unchecked invalid formula reaches submission validation separately");
+    assert.equal(invalid.error, true);
+    assert.match(h.view.cards.get(invalid.id).status.textContent, /Unknown function bad/);
     assert.equal(mean.result.row.value, "4"); assert.equal(sum.result.row.value, "20");
     assert.equal(invalid.result, null);
     h.controller.destroy();
@@ -826,7 +864,7 @@ test("dirty statistics sharing a source use one scan; different sources run sequ
     await h.finish("ready",["22","8"]);assert.equal(a.result.row.value,"22");assert.equal(b.result.row.value,"8");
     h.controller.editStatistic(a.id,{expression:"min(a)"});h.controller.editStatistic(b.id,{source:resistance});await h.tick();
     assert.equal(h.submits(),2);await h.finish();assert.equal(h.submits(),3);
-    assert.equal(h.controller.executor.snapshot.unfinishedCalculation.calculation.source.itemId,"resistance");await h.finish();
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").slice(-2).map(([,value])=>value.source.itemId).sort().join(","),"hfp,resistance");await h.finish();
 });
 test("duplicate statistic names are valid and are not sent in one duplicate-label request",async()=>{
     const h=fixture();await h.open();h.controller.setAutomatic(false);h.controller.addStatistic("mean");await h.tick();

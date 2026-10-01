@@ -16,13 +16,12 @@ export class RasterSeriesCalculations {
      * Composition supplies the area; the Raster series controller supplies selected
      * rasters, formulas and visibility before work can begin.
      * @param {Object} options Providers.
-     * @param {import("./api.js").ProcessingApiClient} options.api Formula validator.
      * @param {import("./calculation-requests.js").CalculationRequests} options.requests Independent recoverable requests.
      * @param {Object} [options.clock=globalThis] Debounce timer provider.
      * @param {()=>number} [options.now] Monotonic browser clock in milliseconds.
      */
-    constructor({ api, requests, clock = globalThis, now = () => performance.now() }) {
-        Object.assign(this, { api, requests, clock, now });
+    constructor({ requests, clock = globalThis, now = () => performance.now() }) {
+        Object.assign(this, { requests, clock, now });
         this.onChange = () => {};
         this.formulas = [];
         this.sources = [];
@@ -35,7 +34,6 @@ export class RasterSeriesCalculations {
         this.pending = new Map();
         this.message = "";
         this.busy = false;
-        this.validated = false;
         this.clients = new Map();
         this.progress = new Map();
     }
@@ -117,7 +115,7 @@ export class RasterSeriesCalculations {
 
     /** Clear results after a calculation input changes and schedule replacements when visible.
      * Keep completed values separately for the faded previous plot. Cancel pending
-     * work and clear formula validation so new inputs are checked before submission.
+     * work so each replacement is validated by its submission endpoint.
      * @return {void}
      */
     resetResultsForChangedInputs() {
@@ -125,7 +123,6 @@ export class RasterSeriesCalculations {
         this.cancelRemainingRasters();
         this.results = new Map();
         this.complete = false;
-        this.validated = false;
         this.startedAt = null;
         this.elapsedSeconds = null;
         if (this.active) this.scheduleRemainingCalculations();
@@ -133,7 +130,7 @@ export class RasterSeriesCalculations {
     }
 
     /** Stop the unfinished series after cancellation, input replacement or hiding the plot.
-     * Cancel the debounce timer and formula check, ignore late responses, and ask
+     * Cancel the debounce timer, ignore late responses, and ask
      * Processing to cancel all of this series' submitted jobs. Completed results
      * remain available; executors retain jobs still needing cancellation recovery.
      * @return {void} Cancellation is requested here and acknowledged asynchronously.
@@ -141,8 +138,7 @@ export class RasterSeriesCalculations {
     cancelRemainingRasters() {
         this.version++;
         this.clock.clearTimeout(this.timer);
-        this.validation?.abort();
-        this.validating = false;
+        this.dispatching = false;
         this.pending.clear();
         this.progress.clear();
         this.busy = false;
@@ -153,28 +149,27 @@ export class RasterSeriesCalculations {
 
     /** Schedule remaining calculations after 700 ms without another edit.
      * Used after input changes or reopening an unfinished area plot. Replace the
-     * previous timer and show checking feedback; the delayed request validates the
-     * formulas before submitting raster work.
+     * previous timer; the delayed submission includes server formula validation.
      * @return {void}
      */
     scheduleRemainingCalculations() {
         this.clock.clearTimeout(this.timer);
         this.startedAt ??= this.now();
-        this.message = "Checking formulas…";
+        this.message = "Waiting for edits to finish…";
         this.busy = true;
         this.timer = this.clock.setTimeout(() => void this.calculateRemainingRasters(false), 700);
         this.onChange();
     }
 
-    /** Validate formulas once and request all unfinished rasters independently.
+    /** Submit all unfinished rasters directly; the server validates each request.
      * Calculate retries failed rows. Active requests
      * continue unchanged; uncertain submissions require Recover first.
      * @param {boolean} [retryFailures=true] Retry failed rows when explicitly requested.
-     * @return {Promise<void>} Validation and request dispatch, not calculation completion.
+     * @return {void} Request dispatch, not calculation completion.
      */
-    async calculateRemainingRasters(retryFailures = true) {
+    calculateRemainingRasters(retryFailures = true) {
         this.clock.clearTimeout(this.timer);
-        if (!this.active || this.validating) return;
+        if (!this.active || this.dispatching) return;
         if (!this.sources.length || !this.area) {
             this.busy = false;
             this.message = !this.area ? "Choose an area or click the map to calculate." : "Select at least one raster.";
@@ -185,14 +180,10 @@ export class RasterSeriesCalculations {
         if (retryFailures) {
             for (const [key, result] of this.results) if (result.error) this.results.delete(key);
         }
-        this.busy = this.validating = true;
-        const validation = this.validation = new AbortController();
+        this.busy = this.dispatching = true;
         try {
             const formulas = this.formulas.map(formula => ({ label: "stat-" + formula.id, expression: formula.expression.trim() }));
             const firstCalculationInputs = calculationIntent({ source: this.getRasterReference(this.sources[0]), area: this.area, calculations: formulas });
-            if (!this.validated) await this.api.validateCalculation(firstCalculationInputs.calculations, validation.signal);
-            if (version !== this.version || !this.active) return;
-            this.validated = true;
             // Record all identities before submission can synchronously notify listeners.
             const additions = [];
             for (const source of this.sources) {
@@ -206,17 +197,20 @@ export class RasterSeriesCalculations {
                 this.pending.set(index, request);
                 additions.push([client, request]);
             }
-            for (const [client, request] of additions) client.submit(request.calculationInputs, {automatic: true, client: "raster-series"});
-            this.validating = false;
+            for (const [client, request] of additions) {
+                if (version !== this.version || !this.active) return;
+                client.submit(request.calculationInputs, {automatic: true, client: "raster-series"});
+            }
+            this.dispatching = false;
             this.updateSeriesProgress();
         } catch (error) {
             if (version !== this.version || error.name === "AbortError") return;
-            this.message = error.message; this.busy = this.validating = false; this.onChange();
+            this.message = error.message; this.busy = this.dispatching = false; this.onChange();
         }
     }
 
     /** Read the catalog IDs and display name used to request one raster calculation.
-     * Called while building formula-validation and calculation requests.
+     * Called while building calculation requests.
      * @param {{label:string,item:{collection:string,id:string}}} source Selected catalog raster.
      * @return {{collectionId:string,itemId:string,label:string}} Raster reference accepted by Processing.
      */
@@ -254,7 +248,7 @@ export class RasterSeriesCalculations {
             }
             this.results.set(request.key, { job: state.completedJob, calculationInputs: request.calculationInputs, elapsedSeconds,
                 performanceLines: performanceDescription(state.completedJob, elapsedSeconds, stages,
-                    "Measured in this tab from submitting this raster calculation until its completed result reaches the series controller, including preparation, queueing, submission and result delivery (notifications or polling). Excludes earlier area selection, formula debounce and validation, and subsequent UI rendering.") });
+                    "Measured in this tab from submitting this raster calculation until its completed result reaches the series controller, including validation, preparation, queueing, submission and result delivery (notifications or polling). Excludes earlier area selection, formula debounce, and subsequent UI rendering.") });
             this.pending.delete(index);
         } else if (state.recoverable) {
             request.phase = "recovery"; request.message = state.message;
@@ -271,17 +265,17 @@ export class RasterSeriesCalculations {
     /** Update per-raster progress, whole-series status and the final elapsed time.
      * Read pending requests and finished results to set busy and completion flags and the overall message, then notify the plot listener.
      * When every raster has a result or error, record time since the series was
-     * requested, including debounce, validation and recovery pauses.
+     * requested, including debounce, submission validation and recovery pauses.
      * This method uses existing state; it does not request server updates.
      * @return {void}
      */
     updateSeriesProgress() {
         this.progress = new Map([...this.pending.values()].map(request => [request.key, { phase: request.phase, message: request.message }]));
-        this.busy = this.validating || [...this.pending.values()].some(request => request.phase !== "recovery");
+        this.busy = this.dispatching || [...this.pending.values()].some(request => request.phase !== "recovery");
         this.complete = !!this.sources.length && this.results.size === this.sources.length;
         if (this.complete) {
             this.elapsedSeconds = (this.now() - this.startedAt) / 1000;
-            this.message = this.hasErrors ? "Some rasters failed. Calculate to retry failed rasters." : "Raster series complete.";
+            this.message = this.commonError || (this.hasErrors ? "Some rasters failed. Calculate to retry failed rasters." : "Raster series complete.");
         } else if (this.needsRecovery) {
             this.message = "Recover interrupted requests to confirm or cancel the same jobs safely. Other rasters can continue.";
         } else this.message = this.busy ? "Calculating rasters; results appear as each finishes." : "Calculate to continue.";
@@ -290,6 +284,15 @@ export class RasterSeriesCalculations {
 
     /** Check whether any raster has a failed result. @return {boolean} True if at least one result contains an error. */
     get hasErrors() { return [...this.results.values()].some(result => result.error); }
+
+    /** Show an identical failure for the entire stack once, above the results.
+     * @return {string} Shared error only when every selected raster failed identically.
+     */
+    get commonError() {
+        if (!this.complete) return "";
+        const errors = [...this.results.values()].map(result => result.error);
+        return errors[0] && errors.every(error => error === errors[0]) ? errors[0] : "";
+    }
 
     /** Whether a current or cancelled submission needs safe recovery. @return {boolean} */
     get needsRecovery() { return [...this.clients.values()].some(client => client.snapshot.recoverable); }
@@ -307,7 +310,6 @@ export class RasterSeriesCalculations {
      */
     destroy() {
         this.clock.clearTimeout(this.timer);
-        this.validation?.abort();
         for (const client of this.clients.values()) client.destroy();
     }
 }

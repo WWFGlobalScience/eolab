@@ -353,7 +353,7 @@ export class RasterSeriesController {
             return { key: source.key, label: source.label, statisticId: formula.id, statisticLabel: formula.label || formula.expression || "Custom statistic",
                 state: row?.state === "ok" && sameFormula ? "value" : result?.error ? "error" : sameFormula ? row?.state ?? "waiting" : "waiting",
                 value: !sameFormula || row?.value == null ? null : Number(row.value), rawValue: sameFormula ? row?.value : null, unit: row?.unit ?? "",
-                errorMessage: result?.error ?? area.progress.get(source.key)?.message ?? (!result ? "Waiting" : ""), cached: !!result?.job?.result?.cacheHit };
+                errorMessage: area.commonError ? "Not calculated. See the message above." : result?.error ?? area.progress.get(source.key)?.message ?? (!result ? "Waiting" : ""), cached: !!result?.job?.result?.cacheHit };
         });
         const statistics = this.formulas.map(formula => ({ ...formula, ...this.statisticDisplay.get(formula.id), rows: rowsFor(area.results, formula) }));
         const rows = sources.flatMap((source, index) => statistics.map(statistic => statistic.rows[index]));
