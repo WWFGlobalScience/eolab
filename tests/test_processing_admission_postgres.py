@@ -254,10 +254,10 @@ def test_duplicate_concurrent_submission_and_owner_cancel_are_isolated(
     )
 
 
-def test_record_budget_keeps_recent_idempotency_but_prunes_old_cleaned_jobs(
+def test_record_capacity_recovers_after_worker_maintenance(
     store: PostgresJobStore,
 ) -> None:
-    """Record capacity recovers only after the existing seven-day retention ends.
+    """Submission retains expired history until worker maintenance reclaims it.
 
     Args:
         store: Disposable PostgreSQL store.
@@ -275,7 +275,134 @@ def test_record_budget_keeps_recent_idempotency_but_prunes_old_cleaned_jobs(
             "UPDATE processing.jobs SET updated_at=now()-interval '8 days' WHERE id=%s",
             (job["id"],),
         )
+    with pytest.raises(ProcessingError) as awaiting_maintenance:
+        admit(store, "owner", plan)
+    assert awaiting_maintenance.value.code == "job_record_capacity"
+    assert store.find_request("owner", job["request_key"]) is not None
+    assert store.cleanup_candidates() == []
+    assert store.find_request("owner", job["request_key"]) is None
     assert admit(store, "owner", plan)["status"] == "queued"
+
+
+@pytest.mark.parametrize(
+    "age_seconds,status,reserved_bytes,has_spec,transfer_seconds,pruned",
+    [
+        (604740, "cancelled", 0, False, None, False),
+        (604860, "cancelled", 0, False, None, True),
+        (604860, "cancelled", 0, False, 3600, False),
+        (604860, "cancelled", 0, False, -60, True),
+        (604860, "cancelled", 1, False, None, False),
+        (604860, "cancelled", 0, True, None, False),
+        (604860, "queued", 0, False, None, False),
+        (604860, "running", 0, False, None, False),
+        (604860, "cancelling", 0, False, None, False),
+        (604860, "ready", 0, False, None, False),
+    ],
+)
+def test_maintenance_prunes_only_old_cleaned_terminal_records(
+    store: PostgresJobStore,
+    age_seconds: int,
+    status: str,
+    reserved_bytes: int,
+    has_spec: bool,
+    transfer_seconds: int | None,
+    pruned: bool,
+) -> None:
+    """Protect recent identities, active jobs, retained files and download leases.
+
+    Args:
+        store: Disposable PostgreSQL store.
+        age_seconds: Time since the retained job's last update.
+        status: Persisted lifecycle state to protect or prune.
+        reserved_bytes: Disk reservation still owned by this job.
+        has_spec: Whether operation inputs still await file cleanup.
+        transfer_seconds: Remaining transfer lifetime, or no transfer.
+        pruned: Whether this record is eligible for removal.
+    """
+    job = admit(store, "owner", make_plan(store, "owner"))
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.jobs SET status=%s,reserved_bytes=%s,"
+            "spec=CASE WHEN %s THEN spec ELSE NULL END,"
+            "updated_at=now()-%s*interval '1 second' WHERE id=%s",
+            (status, reserved_bytes, has_spec, age_seconds, job["job_id"]),
+        )
+        if transfer_seconds is not None:
+            connection.execute(
+                "INSERT INTO processing.transfers(id,job_id,expires_at) "
+                "VALUES (%s,%s,now()+%s*interval '1 second')",
+                (uuid4().hex, job["job_id"], transfer_seconds),
+            )
+    store.cleanup_candidates()
+    assert (store.find_request("owner", job["request_key"]) is None) == pruned
+    with psycopg.connect(store.conninfo) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM processing.jobs WHERE id=%s", (job["job_id"],)
+        ).fetchone() == (0 if pruned else 1,)
+
+
+def test_cleanup_acknowledgement_does_not_prune_other_jobs(
+    store: PostgresJobStore,
+) -> None:
+    """Acknowledging one removed artifact must not sweep global job history.
+
+    Args:
+        store: Disposable PostgreSQL store.
+    """
+    plan = make_plan(store, "owner")
+    old = admit(store, "owner", plan)
+    store.cancel(old["id"], "owner")
+    store.cleaned(old["job_id"])
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.jobs SET updated_at=now()-interval '8 days' WHERE id=%s",
+            (old["job_id"],),
+        )
+    new = admit(store, "owner", plan)
+    store.cancel(new["id"], "owner")
+    store.cleaned(new["job_id"])
+    assert store.find_request("owner", old["request_key"]) is not None
+    store.cleanup_candidates()
+    assert store.find_request("owner", old["request_key"]) is None
+    assert store.find_request("owner", new["request_key"]) is not None
+
+
+def test_concurrent_maintenance_and_submission_preserve_record_limit(
+    store: PostgresJobStore,
+) -> None:
+    """Maintenance and submissions serialize record reclamation and admission.
+
+    Args:
+        store: Disposable PostgreSQL store.
+    """
+    store.limits = replace(store.limits, max_job_records=1)
+    plan = make_plan(store, "owner")
+    old = admit(store, "owner", plan)
+    store.cancel(old["id"], "owner")
+    store.cleaned(old["job_id"])
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.jobs SET updated_at=now()-interval '8 days' WHERE id=%s",
+            (old["job_id"],),
+        )
+    with ThreadPoolExecutor(max_workers=8) as clients:
+        requests = [clients.submit(admit, store, "owner", plan) for _ in range(12)]
+        maintenance = clients.submit(store.cleanup_candidates)
+        maintenance.result()
+        accepted = []
+        for request in requests:
+            try:
+                accepted.append(request.result())
+            except ProcessingError as error:
+                assert error.code == "job_record_capacity"
+    if not accepted:
+        accepted.append(admit(store, "owner", plan))
+    assert len(accepted) == 1
+    assert store.find_request("owner", old["request_key"]) is None
+    assert store.find_request("owner", accepted[0]["request_key"]) is not None
+    with pytest.raises(ProcessingError) as full:
+        admit(store, "owner", plan)
+    assert full.value.code == "job_record_capacity"
 
 
 def test_migration_removes_metadata_accounting_and_preserves_jobs(
