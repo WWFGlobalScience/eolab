@@ -6,7 +6,6 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 import logging
 import signal
-import sys
 
 import httpx2
 from fastapi import Depends, FastAPI
@@ -532,11 +531,3 @@ async def run_processing_worker() -> None:
                 workers.create_task(
                     serve_processing(worker, PostgresJobWakeup(), cleanup_lock)
                 )
-
-
-if __name__ == "__main__":
-    if sys.argv[1:] != ["processing-worker"]:
-        raise SystemExit("Use: python -m eolab_app.main processing-worker")
-    logging.basicConfig(level=logging.INFO)
-    with suppress(asyncio.CancelledError, KeyboardInterrupt):
-        asyncio.run(run_processing_worker())
