@@ -3,6 +3,7 @@ import test from "node:test";
 import { MapLayerController } from "../../src/map-layers/controller.js";
 import { getCatalogItemKey } from "../../src/catalog-item-identity.js";
 import { createVectorMapLayerAdapter } from "../../src/vector/map-layer-adapter.js";
+import { VECTOR_LABEL_DEFAULTS } from "../../src/vector/defaults.js";
 
 const ITEM = {
     collection: "eolab-mounted-vectors", id: "named-measurements",
@@ -75,8 +76,7 @@ test("new vectors get authorized named numeric styles before WMS and preserve la
     const f = fixture();
     const publication = await f.controller.show(ITEM, f.adapter);
     assert.deepEqual(f.calls.map(call => call[0]), ["publish", "classify", "style", "wms"]);
-    assert.equal(publication.style.label.field, "name");
-    assert.equal(publication.style.label.minimumZoom, 0);
+    assert.equal(publication.style.label, null);
     assert.equal(publication.style.graduated.field, "score");
     assert.deepEqual(publication.style.graduated.rules.map(rule => rule.color), ["#2b83ba", "#ffffbf", "#d7191c"]);
     assert.equal(publication.style.graduated.missingColor, "#d1d5db");
@@ -91,7 +91,7 @@ test("new vectors get authorized named numeric styles before WMS and preserve la
     assert.equal(record.state.style.label, null);
 });
 
-test("multiple numeric fields still initialize classified colors and name labels", async () => {
+test("multiple numeric fields initialize classified colors with labels off", async () => {
     const f = fixture();
     const item = { ...ITEM, properties: { "table:columns": [
         ...ITEM.properties["table:columns"], { name: "area", type: "float" },
@@ -99,7 +99,7 @@ test("multiple numeric fields still initialize classified colors and name labels
     const result = await f.adapter.publish(item);
     assert.equal(f.calls.some(call => call[0] === "classify"), true);
     assert.equal(result.style.graduated.field, "score");
-    assert.equal(result.style.label.field, "name");
+    assert.equal(result.style.label, null);
 });
 
 test("workshop annual fields automatically classify R2024 before attaching WMS", async () => {
@@ -115,8 +115,7 @@ test("workshop annual fields automatically classify R2024 before attaching WMS",
     assert.deepEqual(f.calls.map(call => call[0]), ["publish", "classify", "style", "wms"]);
     assert.equal(f.calls[1][2], "R2024");
     assert.equal(result.style.graduated.field, "R2024");
-    assert.equal(result.style.label.field, "node_nm");
-    assert.equal(result.style.label.minimumZoom, 0);
+    assert.equal(result.style.label, null);
 });
 
 test("solid defaults also receive a new style identity instead of reusing old fixed-style tiles", async () => {
@@ -139,7 +138,8 @@ test("saved appearance takes precedence before a staged vector reaches the map",
     const f = fixture();
     const staged = await f.controller.stage(ITEM, f.adapter);
     assert.equal(f.map.attached.size, 0);
-    const saved = { ...STYLE, fillColor: "#654321" };
+    const saved = { ...STYLE, fillColor: "#654321",
+        label: { ...VECTOR_LABEL_DEFAULTS, field: "name", placement: "center" } };
     await f.adapter.applySavedState(staged.record, { kind: "vector", definition: saved });
     assert.deepEqual(f.adapter.exportSavedState(staged.record), { kind: "vector", definition: saved });
     assert.equal(f.map.attached.size, 0);

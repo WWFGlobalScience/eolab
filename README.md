@@ -79,7 +79,8 @@ Each layer row provides small, direct actions:
 Raster styles offer minimum, midpoint, and maximum colors and opacities. Vector
 styles adapt to point, line, or polygon geometry. They support a single symbol,
 categorical values, graduated numeric classes with editable exact break values,
-and optional labels. Valid vector edits update the map automatically after a
+and optional labels. New catalog vectors start with labels off; enable **Show
+labels** in **Style** to display them. Valid vector edits update the map automatically after a
 short pause, with the current state reported beside the controls. Appearance
 changes affect only the current map; they never edit the source data.
 

@@ -234,7 +234,7 @@ export function createVectorMapLayerAdapter({
     }
     return Object.freeze({
         /**
-         * Prepare default labels and colors before a new WMS layer is attached.
+         * Prepare initial colors with labels off before a new WMS layer is attached.
          *
          * Existing retained records never call this initializer. Saved styles
          * are applied by the existing detached restoration lifecycle afterwards.
@@ -273,7 +273,7 @@ export function createVectorMapLayerAdapter({
             } catch {
                 return {
                     ...publication,
-                    defaultStyleNotice: "Automatic labels and coloring could not be applied. " +
+                    defaultStyleNotice: "Automatic coloring could not be applied. " +
                         "The layer uses a single color; open Style to try again.",
                 };
             }
