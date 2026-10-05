@@ -109,7 +109,7 @@ test("vector map-layer adapter owns publication, WMS, legend, and optional fit",
   };
 
   const initialized = await fitted.adapter.publish(item);
-  assert.equal(initialized.style.label.field, "name");
+  assert.equal(initialized.style.label, null);
   assert.match(initialized.defaultStyleNotice, /numeric coloring was unavailable/);
   assert.deepEqual(fitted.numericCalls.splice(0), [{
     item, field: "area", method: "percentile-interval", classCount: 5,

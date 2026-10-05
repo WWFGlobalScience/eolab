@@ -205,7 +205,7 @@ test("vector style controls apply one complete validated state", async () => {
     fixture.controls.destroy();
 });
 
-test("vector controls retain automatic appearance, show fallback notices, and allow labels off", async () => {
+test("vector controls start labels off, suggest a name field, and allow labels on", async () => {
     const { deriveDefaultVectorStyle } = await import("../../src/vector/defaults.js");
     const fixture = styleFixture();
     const style = deriveDefaultVectorStyle({
@@ -214,16 +214,16 @@ test("vector controls retain automatic appearance, show fallback notices, and al
     }, [{ name: "name", type: "str" }]);
     const target = { ...fixture.target("polygon", style), notice: "Numeric coloring unavailable." };
     fixture.controls.show(target);
-    assert.equal(fixture.controls.labelEnabled.checked, true);
+    assert.equal(fixture.controls.labelEnabled.checked, false);
     assert.equal(fixture.controls.labelField.value, "name");
     assert.equal(fixture.controls.labelMinimumZoom.value, "0");
     assert.equal(fixture.controls.graduatedPalette.value, "blue-yellow-red");
     assert.equal(fixture.controls.graduatedMethod.value, "percentile-interval");
     assert.equal(fixture.controls.status.textContent, target.notice);
-    fixture.controls.labelEnabled.checked = false;
+    fixture.controls.labelEnabled.checked = true;
     fixture.controls.labelEnabled.dispatchEvent(new Event("change"));
     await settleStyle(fixture);
-    assert.equal(fixture.applied[0].label, null);
+    assert.equal(fixture.applied[0].label.field, "name");
     assert.equal(fixture.applied[0].strokeWidth, 0.75);
     fixture.controls.destroy();
 });

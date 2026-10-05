@@ -61,16 +61,13 @@ test("annual numeric defaults prefer the latest year regardless of Catalog field
     assert.equal(defaultVectorNumericField([...annual].reverse()), "R2024");
 });
 
-test("default labels preserve symbol parameters and use geometry-aware placement", () => {
-    for (const [geometryKind, placement] of [["polygon", "center"], ["point", "above"], ["line", "center"]]) {
+test("new vector styles leave labels off even when a name field exists", () => {
+    for (const geometryKind of ["polygon", "point", "line"]) {
         const symbol = geometryKind === "line"
             ? { geometryKind, strokeColor: "#2b83ba", strokeOpacity: 1, strokeWidth: 2 }
             : { ...initial, geometryKind, ...(geometryKind === "point" ? { pointSize: 9 } : {}) };
         const styled = deriveDefaultVectorStyle(symbol, fields);
-        assert.equal(styled.label.field, "NAME");
-        assert.equal(styled.label.placement, placement);
-        assert.equal(styled.label.minimumZoom, 0);
-        assert.equal(styled.label.haloColor, "#ffffff");
+        assert.equal(styled.label, null);
         assert.equal(styled.strokeWidth, symbol.strokeWidth);
         assert.equal(styled.graduated, null);
     }
@@ -90,7 +87,7 @@ test("default numeric colors consume explicit matching classes including constan
     const styled = deriveDefaultVectorStyle(initial, fields, summary);
     assert.deepEqual(styled.graduated.rules, [{ minimum: null, maximum: null, color: "#ffffbf" }]);
     assert.equal(styled.graduated.missingColor, "#d1d5db");
-    assert.equal(styled.label.field, "NAME");
+    assert.equal(styled.label, null);
     for (const mismatch of [{ field: "area" }, { method: "quantile" }, { requestedClassCount: 4 }]) {
         assert.throws(() => deriveDefaultVectorStyle(initial, fields, { ...summary, ...mismatch }), /does not match/);
     }
