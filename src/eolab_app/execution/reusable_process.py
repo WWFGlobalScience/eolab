@@ -3,7 +3,6 @@
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-import gc
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 import pickle
@@ -151,9 +150,7 @@ def _worker(
             value, elapsed = _invoke(targets[index], arguments)
             recycle = "memory_limit" if _memory_exceeded(recycle_bytes) else None
             payload = pickle.dumps((sequence, value, elapsed, recycle))
-            # No request frames, results or cycles survive into the next job.
             del value, arguments
-            gc.collect()
             connection.send_bytes(payload)
             del payload
             if hasattr(signal, "setitimer"):
