@@ -72,6 +72,7 @@ def test_real_plan_worker_and_public_result_timing(tmp_path: Path) -> None:
     store.finish.return_value = True
     worker = ProcessingWorker(authorizer, store, artifacts, limits)
     assert asyncio.run(worker.run_once())
+    authorizer.authorize.assert_awaited_once_with(request.sources["a"])
     artifact = store.finish.call_args.args[2]
     assert artifact.execution_timing["queueSeconds"] == 2
     timings = artifact.execution_timing

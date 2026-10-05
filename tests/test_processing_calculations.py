@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import time
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ import pytest
 
 from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 import eolab_app.processing.worker as worker_module
+from eolab_app.processing.models import Artifact, PreparedJobPlan
 from test_processing_jobs import (
     boundary,
     store,
@@ -287,20 +289,24 @@ def submit_calculation(
 
 
 def test_calculation_http_lifecycle_mixed_history_and_owned_csv(
-    boundary: Any, store: Any
+    boundary: Any, store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A real native job survives reload and shares lifecycle without clip assumptions.
 
     Args:
         boundary: Real owners, native worker and HTTP app.
         store: Disposable PostgreSQL for deterministic expiry.
+        monkeypatch: Observe the actual catalog source-authorization boundary.
     """
     client, worker, source, artifacts, app = boundary
+    authorize = AsyncMock(wraps=worker.authorizer.authorize)
+    monkeypatch.setattr(worker.authorizer, "authorize", authorize)
     plan = calculation_inputs(client, wholeRaster=True)
     key = uuid4().hex
     job = submit_calculation(client, plan, key)
     assert submit_calculation(client, plan, key)["jobId"] == job["jobId"]
     assert asyncio.run(worker.run_once())
+    authorize.assert_awaited_once()
     url = f"/api/processing/jobs/{job['jobId']}"
     ready = client.get(url).json()
     assert ready["status"] == "ready", ready
@@ -357,6 +363,58 @@ def test_calculation_http_lifecycle_mixed_history_and_owned_csv(
     assert (
         client.get(f"/api/processing/jobs/{clip['jobId']}").json()["status"] == "ready"
     )
+
+
+@pytest.mark.parametrize("remove_source", [False, True])
+def test_summary_resolves_source_again_after_waiting_for_disk(
+    boundary: Any,
+    store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    remove_source: bool,
+) -> None:
+    """A queued prepared plan discards its source and revalidates on the next attempt.
+
+    Args:
+        boundary: Real HTTP, catalog authorization, native worker, and artifacts.
+        store: Disposable PostgreSQL admission and prepared-plan storage.
+        monkeypatch: Observe the actual source-authorization boundary.
+        remove_source: Remove the fixture file during the wait to test rejection.
+    """
+    client, worker, source, _, _ = boundary
+    blocker = store.submit("blocker", "blocker", PreparedJobPlan({}, {}, 1), "blocker")
+    claimed = store.claim_next_job()
+    assert store.finish(
+        claimed["id"], claimed["attempt_id"], Artifact(1, "0" * 64, "blocker")
+    )
+    store.limits = replace(
+        store.limits, max_stored_bytes=worker.aggregate_limits.result_reservation_bytes
+    )
+    authorize = AsyncMock(wraps=worker.authorizer.authorize)
+    monkeypatch.setattr(worker.authorizer, "authorize", authorize)
+    job = submit_calculation(client, calculation_inputs(client, wholeRaster=True))
+    url = f"/api/processing/jobs/{job['jobId']}"
+    assert asyncio.run(worker.run_once())
+    waiting = client.get(url).json()
+    assert waiting["status"] == "queued" and waiting["grid"] is not None
+    authorize.assert_awaited_once()
+    with psycopg.connect(store.conninfo) as connection:
+        specification = connection.execute(
+            "SELECT spec FROM processing.jobs WHERE id=%s", (job["jobId"],)
+        ).fetchone()[0]
+    assert "request" not in specification
+    assert str(source) not in str(specification)
+    assert not asyncio.run(worker.run_once())
+    store.cancel(blocker["id"], "blocker", delete=True)
+    store.cleaned(blocker["job_id"])
+    if remove_source:
+        source.unlink()
+    assert asyncio.run(worker.run_once())
+    assert authorize.await_count == 2
+    completed = client.get(url).json()
+    assert completed["status"] == ("failed" if remove_source else "ready")
+    assert str(source) not in str(completed)
+    if not remove_source:
+        assert completed["result"]["rows"][0]["value"] == "4999"
 
 
 def test_batched_plan_metrics_and_execution(boundary: Any, store: Any) -> None:
