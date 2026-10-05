@@ -126,9 +126,9 @@ def test_warm_service_and_worker_reopen_sources_and_preserve_timing(tmp_path: Pa
                     < 0.1
                 )
                 assert str(tmp_path) not in response.model_dump_json()
-            # Each calculation authorizes before waiting, after claiming the
-            # planner, and once more when the execution worker reads its source.
-            assert authorizer.authorize.await_count == 4
+            # Each attempt resolves independently, then reuses its own source
+            # while the warm interpreter still opens the new request's raster.
+            assert authorizer.authorize.await_count == 2
         finally:
             await executor.close()
 

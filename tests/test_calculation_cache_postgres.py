@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 import psycopg
@@ -36,6 +37,8 @@ def test_other_session_reuses_values_but_not_downloads(
     original = client.get(first_url).json()
     assert original["status"] == "ready", original
     assert original["result"]["cacheHit"] is False
+    authorize = AsyncMock(wraps=worker.authorizer.authorize)
+    monkeypatch.setattr(worker.authorizer, "authorize", authorize)
 
     async def unexpected_calculation(*args: Any, **kwargs: Any) -> None:
         """Fail if a cache hit starts native raster work.
@@ -56,6 +59,7 @@ def test_other_session_reuses_values_but_not_downloads(
         body["calculations"][0]["expression"] = " count (a > 5000) "
         second = submit_calculation(other, body)
         assert asyncio.run(worker.run_once())
+        authorize.assert_awaited_once()
         reused = other.get(f"/api/processing/jobs/{second['jobId']}").json()
         assert reused["status"] == "ready", reused
         assert reused["result"]["cacheHit"] is True

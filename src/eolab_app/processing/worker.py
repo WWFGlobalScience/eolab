@@ -40,7 +40,7 @@ from eolab_app.processing.calculation_cache import (
     restore_cached_calculation_plan,
 )
 from eolab_app.processing.job_preparation import prepare_aggregate_job, prepare_clip_job
-from eolab_app.raster.models import CatalogRasterRequest
+from eolab_app.raster.models import AuthorizedRaster, CatalogRasterRequest
 from eolab_app.bounded_vector import summary_process, READ_SECONDS
 from eolab_app.processing.raster_mask import estimate_calculation_disk_bytes
 from eolab_app.processing.ports import JobArtifactStore, JobStore, JobWakeup
@@ -82,11 +82,16 @@ class ProcessingWorker:
         self.native = native
         self.aggregate_limits = RasterAggregateLimits.with_lifecycle(limits)
 
-    async def _prepare_calculation(self, row: dict[str, Any]) -> None:
+    async def _prepare_calculation(self, row: dict[str, Any]) -> AuthorizedRaster:
         """Prepare queued summary inputs and publish their estimates on the same job.
 
         Args:
             row: Claimed job, updated in place with its prepared inputs and reservation.
+
+        Returns:
+            Source resolved for this attempt, reusable by immediate execution.
+            It is not persisted; a job returned to the queue resolves it again
+            when a later attempt executes the stored plan.
 
         Raises:
             ProcessingError: For unavailable sources, rejected resource estimates,
@@ -197,6 +202,7 @@ class ProcessingWorker:
             # Preserve the original execution start used for queue timing.
             updated["updated_at"] = row["updated_at"]
             row.update(updated)
+            return authorized
 
     async def _prepare_clip(self, row: dict[str, Any]) -> None:
         """Measure a queued clip and reserve its output storage on the same job.
@@ -293,8 +299,9 @@ class ProcessingWorker:
         """
         started = time.perf_counter()
         operation = row["spec"]["operation"]
+        authorized = None
         if operation == "raster.aggregate.v1" and "request" in row["spec"]:
-            await self._prepare_calculation(row)
+            authorized = await self._prepare_calculation(row)
         elif operation == "raster.clip.v1" and "request" in row["spec"]:
             await self._prepare_clip(row)
         preparation_completed = time.perf_counter()
@@ -345,7 +352,8 @@ class ProcessingWorker:
                     "area": spec.area.model_copy(update={"resolved": resolved_area})
                 }
             )
-        authorized = await self.authorizer.authorize(source)
+        if authorized is None:
+            authorized = await self.authorizer.authorize(source)
         sources_authorized = time.perf_counter()
         directory = await asyncio.to_thread(
             self.artifacts.prepare,
