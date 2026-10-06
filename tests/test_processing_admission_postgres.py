@@ -659,3 +659,192 @@ def test_clip_and_calculation_http_report_session_backlog(
     assert [response.status_code for response in responses] == [202, 202, 202, 429]
     assert all(response.json()["status"] == "queued" for response in responses[:3])
     assert responses[-1].json()["detail"]["code"] == "owner_queue_full"
+
+
+def test_shared_cancelled_and_deleted_handles_retain_history_capacity(
+    store: PostgresJobStore,
+) -> None:
+    """Leaving shared work frees a waiting place, but preserves retry identities.
+
+    Args:
+        store: Disposable PostgreSQL with independent handle and queue limits.
+    """
+    store.limits = replace(
+        store.limits, max_owner_waiting_jobs=1, max_job_records=4, max_waiting_jobs=1
+    )
+    plan = PreparedJobPlan({}, {}, 0, work_key="shared-history")
+    cancelled = store.submit("returning", "old", plan, "hash")
+    deleted = store.submit("departed", "old", plan, "hash")
+    keeper = store.submit("keeper", "live", plan, "hash")
+    assert store.cancel(cancelled["id"], "returning")["status"] == "cancelled"
+    store.cancel(deleted["id"], "departed")
+    assert store.cancel(deleted["id"], "departed", delete=True)["status"] == "deleted"
+
+    replacement = store.submit("returning", "new", plan, "hash")
+    assert replacement["job_id"] == keeper["job_id"] == cancelled["job_id"]
+    assert replacement["id"] != cancelled["id"]
+    with pytest.raises(ProcessingError) as waiting_full:
+        store.submit("returning", "another", plan, "hash")
+    assert waiting_full.value.code == "owner_queue_full"
+    with pytest.raises(ProcessingError) as history_full:
+        store.submit("visitor", "new", plan, "hash")
+    assert history_full.value.code == "job_record_capacity"
+    assert store.submit("returning", "old", plan, "hash")["status"] == "cancelled"
+    assert store.submit("departed", "old", plan, "hash")["status"] == "deleted"
+
+
+def test_claim_backlog_counts_distinct_live_work_and_waiting_owners(
+    store: PostgresJobStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Shared and departed handles do not inflate the remaining queue report.
+
+    Args:
+        store: Disposable PostgreSQL retaining independent subscribers.
+        caplog: Captured operational backlog after a successful claim.
+    """
+    first = store.submit("first", "one", PreparedJobPlan({}, {}, 0), "hash")
+    plan = PreparedJobPlan({}, {}, 0, work_key="shared-backlog")
+    live = [
+        store.submit("one", "first", plan, "hash"),
+        store.submit("one", "second", plan, "hash"),
+        store.submit("two", "shared", plan, "hash"),
+        store.submit("two", "distinct", PreparedJobPlan({}, {}, 0), "hash"),
+    ]
+    cancelled = store.submit("cancelled-owner", "old", plan, "hash")
+    deleted = store.submit("deleted-owner", "old", plan, "hash")
+    store.cancel(cancelled["id"], "cancelled-owner")
+    store.cancel(deleted["id"], "deleted-owner")
+    store.cancel(deleted["id"], "deleted-owner", delete=True)
+    stopped = store.submit("stopped-owner", "old", PreparedJobPlan({}, {}, 0), "hash")
+    store.cancel(stopped["id"], "stopped-owner")
+    caplog.set_level("INFO", logger="eolab_app.processing.job_store")
+    caplog.clear()
+
+    claimed = store.claim_next_job()
+    assert claimed["id"] == first["job_id"]
+    assert "Processing execution started: waiting=2 waiting_sessions=2 " in caplog.text
+    assert all(store.get(job["id"], job["owner"])["status"] == "queued" for job in live)
+
+
+def test_owner_waiting_budget_ignores_nonqueued_persisted_history(
+    store: PostgresJobStore,
+) -> None:
+    """Only waiting work occupies the owner's queue allowance across all states.
+
+    Args:
+        store: Disposable PostgreSQL containing active and retained history.
+    """
+    statuses = (
+        "running",
+        "cancelling",
+        "ready",
+        "failed",
+        "cancelled",
+        "interrupted",
+        "expired",
+        "deleted",
+    )
+    history = [
+        store.submit("owner", status, PreparedJobPlan({}, {}, 0), "hash")
+        for status in statuses
+    ]
+    with psycopg.connect(store.conninfo) as connection:
+        for status, job in zip(statuses, history, strict=True):
+            connection.execute(
+                "UPDATE processing.jobs SET status=%s WHERE id=%s",
+                (status, job["job_id"]),
+            )
+    store.limits = replace(store.limits, max_owner_waiting_jobs=1)
+    assert (
+        store.submit("owner", "waiting", PreparedJobPlan({}, {}, 0), "hash")["status"]
+        == "queued"
+    )
+    with pytest.raises(ProcessingError) as denied:
+        store.submit("owner", "excess", PreparedJobPlan({}, {}, 0), "hash")
+    assert denied.value.code == "owner_queue_full"
+
+
+@pytest.mark.parametrize("cancelling", [False, True])
+@pytest.mark.parametrize("budget", ["slots", "memory"])
+def test_zero_disk_active_attempt_still_occupies_execution_capacity(
+    store: PostgresJobStore, cancelling: bool, budget: str
+) -> None:
+    """No disk reservation is needed to retain a live attempt's slot and memory.
+
+    Args:
+        store: Disposable PostgreSQL with no retained result metadata reservation.
+        cancelling: Whether the worker still owns a cancelled attempt.
+        budget: Execution resource that deliberately permits only one attempt.
+    """
+    store.limits = replace(
+        store.limits,
+        worker_count=1 if budget == "slots" else 2,
+        max_execution_memory_bytes=store.limits.process_memory_bytes
+        * (2 if budget == "slots" else 1),
+        result_metadata_reservation_bytes=0,
+    )
+    first = store.submit("first", "one", PreparedJobPlan({}, {}, 0), "hash")
+    waiting = store.submit("second", "two", PreparedJobPlan({}, {}, 0), "hash")
+    claimed = store.claim_next_job()
+    assert claimed["id"] == first["job_id"] and claimed["reserved_bytes"] == 0
+    if cancelling:
+        assert store.cancel(first["id"], "first")["status"] == "cancelling"
+    assert store.claim_next_job() is None
+    assert store.finish(
+        claimed["id"],
+        claimed["attempt_id"],
+        None if cancelling else Artifact(0, "0" * 64, "empty.csv"),
+    )
+    assert store.claim_next_job()["id"] == waiting["job_id"]
+
+
+@pytest.mark.parametrize(
+    "status", ["ready", "failed", "cancelled", "interrupted", "expired", "deleted"]
+)
+def test_retained_terminal_disk_blocks_preparation_until_cleanup(
+    store: PostgresJobStore, status: str
+) -> None:
+    """All retained files consume disk; replacing a current reservation counts once.
+
+    Args:
+        store: Disposable PostgreSQL with a bounded artifact and scratch budget.
+        status: Persisted terminal state whose files have not been acknowledged clean.
+    """
+    store.limits = replace(
+        store.limits, max_stored_bytes=100, result_metadata_reservation_bytes=0
+    )
+    retained = store.submit("retained", "old", PreparedJobPlan({}, {}, 80), "hash")
+    old_attempt = store.claim_next_job()
+    assert store.finish(
+        old_attempt["id"], old_attempt["attempt_id"], Artifact(80, "0" * 64, "old.csv")
+    )
+    # Model retained files following each persisted terminal lifecycle outcome.
+    with psycopg.connect(store.conninfo) as connection:
+        connection.execute(
+            "UPDATE processing.jobs SET status=%s WHERE id=%s",
+            (status, retained["job_id"]),
+        )
+    pending = store.submit("next", "new", PreparedJobPlan({}, {}, 0), "hash")
+    current = store.claim_next_job()
+    assert current["id"] == pending["job_id"]
+    fitting = PreparedJobPlan({"prepared": True}, {}, 20)
+    for _ in range(2):
+        saved = store.save_prepared_job(
+            current["id"], current["attempt_id"], fitting, {}
+        )
+        assert saved["status"] == "running" and saved["reserved_bytes"] == 20
+
+    waiting = store.save_prepared_job(
+        current["id"],
+        current["attempt_id"],
+        PreparedJobPlan({"prepared": True}, {}, 21),
+        {},
+    )
+    assert waiting["status"] == "queued" and waiting["reserved_bytes"] == 0
+    assert waiting["attempt_id"] is None
+    assert store.claim_next_job() is None
+    store.cancel(retained["id"], "retained", delete=True)
+    store.cleaned(retained["job_id"])
+    resumed = store.claim_next_job()
+    assert resumed["id"] == pending["job_id"] and resumed["reserved_bytes"] == 21
+    assert resumed["spec"] == {"prepared": True}

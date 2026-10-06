@@ -178,3 +178,14 @@ CREATE TRIGGER processing_capacity_change AFTER UPDATE OF status,reserved_bytes 
 FOR EACH ROW EXECUTE FUNCTION processing.notify_execution_capacity();
 INSERT INTO processing.schema_version VALUES (12) ON CONFLICT DO NOTHING;
 INSERT INTO processing.schema_version VALUES (13) ON CONFLICT DO NOTHING;
+
+-- Resource accounting need not visit cleaned history with no disk reservation.
+CREATE INDEX IF NOT EXISTS jobs_reserved_bytes ON processing.jobs(reserved_bytes)
+    WHERE reserved_bytes>0;
+CREATE INDEX IF NOT EXISTS jobs_pending_cleanup ON processing.jobs(updated_at)
+    WHERE status NOT IN ('queued','running','cancelling','ready')
+      AND (reserved_bytes>0 OR spec IS NOT NULL);
+CREATE INDEX IF NOT EXISTS jobs_cleaned_history ON processing.jobs(updated_at)
+    WHERE reserved_bytes=0 AND spec IS NULL
+      AND status NOT IN ('queued','running','cancelling','ready');
+INSERT INTO processing.schema_version VALUES (14) ON CONFLICT DO NOTHING;
