@@ -31,6 +31,86 @@ from test_raster_clips import SOURCE
 ENDPOINT = "/api/processing/raster-calculations"
 
 
+@pytest.mark.parametrize("batch", [False, True])
+def test_submission_returns_committed_warm_worker_result(
+    boundary: Any, store: Any, batch: bool
+) -> None:
+    """HTTP submission returns real results after PostgreSQL completion hints.
+
+    Args:
+        boundary: Real mounted raster, native worker and HTTP fixtures.
+        store: Disposable PostgreSQL adapter with the real notification triggers.
+        batch: Exercise the single endpoint or two jobs in the browser batch endpoint.
+    """
+    from fastapi import FastAPI
+    from eolab_app.processing.job_events import PostgresJobEvents
+    from eolab_app.processing.native_processes import create_native_process
+    from eolab_app.processing.service import ProcessingService
+    from eolab_app.routes.processing import create_processing_router
+
+    _, worker, _, artifacts, _ = boundary
+    hub = PostgresJobEvents(store.conninfo)
+    service = ProcessingService(
+        store, artifacts, changes=hub, submission_wait_seconds=0
+    )
+    app = FastAPI()
+    app.include_router(create_processing_router(service))
+    native = worker.native = create_native_process(store.limits)
+    with TestClient(app, base_url="https://testserver") as client:
+        client.portal.call(hub.listener.ensure_connected)
+        primer = {
+            **request_body(wholeRaster=True),
+            "requestId": uuid4().hex,
+            "calculations": [{"label": "Prime", "expression": "mean(a)+123"}],
+        }
+        assert client.post(ENDPOINT, json=primer, headers=HEADERS).status_code == 202
+        assert client.portal.call(worker.run_once)
+        service.submission_wait_seconds = 0.45
+        items = [
+            {
+                **request_body(wholeRaster=True),
+                "requestId": uuid4().hex,
+                "calculations": [{"label": expression, "expression": expression}],
+            }
+            for expression in (["mean(a)", "max(a)"] if batch else ["mean(a)"])
+        ]
+
+        async def consume() -> None:
+            """Claim and execute only the submitted fixture jobs on a warm lane."""
+            completed = 0
+            while completed < len(items):
+                if await worker.run_once():
+                    completed += 1
+                else:
+                    await asyncio.sleep(0.005)
+
+        running = client.portal.start_task_soon(consume)
+        try:
+            path = ENDPOINT + "/batch" if batch else ENDPOINT
+            body = {"items": items} if batch else items[0]
+            response = client.post(path, json=body, headers=HEADERS)
+            assert response.status_code == (200 if batch else 202), response.text
+            jobs = (
+                [item["job"] for item in response.json()["items"]]
+                if batch
+                else [response.json()]
+            )
+            assert [job["status"] for job in jobs] == ["ready"] * len(items)
+            assert [
+                float(job["result"]["rows"][0]["value"]) for job in jobs
+            ] == pytest.approx([4999.5, 9999] if batch else [4999.5], abs=1e-10, rel=0)
+            assert hub.count == 0
+            running.result(timeout=5)
+            retry = client.post(path, json=body, headers=HEADERS).json()
+            retried = [item["job"] for item in retry["items"]] if batch else [retry]
+            assert [job["jobId"] for job in retried] == [job["jobId"] for job in jobs]
+            assert all(job["status"] == "ready" for job in retried)
+        finally:
+            running.cancel()
+            client.portal.call(native.close)
+            client.portal.call(hub.close)
+
+
 @pytest.mark.parametrize(
     "limit,code",
     [

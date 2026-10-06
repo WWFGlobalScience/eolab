@@ -145,6 +145,7 @@ class ProcessingService:
         artifacts: JobArtifactStore,
         *,
         changes: JobChanges | None = None,
+        submission_wait_seconds: float = 0.45,
     ) -> None:
         """Compose job storage and currently supported raster-operation capabilities.
 
@@ -152,10 +153,19 @@ class ProcessingService:
             jobs: Durable job and admission adapter.
             artifacts: Confined result-file adapter.
             changes: Lifecycle-managed owned-job notification provider.
+            submission_wait_seconds: Observation budget per calculation submission,
+                from zero (immediate acknowledgement) to one second. The final
+                owned-state read also incurs the ordinary database access latency.
+
+        Raises:
+            ValueError: If the submission observation budget is outside its bounds.
         """
+        if not 0 <= submission_wait_seconds <= 1:
+            raise ValueError("Submission wait must be between zero and one second")
         self.jobs = jobs
         self.artifacts = artifacts
         self.changes = changes
+        self.submission_wait_seconds = submission_wait_seconds
 
     async def subscribe_jobs(self, owner: str) -> JobSubscription:
         """Subscribe to hints for the same owner used by ordinary job reads.
@@ -306,7 +316,8 @@ class ProcessingService:
                 through its normal validation, just as the HTTP boundary does.
 
         Returns:
-            The caller's handle and labels, or the same handle after a retry.
+            The caller's observed job and labels, or the same handle after a retry.
+            Completion observation uses the same budget as a calculation batch.
 
         Raises:
             ProcessingError: For conflicting retries, unavailable polygon inputs,
@@ -331,21 +342,24 @@ class ProcessingService:
                         "That request ID has different calculation inputs.",
                         409,
                     )
-                return public_job(existing)
-            submission = await self.build_calculation_submission(
-                owner, request, {}, request_hash
-            )
-            if isinstance(submission.prepared, ProcessingError):
-                raise submission.prepared
-        with measure_request_stage("queueAdmission"):
-            row = await asyncio.to_thread(
-                self.jobs.submit,
-                owner,
-                request.requestId,
-                submission.prepared,
-                request_hash,
-            )
-        return public_job(row)
+            else:
+                submission = await self.build_calculation_submission(
+                    owner, request, {}, request_hash
+                )
+                if isinstance(submission.prepared, ProcessingError):
+                    raise submission.prepared
+        if existing:
+            row = existing
+        else:
+            with measure_request_stage("queueAdmission"):
+                row = await asyncio.to_thread(
+                    self.jobs.submit,
+                    owner,
+                    request.requestId,
+                    submission.prepared,
+                    request_hash,
+                )
+        return (await self._observe_submitted_calculations(owner, [public_job(row)]))[0]
 
     async def build_calculation_submission(
         self,
@@ -441,6 +455,8 @@ class ProcessingService:
         Returns:
             Public job snapshots or sanitized per-item rejections, in input order.
             Workers prepare and execute accepted jobs after admission commits.
+            Observe accepted work within one submission budget before returning
+            the same snapshots used by ordinary status reads.
 
         Raises:
             ProcessingError: If the shared admission transaction is unavailable.
@@ -455,9 +471,72 @@ class ProcessingService:
             results = await asyncio.to_thread(
                 self.jobs.submit_batch, owner, submissions
             )
+        return await self._observe_submitted_calculations(
+            owner,
+            [
+                result if isinstance(result, ProcessingError) else public_job(result)
+                for result in results
+            ],
+        )
+
+    async def _observe_submitted_calculations(
+        self, owner: str, outcomes: list[dict[str, Any] | ProcessingError]
+    ) -> list[dict[str, Any] | ProcessingError]:
+        """Observe committed jobs within one deadline, preserving admission outcomes.
+
+        Subscribe before reading owned state so a completion between admission
+        and registration is recovered by that read. Hints prompt fresh snapshots;
+        a final deadline read also recovers missed hints. No transaction or result
+        payload is retained by the subscription. Unavailable observation preserves
+        accepted snapshots for the normal browser status/retry flow.
+
+        Args:
+            owner: Session hash that admitted the calculations.
+            outcomes: Public accepted jobs and independent admission errors.
+
+        Returns:
+            Latest owned snapshots and original errors in admission order. Ready
+            results and unfinished jobs retain the existing response contract.
+
+        Raises:
+            asyncio.CancelledError: After releasing subscription capacity; committed
+                jobs remain recoverable through their original request keys.
+        """
+        active = {"queued", "running", "cancelling"}
+        snapshots = {
+            outcome["jobId"]: outcome
+            for outcome in outcomes
+            if isinstance(outcome, dict)
+        }
+        identifiers = [key for key, job in snapshots.items() if job["status"] in active]
+        if not identifiers or not self.submission_wait_seconds:
+            return outcomes
+        try:
+            subscription = await self.subscribe_jobs(owner)
+        except ProcessingError:
+            return outcomes
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.submission_wait_seconds
+        try:
+            with measure_request_stage("submissionObservation"):
+                while True:
+                    status = await self.read_job_statuses(owner, identifiers)
+                    snapshots.update({job["jobId"]: job for job in status["jobs"]})
+                    if all(
+                        snapshots[key]["status"] not in active for key in identifiers
+                    ):
+                        break
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    await subscription.wait(remaining)
+        except ProcessingError:
+            pass
+        finally:
+            subscription.close()
         return [
-            result if isinstance(result, ProcessingError) else public_job(result)
-            for result in results
+            snapshots[outcome["jobId"]] if isinstance(outcome, dict) else outcome
+            for outcome in outcomes
         ]
 
     async def get(self, owner: str, identifier: str) -> dict[str, Any]:

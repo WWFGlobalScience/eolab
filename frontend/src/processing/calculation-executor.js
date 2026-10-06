@@ -144,7 +144,8 @@ export class CalculationExecutor {
         }
     }
 
-    /** Advance submission and cancellation; observation resumes running jobs.
+    /** Advance submission and cancellation; completed submissions use ordinary result handling.
+     * Observation resumes only jobs which are still active.
      * @return {Promise<void>} Completion of currently available actions.
      */
     async #advance() {
@@ -169,8 +170,10 @@ export class CalculationExecutor {
                 this.#saved.jobId = job.jobId;
                 this.#saved.pending = null;
                 this.storage.write(this.#saved);
-                this.jobs.tracked.add(job.jobId);
+                if (job.status === "ready") this.api.diagnostics?.record("ready-received", {jobId: job.jobId, trigger: "submission"});
+                if (ACTIVE_JOB_STATES.has(job.status)) this.jobs.tracked.add(job.jobId);
                 this.jobs.accept(job);
+                if (job.status === "ready") this.api.diagnostics?.record("ready-accepted", {jobId: job.jobId, trigger: "submission"});
             }
             if (!this.#saved?.jobId) return;
             let job = this.jobs.jobs.find(item => item.jobId === this.#saved.jobId);
