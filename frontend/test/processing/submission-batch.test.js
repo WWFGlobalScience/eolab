@@ -15,6 +15,56 @@ function job(n) { return {jobId: String(n + 1).padStart(32, "0"), status: "queue
 /** @return {Promise<void>} Settle queued microtasks and promise continuations. */
 async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
 
+test("completed submission results use one batch request and only pending jobs open events", async () => {
+    for (const statuses of [["ready", "ready"], ["ready", "queued"], ["failed", "ready"]]) {
+        const paths = [], streams = [];
+        /** Event transport that records subscriptions without emitting hints. */
+        class Events {
+            /** @param {string} path Event URL. */
+            constructor(path) { streams.push(path); }
+            /** @param {string} name Event name. @param {Function} callback Listener. @return {void} */
+            addEventListener(name, callback) {}
+            /** @param {string} name Event name. @param {Function} callback Listener. @return {void} */
+            removeEventListener(name, callback) {}
+            /** @return {void} Release the test transport. */
+            close() {}
+        }
+        const api = new ProcessingApiClient(async (path, options) => {
+            paths.push(path);
+            if (path.endsWith("/jobs")) return Response.json({jobs: []});
+            assert.equal(path, "/api/processing/raster-calculations/batch");
+            const items = JSON.parse(options.body).items;
+            return Response.json({items: items.map((item, index) => {
+                const value = {...job(index), status: statuses[index], error: {code: "source_unavailable", detail: "Unavailable"}};
+                if (value.status === "ready") value.result = {
+                    url: `/api/processing/jobs/${value.jobId}/result`, provenanceUrl: `/api/processing/jobs/${value.jobId}/provenance`,
+                    rows: [{label: "Mean", expression: "mean(a)", state: "ok", value: "12.5", valueType: "float", unit: null, aggregates: []}],
+                };
+                return {index, job: value};
+            })});
+        }, Events);
+        await api.ensureSession(); paths.length = 0;
+        const data = new Map(); let key = 0;
+        const storage = new CalculationSessionStorage({getItem: k => data.get(k), setItem: (k,v) => data.set(k,v), removeItem: k => data.delete(k)});
+        const jobs = new ProcessingJobs(api, {setTimeout: () => 1, clearTimeout: () => {}});
+        const requests = new CalculationRequests({api, jobs, storage, requestId: () => submission(key++).requestId});
+        const clients = [0,1].map(i => requests.createClient(`raster-series:${i}`, () => {}));
+        clients.forEach((client,i) => client.submit(submission(i)));
+        await flush(); await flush();
+        assert.deepEqual(paths, ["/api/processing/raster-calculations/batch"]);
+        assert.equal(streams.length, statuses.includes("queued") ? 1 : 0);
+        assert.equal(jobs.tracked.size, statuses.filter(state => state === "queued").length);
+        for (const [i, state] of statuses.entries()) if (state === "ready") {
+            assert.equal(clients[i].snapshot.completedJob.result.rows[0].value, "12.5");
+            assert.equal(clients[i].snapshot.currentJob, null);
+            const events = clients[i].snapshot.completedTimings.deliveryDiagnostics.events;
+            assert.equal(events.filter(event => event.kind === "http-finish").length, 1);
+            assert.equal(events.find(event => event.kind === "ready-received").trigger, "submission");
+        }
+        requests.destroy(); jobs.destroy();
+    }
+});
+
 test("25 submissions use one HTTP batch; larger stacks split without dropping rasters", async () => {
     for (const size of [25, 64, 125]) {
         const batches = [];

@@ -419,7 +419,7 @@ export class ProcessingApiClient {
         const requestNumber = ++this.requestSequence;
         const identity = path.match(/^\/jobs\/([a-f0-9]{32})(?:\/|$)/);
         const fields = {requestNumber, method, path, jobId: identity?.[1],
-            shared: path === "/jobs" || path === "/jobs/status", inFlight: ++this.requestsInFlight};
+            shared: path === "/jobs" || path === "/jobs/status" || path === "/raster-calculations/batch", inFlight: ++this.requestsInFlight};
         const startedAtMs = this.diagnostics.record("http-start", fields);
         const finishNetworkTiming = captureRequestNetworkTiming();
         let headersAtMs, response, serverTiming = {};
@@ -436,7 +436,7 @@ export class ProcessingApiClient {
             headersAtMs = this.diagnostics.now();
             // Only our fixed numeric Server-Timing metrics enter the report.
             for (const metric of (response.headers?.get("Server-Timing") ?? "").split(",")) {
-                const match = metric.trim().match(/^(processing|admissionChecks|queueAdmission|jobRead|appToHeaders|beforeRoute|afterRoute|eventLoopLag);dur=([\d.]+)$/);
+                const match = metric.trim().match(/^(processing|admissionChecks|queueAdmission|submissionObservation|jobRead|appToHeaders|beforeRoute|afterRoute|eventLoopLag);dur=([\d.]+)$/);
                 if (match && Number.isFinite(Number(match[2]))) serverTiming[match[1]] = Number(match[2]) / 1000;
             }
             const data = await response.json().catch(() => null);
