@@ -25,7 +25,7 @@ const deferred = () => { let resolve,reject;const promise=new Promise((a,b)=>{re
  */
 function fixture(overrides = {}, data = new Map()) {
     const requests=[],plans=new Map(),server=new Map(),timers=new Map();let serial=0,time=0;
-    const clock={setTimeout(fn,delay){const id=++serial;timers.set(id,{fn,delay});return id;},clearTimeout(id){timers.delete(id);}};
+    const clock={setTimeout(fn,delay){const id=++serial;timers.set(id,{fn,delay,at:time+delay});return id;},clearTimeout(id){timers.delete(id);}};
     const grid={nativeBlocks:1,decodedBytes:100,width:10,height:10,crs:"EPSG:4326"};
     const api={
         diagnostics:new ProcessingDiagnostics(()=>time),
@@ -58,7 +58,11 @@ function fixture(overrides = {}, data = new Map()) {
     const view={bind(actions){this.actions=actions;},render(state){this.state=state;},downloadCsv(csv){this.csv=csv;}};
     const controller=new RasterSeriesController({view,areaStatistics:area,samplePoint:async()=>({inBounds:true,value:1}),onClose(){},onEditArea(){}});
     controller.updateAvailableRasters([source("1"),source("2")]); controller.setArea(box(0),"First box");
-    const tick=async()=>{for(const[id,t]of [...timers])if(t.delay===700){timers.delete(id);t.fn();}await flush();};
+    const tick=async(delay=0)=>{for(const[id,t]of [...timers])if(t.delay===delay){timers.delete(id);t.fn();}await flush();};
+    /** Advance the browser clock and execute only callbacks whose deadlines passed.
+     * @param {number} milliseconds Elapsed time. @return {Promise<void>} Settled lifecycle callbacks.
+     */
+    const advance=async milliseconds=>{time+=milliseconds;for(const[id,t]of [...timers])if(t.at<=time){timers.delete(id);t.fn();}await flush();};
     const finish=async(status="ready",cacheHit=false,itemId=null)=>{
         const old=[...server.values()].find(job=>["running","cancelling","queued"].includes(job.status) && (!itemId || job.sources.a.itemId===itemId));
         assert.ok(old,"an active job exists");
@@ -68,7 +72,7 @@ function fixture(overrides = {}, data = new Map()) {
     };
     const open=async()=>{controller.setMode("area");controller.updateSamplingForPanelVisibility(true);await tick();};
     const close=()=>{area.destroy();calculationRequests.destroy();jobs.destroy();};
-    return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,finish,open,close,elapse:ms=>{time+=ms;}};
+    return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,advance,finish,open,close,elapse:ms=>{time+=ms;}};
 }
 
 test("formulas share one job per source, retain exact scalar/unit CSV, and presentation edits do not recalculate",async()=>{
@@ -121,6 +125,75 @@ test("rapid area changes cancel submitted work and never mix old-area rows",asyn
     for(const result of h.area.results.values())assert.equal(result.calculationInputs.area.selectedBounds.west,20);
     h.close();
 });
+
+test("committed areas submit on the next turn and coalesce synchronous replacements",async()=>{
+    const h=fixture();await h.open();await h.finish();await h.finish();
+    h.controller.setArea(box(10),"Second");
+    h.controller.setArea(box(20),"Latest");
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2,"dispatch waits until the current event completes");
+    await h.advance(0);
+    const replacements=h.requests.filter(([kind])=>kind==="submit").slice(2);
+    assert.equal(replacements.length,2);
+    assert.ok(replacements.every(([,request])=>request.area.selectedBounds.west===20));
+    await h.finish();await h.finish();
+    assert.equal(h.area.elapsedSeconds,.2,"whole-series time has no additional 700 ms editing pause");
+    await h.advance(700);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,4,"no stale delayed submission follows");
+    h.close();
+});
+
+test("opening area statistics and changing selected rasters require no editing pause",async()=>{
+    const h=fixture();h.controller.setMode("area");h.controller.updateSamplingForPanelVisibility(true);
+    assert.equal(h.requests.length,0);
+    await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
+    await h.finish();await h.finish();
+    h.controller.selectRaster("2",false);await h.advance(0);
+    const submissions=h.requests.filter(([kind])=>kind==="submit");
+    assert.equal(submissions.length,3);
+    assert.equal(submissions.at(-1)[1].source.itemId,"1");
+    h.close();
+});
+
+test("reopening unfinished area statistics schedules remaining work immediately",async()=>{
+    const h=fixture();await h.open();
+    h.controller.updateSamplingForPanelVisibility(false);await flush();
+    await h.finish("cancelled");await h.finish("cancelled");
+    h.controller.updateSamplingForPanelVisibility(true);await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,4);
+    assert.equal(h.area.pending.size,2);
+    h.close();
+});
+
+test("formula typing waits 700 ms after the latest expression and submits only that expression",async()=>{
+    const h=fixture();await h.open();await h.finish();await h.finish();
+    h.controller.editFormula(1,{expression:"mean(a)+1"});
+    await h.advance(699);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
+    h.controller.editFormula(1,{expression:"mean(a)+2"});
+    await h.advance(699);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2,"the later edit restarts the pause");
+    await h.advance(1);
+    const replacements=h.requests.filter(([kind])=>kind==="submit").slice(2);
+    assert.equal(replacements.length,2);
+    assert.ok(replacements.every(([,request])=>request.calculations[0].expression==="mean(a)+2"));
+    await h.finish();await h.finish();
+    assert.equal(h.area.elapsedSeconds,.9,"formula editing still contributes its deliberate pause");
+    h.close();
+});
+
+for(const action of ["hide","cancel"]) {
+    test(`${action} before the next turn prevents a committed-area submission`,async()=>{
+        const h=fixture();await h.open();await h.finish();await h.finish();
+        h.controller.setArea(box(10),"Pending");
+        if(action==="hide")h.controller.updateSamplingForPanelVisibility(false);
+        else h.area.cancelRemainingRasters();
+        await h.advance(0);await h.advance(1000);
+        assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
+        assert.equal(h.area.pending.size,0);
+        h.close();
+    });
+}
 
 test("leaving area mode drops the pending stack and waits for acknowledged cancellation",async()=>{
     const h=fixture();await h.open();h.controller.setMode("pixel");await flush();
@@ -226,7 +299,7 @@ test("submission rejects invalid formulas with one shared explanation and retain
     assert.deepEqual(h.view.state.statistics.map(statistic=>statistic.styleIndex),[0,2,3,4,1],"reuse the removed formula's style without changing the others");
     h.controller.addFormula("mean");
     assert.equal(h.controller.formulas.length,5,"a sixth active formula is not accepted");
-    await h.tick();
+    await h.tick(700);
     assert.match(h.view.state.message,/Unknown function bad/);
     assert.equal(h.requests.filter(([kind])=>kind==="validate").length,0);
     assert.equal(h.area.results.size,2);
@@ -244,7 +317,7 @@ test("all 25 rasters submit without a formula preflight and an edited rejection 
     };
     h.controller.editFormula(1,{expression:"bad(a)"});await h.open();
     assert.equal(h.area.results.size,25);assert.match(h.area.commonError,/Unknown function bad/);
-    h.controller.editFormula(1,{expression:"mean(a)"});await h.tick();
+    h.controller.editFormula(1,{expression:"mean(a)"});await h.tick(700);
     assert.equal(h.requests.filter(([kind])=>kind==="submit").length,25);
     assert.equal(h.area.commonError,"");assert.equal(h.area.pending.size,25);
     for(let i=0;i<25;i++) await h.finish();
