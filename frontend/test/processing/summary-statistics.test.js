@@ -30,6 +30,52 @@ test("the first active map click calculates and an unchanged completed box reuse
     assert.equal(h.controller.state.statistics[0].current, true);
 });
 
+test("changing the exact click refreshes pixel cards while unchanged area-only cards retain their values",async()=>{
+    const h=fixture();await h.open();h.controller.chooseArea("whole");await flush();await h.finish("ready",["10"]);
+    const mean=h.controller.state.statistics[0], meanResult=mean.result, checks=h.requests.filter(([kind])=>kind==="validate").length;
+    h.controller.setPixelPoint({longitude:77.123456789,latitude:22.987654321});await flush();
+    assert.equal(h.submits(),1);assert.equal(mean.result,meanResult);assert.equal(mean.current,true);
+    assert.equal(h.requests.filter(([kind])=>kind==="validate").length,checks);
+    h.controller.addStatistic("pixel");await h.tick();
+    const pixel=h.controller.state.statistics[1];
+    const first=h.requests.filter(([kind])=>kind==="submit").at(-1)[1];
+    assert.deepEqual(first.pixelPoint,{longitude:77.123456789,latitude:22.987654321});
+    assert.deepEqual(first.calculations,[{label:"Pixel value",expression:"pixelValue(a)"}]);
+    await h.finish("ready",["4"]);
+    h.controller.setPixelPoint({longitude:78,latitude:23});await flush();
+    assert.equal(h.submits(),3);assert.equal(mean.result,meanResult);assert.equal(mean.current,true);
+    assert.deepEqual(h.requests.filter(([kind])=>kind==="submit").at(-1)[1].pixelPoint,{longitude:78,latitude:23});
+    await h.finish("ready",["8"]);assert.equal(pixel.result.row.value,"8");
+    h.controller.destroy();
+});
+
+test("a new click cancels obsolete automatic pixel work and rejects its late value",async()=>{
+    const h=fixture();await h.open();
+    h.controller.setPixelPoint({longitude:77,latitude:22});
+    const card=h.controller.state.statistics[0];h.controller.editStatistic(card.id,{expression:"pixelValue(a)"});await h.tick();
+    await h.finish("ready",["10"]);
+    h.controller.setPixelPoint({longitude:78,latitude:22});await flush();
+    h.controller.setPixelPoint({longitude:79,latitude:22});await flush();
+    assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,1);
+    assert.equal(h.submits(),2);
+    await h.finish("ready",["999"]);
+    assert.equal(card.result.row.value,"10");assert.equal(h.submits(),3);
+    assert.deepEqual(h.requests.filter(([kind])=>kind==="submit").at(-1)[1].pixelPoint,{longitude:79,latitude:22});
+    await h.finish("ready",["30"]);assert.equal(card.result.row.value,"30");assert.equal(card.current,true);
+    h.controller.destroy();
+});
+
+test("hidden manual pixel work continues in history when another map click changes context",async()=>{
+    const h=fixture();await h.open();h.controller.setAutomatic(false);
+    h.controller.setPixelPoint({longitude:77,latitude:22});
+    const card=h.controller.state.statistics[0];h.controller.editStatistic(card.id,{expression:"pixelValue(a)"});
+    h.controller.request(card.id,"manual");await flush();
+    h.controller.setActive(false);h.controller.setPixelPoint({longitude:79,latitude:23});await flush();
+    assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,0);
+    await h.finish();assert.equal(h.controller.state.jobs[0].status,"ready");assert.equal(card.current,false);
+    assert.equal(h.submits(),1);h.controller.destroy();
+});
+
 test("manual Calculate bypasses pending editor feedback and ignores its late error",async()=>{
     const response=deferred();const h=fixture();await h.open();h.controller.setAutomatic(false);
     const card=h.controller.state.statistics[0];
@@ -963,6 +1009,28 @@ test("reload recovers a manual job into its card without admitting another calcu
     const old=h.server.get(id);h.server.set(id,{...old,status:"ready",result:{url:"/api/processing/jobs/"+id+"/result",provenanceUrl:"/api/processing/jobs/"+id+"/provenance",rows:[{...old.calculations[0],value:"9",valueType:"float",state:"ok",aggregates:[]}]}});
     await restored.jobs.refresh();await flush();assert.equal(restored.controller.state.statistics[0].result.row.value,"9");assert.equal(restored.submits(),0);
     assert.equal(restored.controller.state.statistics[0].result.totalWaitSeconds,undefined);
+});
+
+test("manual pixel recovery retains its submitted point when the reloaded map has no click",async()=>{
+    const h=fixture();await h.open();h.controller.setAutomatic(false);
+    const point={longitude:77.123456789,latitude:22.987654321};h.controller.setPixelPoint(point);
+    const card=h.controller.state.statistics[0];h.controller.editStatistic(card.id,{expression:"pixelValue(a)"});
+    h.controller.request(card.id,"manual");await flush();
+    const id=h.controller.executor.snapshot.currentJob.jobId;h.controller.destroy();
+    const restored=fixture({listJobs:async()=>[...h.server.values()],getJob:async key=>h.server.get(key)},h.data,{},
+        {sources:[source],area:box(77),pixelPoint:null});
+    await restored.controller.start();await restored.open();
+    assert.deepEqual(restored.controller.state.pixelPoint,point);
+    assert.deepEqual(restored.controller.executor.snapshot.unfinishedCalculation.calculation.pixelPoint,point);
+    assert.equal(restored.submits(),0);
+    assert.equal(restored.requests.some(([kind])=>kind==="cancel"),false);
+    const old=h.server.get(id);
+    h.server.set(id,{...old,status:"ready",result:{url:`/api/processing/jobs/${id}/result`,provenanceUrl:`/api/processing/jobs/${id}/provenance`,
+        rows:[{...old.calculations[0],value:"9",valueType:"float",state:"ok",aggregates:[]}]}});
+    await restored.jobs.refresh();await flush();
+    assert.equal(restored.controller.state.statistics[0].result.row.value,"9");
+    assert.equal(restored.controller.state.statistics[0].current,true);
+    restored.controller.destroy();
 });
 test("reload cancels recovered automatic work and never resumes sampling on its own",async()=>{
     const h=fixture();await h.open();const card=h.controller.state.statistics[0];

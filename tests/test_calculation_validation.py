@@ -13,6 +13,8 @@ from eolab_app.routes.processing import create_processing_router
 from test_raster_clips import SOURCE
 from pathlib import Path
 from html import unescape
+import hashlib
+import json
 import re
 from typing import Any
 from unittest.mock import patch
@@ -20,6 +22,8 @@ from unittest.mock import patch
 from eolab_app.processing import aggregate_models
 from eolab_app.processing.aggregate_models import (
     AggregateJobRequest,
+    AggregateSpec,
+    PixelPoint,
     UnpreparedCalculation,
 )
 from eolab_app.processing.shared_calculations import identify_shared_calculation
@@ -142,6 +146,102 @@ def test_reused_submission_keeps_the_same_shared_work_identity() -> None:
         )
         assert identify_shared_calculation(queued) == original_key
         assert queued.model_dump(mode="json", by_alias=True) == original_spec
+
+
+def test_absent_pixel_point_preserves_legacy_request_dict_and_hash() -> None:
+    """Old uncertain submissions retain the exact input identity after deployment."""
+    legacy = {
+        "sources": {"a": SOURCE},
+        "calculations": [{"label": "Mean", "expression": "mean(a)"}],
+        "selectedBounds": None,
+        "catalogSelection": None,
+        "polygonArea": None,
+        "wholeRaster": True,
+        "targetChunkPixels": None,
+    }
+    expected_hash = hashlib.sha256(
+        json.dumps(legacy, sort_keys=True).encode()
+    ).hexdigest()
+    for optional in ({}, {"pixelPoint": None}):
+        request = AggregateJobRequest(
+            **legacy, **optional, requestId="legacy-request-639"
+        )
+        stored = request.model_dump(mode="json", by_alias=True, exclude={"requestId"})
+        assert stored == legacy
+        assert (
+            hashlib.sha256(json.dumps(stored, sort_keys=True).encode()).hexdigest()
+            == expected_hash
+        )
+        assert (
+            UnpreparedCalculation(request=request).model_dump(
+                mode="json", by_alias=True
+            )["request"]
+            == legacy
+        )
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        None,
+        {},
+        {"longitude": 0.0},
+        {"longitude": "0", "latitude": 0.0},
+        {"longitude": True, "latitude": 0.0},
+        {"longitude": float("nan"), "latitude": 0.0},
+        {"longitude": 0.0, "latitude": float("inf")},
+        {"longitude": -180.01, "latitude": 0.0},
+        {"longitude": 180.01, "latitude": 0.0},
+        {"longitude": 0.0, "latitude": -90.01},
+        {"longitude": 0.0, "latitude": 90.01},
+        {"longitude": 0.0, "latitude": 0.0, "path": "/tmp/untrusted.tif"},
+    ],
+)
+def test_pixel_location_is_required_and_strict_at_request_and_storage_boundaries(
+    tmp_path: Path, point: Any
+) -> None:
+    """Reject missing or malformed pixel context before queued or stored execution.
+
+    Args:
+        tmp_path: Private raster used to construct a valid stored plan.
+        point: Absent, nonfinite, out-of-range, coerced or unexpected point fields.
+    """
+    import numpy as np
+    from test_raster_aggregates import make_spec
+    from test_raster_clips import write_source
+
+    inputs = {
+        "sources": {"a": SOURCE},
+        "calculations": [{"label": "Pixel", "expression": "pixelValue(a)"}],
+        "wholeRaster": True,
+        "pixelPoint": point,
+    }
+    with pytest.raises(ValidationError):
+        AggregateJobRequest(**inputs, requestId="pixel-request-639")
+    with pytest.raises(ValidationError):
+        UnpreparedCalculation.model_validate({"request": inputs})
+    path = write_source(tmp_path / "source.tif", np.ones((2, 2), dtype="uint8"))
+    spec = make_spec(
+        path, ["pixelValue(a)"], pixel_point=PixelPoint(longitude=0.005, latitude=9.995)
+    )
+    stored = {**spec.model_dump(mode="json", by_alias=True), "pixelPoint": point}
+    with pytest.raises(ValidationError):
+        AggregateSpec.model_validate(stored)
+
+
+def test_pixel_language_validation_needs_no_location_but_submission_does() -> None:
+    """The formula editor can validate pixelValue before the user chooses a point."""
+    calculations = [{"label": "Pixel", "expression": "pixelValue(a)"}]
+    assert AggregateValidationRequest(alias="a", calculations=calculations)
+    for longitude, latitude in ((-180, -90), (180, 90), (0, 0)):
+        request = AggregatePlanRequest(
+            sources={"a": SOURCE},
+            calculations=calculations,
+            wholeRaster=True,
+            pixelPoint={"longitude": longitude, "latitude": latitude},
+        )
+        assert request.pixelPoint.longitude == longitude
+        assert request.pixelPoint.latitude == latitude
 
 
 @pytest.mark.parametrize(

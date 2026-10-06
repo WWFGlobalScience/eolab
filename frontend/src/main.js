@@ -78,7 +78,7 @@ import { initializeRasterViewer } from "./raster/raster-viewer.js";
 import { RasterSeriesCalculations } from "./processing/raster-series-calculations.js";
 import { RasterSeriesController } from "./raster/series.js";
 import { RasterSeriesView } from "./raster/series-view.js";
-import { sampleCatalogRasterPixel } from "./raster/analysis-api.js";
+import { isCanonicalWgs84Position } from "./raster/geometry.js";
 import "./raster/series.css";
 import { RasterCursorValuesView } from "./raster/cursor-values-view.js";
 import { SavedMapViewCatalogClient } from "./saved-map-view/catalog-client.js";
@@ -760,6 +760,7 @@ async function initializeCatalog(
     let rasterSeries = null;
     let rasterSeriesArea = null;
     let rasterSeriesAreaLabel = "";
+    let pixelPoint = null;
     /** Send committed sampling-area changes to the raster-series component.
      * @param {Object|null} area Path-free Processing area.
      * @param {string} label Selection description. @return {void}
@@ -836,11 +837,14 @@ async function initializeCatalog(
     });
     const processingApi = new ProcessingApiClient();
     const processingJobs = new ProcessingJobs(processingApi);
-    /** Read current raster identities and sampling area. @return {{sources: Object[], area: Object|null}} Current Processing context. */
+    /** Read committed raster inputs independently of rendering eligibility.
+     * @return {{sources:Object[],area:Object|null,pixelPoint:{longitude:number,latitude:number}|null}} Current Processing context.
+     */
     const processingContext = () => ({
         sources: mapLayerController.snapshots().filter(layer => layer.datasetKind === "raster")
             .map(layer => clipSource(layer.item, layer.label)),
         area: rasterVisualization?.getSelectedArea() ?? null,
+        pixelPoint,
     });
     /** Open and focus the shared sampling controls. @return {void} */
     const editProcessingArea = () => {
@@ -1100,20 +1104,15 @@ async function initializeCatalog(
     rasterSeries = new RasterSeriesController({
         areaStatistics: rasterAreaSeries,
         onEditArea: () => calculations.open(),
-        samplePoint: sampleCatalogRasterPixel,
         view: new RasterSeriesView(),
         onClose: () => { mapInspection.hideRasterSeries(); leafletMap.getContainer().focus(); },
     });
     rasterSeries.setArea(rasterSeriesArea, rasterSeriesAreaLabel);
     void rasterAreaSeries.recoverAndCancelPreviousSeriesCalculations();
     void calculations.start();
-    document.querySelector("#open-raster-series-summary").addEventListener("click", () => {
-        rasterSeries.setMode("area");
-        mapInspection.showRasterSeries();
-    });
     rasterSeries.updateAvailableRasters(mapLayerController.snapshots().filter(layer => layer.datasetKind === "raster"));
     mapInspection.subscribeActiveTool(tool => rasterSeries.updateSamplingForPanelVisibility(tool === "raster-series"));
-    for (const id of ["open-raster-series", "open-raster-series-dock", "open-raster-series-histogram"]) {
+    for (const id of ["open-raster-series", "open-raster-series-dock", "open-raster-series-histogram", "open-raster-series-summary"]) {
         document.querySelector(`#${id}`).addEventListener("click", () => mapInspection.showRasterSeries());
     }
     const vectorTimeSeries = new VectorTimeSeriesController({
@@ -1221,7 +1220,10 @@ async function initializeCatalog(
     function exploreMap(event) {
         if (mapInteractionMode !== "inspection") return;
         mapInspection.beginMapClick(event.latlng);
-        rasterSeries.setPosition({ longitude: event.latlng.lng, latitude: event.latlng.lat });
+        const position = { longitude: event.latlng.lng, latitude: event.latlng.lat };
+        pixelPoint = isCanonicalWgs84Position(position) ? Object.freeze(position) : null;
+        rasterSeries.setPosition(pixelPoint);
+        calculations.setPixelPoint(pixelPoint);
         rasterClickSelected = false;
         selectingMapClick = true;
         try {

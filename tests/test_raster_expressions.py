@@ -84,6 +84,11 @@ def test_numeric_logical_conditional_and_scalar_arithmetic(
         "sum(a)+1e999",
         "areaha(a)",
         "areaha(a==4,where=a>0)",
+        "pixelValue(a+1)",
+        "pixelValue(1)",
+        "pixelValue(a,where=a>0)",
+        "pixelValue(mean(a))",
+        "mean(pixelValue(a))",
         "sum(" + "(" * 30 + "a" + ")" * 30 + ")",
         "sum(a" + "+a" * 300 + ")",
     ],
@@ -127,6 +132,68 @@ def test_counts_remain_lossless_decimal_integers() -> None:
     reduction.valid = reduction.matched = 2**53 + 1
     assert calculation.result()["value"] == "9007199254740993"
     assert calculation.result()["valueType"] == "integer"
+
+
+@pytest.mark.parametrize("pixel_value", [0.0, -7.5, 12.25])
+def test_pixel_value_is_one_selected_sample_independent_of_area_tiles(
+    pixel_value: float,
+) -> None:
+    """A selected pixel stays unchanged as unrelated area tiles are processed.
+
+    Args:
+        pixel_value: Finite stored value selected by the native raster reader.
+    """
+    calculation = Calculation(compile_expression("pixelValue(a)", "a"), pixel_value)
+    assert float(calculation.result()["value"]) == pixel_value
+    for values in ([2.0, 3.0], [100.0, 200.0]):
+        calculation.process_tile(np.array(values), np.array([True, True]))
+    result = calculation.result()
+    assert float(result["value"]) == pixel_value
+    assert result["state"] == "ok"
+    assert result["valueType"] == "float"
+    assert result["aggregates"] == [
+        {
+            "function": "pixelValue",
+            "validPixels": 1,
+            "matchedPixels": 1,
+            "invalidArithmeticPixels": 0,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "pixel_value", [None, float("nan"), float("inf"), -float("inf")]
+)
+def test_missing_or_nonfinite_pixel_does_not_fall_back_to_area_values(
+    pixel_value: float | None,
+) -> None:
+    """Invalid selected samples remain missing even when nearby pixels are valid.
+
+    Args:
+        pixel_value: Missing or nonfinite stored sample.
+    """
+    calculation = Calculation(compile_expression("pixelValue(a)", "a"), pixel_value)
+    calculation.process_tile(np.array([9.0]), np.array([True]))
+    result = calculation.result()
+    assert result["value"] is None
+    assert result["state"] == "no_valid_data"
+    assert result["aggregates"][0]["validPixels"] == 0
+    assert result["aggregates"][0]["matchedPixels"] == 0
+
+
+def test_pixel_value_combines_with_area_statistics_and_scalar_arithmetic() -> None:
+    """Point values share the scalar expression language without changing area counts."""
+    calculation = Calculation(
+        compile_expression("pixelValue(raster) * 2 - mean(raster)", "raster"), 10.0
+    )
+    calculation.process_tile(np.array([2.0, 4.0]), np.array([True, True]))
+    calculation.process_tile(np.array([6.0, 99.0]), np.array([True, False]))
+    result = calculation.result()
+    assert float(result["value"]) == 16.0
+    assert [row["validPixels"] for row in result["aggregates"]] == [1, 3]
+    missing = Calculation(compile_expression("pixelValue(a) + mean(a)", "a"))
+    missing.process_tile(np.array([4.0]), np.array([True]))
+    assert missing.result()["state"] == "no_valid_data"
 
 
 @pytest.mark.parametrize(

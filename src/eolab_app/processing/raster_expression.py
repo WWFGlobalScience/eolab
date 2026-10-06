@@ -9,7 +9,7 @@ import numpy as np
 
 from eolab_app.processing.models import ProcessingError
 
-FUNCTIONS = frozenset({"count", "sum", "mean", "min", "max", "areaha"})
+FUNCTIONS = frozenset({"count", "sum", "mean", "min", "max", "areaha", "pixelValue"})
 MAX_NODES = 256
 MAX_DEPTH = 20
 TOKEN = re.compile(
@@ -170,6 +170,10 @@ class Parser:
             self.take(")")
             if any(node.op in FUNCTIONS for arg in args for node in walk(arg)):
                 raise self.error("Aggregates cannot be nested")
+            if token == "pixelValue" and (argument.op != "source" or len(args) != 1):
+                raise self.error(
+                    "pixelValue requires only the raster, for example pixelValue(a)"
+                )
             if token == "areaha" and (not argument.boolean or len(args) != 1):
                 raise self.error(
                     "areaha requires one condition, for example areaha(a == 4)"
@@ -291,11 +295,13 @@ def apply_operator(node: Node, values: list[Any]) -> Any:
 class Reduction:
     """Bounded running accumulator for one aggregate node."""
 
-    def __init__(self, node: Node) -> None:
+    def __init__(self, node: Node, pixel_value: float | None = None) -> None:
         """Initialize an aggregate.
 
         Args:
             node: Validated aggregate node.
+            pixel_value: Stored value at the selected point for pixelValue;
+                missing or nonfinite values produce no_valid_data.
         """
         self.node = node
         self.valid = self.matched = self.invalid = 0
@@ -303,6 +309,13 @@ class Reduction:
         self.minimum = math.inf
         self.maximum = -math.inf
         self.overflow = False
+        if (
+            node.op == "pixelValue"
+            and pixel_value is not None
+            and math.isfinite(pixel_value)
+        ):
+            self.valid = self.matched = 1
+            self.total = float(pixel_value)
 
     def update(
         self, data: np.ndarray, base: np.ndarray, hectares: np.ndarray | None = None
@@ -413,6 +426,7 @@ class Reduction:
             "min": self.minimum,
             "max": self.maximum,
             "areaha": self.total,
+            "pixelValue": self.total,
         }[self.node.op]
         return (value, "ok") if math.isfinite(value) else (None, "overflow")
 
@@ -420,15 +434,19 @@ class Reduction:
 class Calculation:
     """Evaluate one scalar expression with bounded per-aggregate state."""
 
-    def __init__(self, root: Node) -> None:
+    def __init__(self, root: Node, pixel_value: float | None = None) -> None:
         """Create accumulators for unique aggregate subexpressions.
 
         Args:
             root: Compiled scalar result expression.
+            pixel_value: Stored value at the selected point for pixelValue;
+                missing or nonfinite values produce no_valid_data.
         """
         self.root = root
         self.reductions = {
-            node: Reduction(node) for node in walk(root) if node.op in FUNCTIONS
+            node: Reduction(node, pixel_value)
+            for node in walk(root)
+            if node.op in FUNCTIONS
         }
 
     def process_tile(
@@ -440,7 +458,8 @@ class Calculation:
     ) -> None:
         """Process one raster tile and accumulate its contribution to the result.
 
-        Call result() after all tiles have been processed.
+        Call result() after all tiles have been processed. The selected point's
+        pixelValue is supplied at construction and is unaffected by area tiles.
 
         Args:
             data: Raster pixel values for this tile.
@@ -452,6 +471,8 @@ class Calculation:
             ValueError: If an area calculation has no hectare weights or area mask.
         """
         for reduction in self.reductions.values():
+            if reduction.node.op == "pixelValue":
+                continue
             if reduction.node.op == "areaha":
                 if hectares is None or area_valid is None:
                     raise ValueError(

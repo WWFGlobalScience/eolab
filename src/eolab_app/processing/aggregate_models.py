@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ModelWrapValidatorHandler,
+    PrivateAttr,
     SerializerFunctionWrapHandler,
     model_serializer,
     model_validator,
@@ -44,6 +45,7 @@ class AggregateValidationRequest(BaseModel):
     """Bounded language validation independent of source lookup and raster I/O."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+    _uses_pixel_point: bool = PrivateAttr(default=False)
     alias: Alias = "a"
     calculations: Annotated[
         tuple[NamedCalculation, ...], Field(min_length=1, max_length=5)
@@ -79,7 +81,18 @@ class AggregateValidationRequest(BaseModel):
             raise ValueError(
                 "All expressions together must use at most 256 syntax nodes"
             )
+        self._uses_pixel_point = any(
+            node.op == "pixelValue" for tree in trees for node in walk(tree)
+        )
         return self
+
+
+class PixelPoint(BaseModel):
+    """Exact WGS84 map location for the pixelValue scalar function."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    longitude: float = Field(strict=True, ge=-180, le=180, allow_inf_nan=False)
+    latitude: float = Field(strict=True, ge=-90, le=90, allow_inf_nan=False)
 
 
 class AggregatePlanRequest(BaseModel):
@@ -97,6 +110,24 @@ class AggregatePlanRequest(BaseModel):
     polygonArea: PolygonAreaReference | None = None
     wholeRaster: Literal[True] | None = None
     targetChunkPixels: ChunkPixels | None = None
+    pixelPoint: PixelPoint | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_request(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        """Keep existing request hashes unchanged when no pixel point is supplied.
+
+        Args:
+            handler: Pydantic's normal field serializer.
+
+        Returns:
+            Request fields, omitting the optional point when absent.
+        """
+        result = handler(self)
+        if self.pixelPoint is None:
+            result.pop("pixelPoint", None)
+        return result
 
     @model_validator(mode="wrap")
     @classmethod
@@ -138,9 +169,11 @@ class AggregatePlanRequest(BaseModel):
             raise ValueError(
                 "Choose one box, vector selection, polygon area, or whole raster"
             )
-        AggregateValidationRequest(
+        language = AggregateValidationRequest(
             alias=next(iter(request.sources)), calculations=request.calculations
         )
+        if request.pixelPoint is None and language._uses_pixel_point:
+            raise ValueError("Choose a map location for pixelValue(a)")
         return request
 
 
@@ -323,7 +356,7 @@ class AggregateExecutionPlan(BaseModel):
     readHeight: Annotated[int, Field(gt=0)]
     evaluationWidth: Annotated[int, Field(gt=0)]
     evaluationHeight: Annotated[int, Field(gt=0)]
-    readWindows: Annotated[int, Field(gt=0, le=65_536)]
+    readWindows: Annotated[int, Field(ge=0, le=65_536)]
 
 
 StageSeconds = Annotated[float, Field(ge=0, allow_inf_nan=False)]
@@ -382,9 +415,9 @@ class AggregatePerformance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     execution: AggregateExecutionPlan
-    readWindows: Annotated[int, Field(ge=1, le=65_536)]
-    evaluationTiles: Annotated[int, Field(ge=1, le=2**53 - 1)]
-    reducerUpdates: Annotated[int, Field(ge=1, le=2**53 - 1)]
+    readWindows: Annotated[int, Field(ge=0, le=65_536)]
+    evaluationTiles: Annotated[int, Field(ge=0, le=2**53 - 1)]
+    reducerUpdates: Annotated[int, Field(ge=0, le=2**53 - 1)]
     readSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     calculationSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
     resultWriteSeconds: Annotated[float, Field(ge=0, le=86_400, allow_inf_nan=False)]
@@ -453,12 +486,12 @@ class AggregateSpec(BaseModel):
 
     The worker builds this object from the queued request and the grid returned
     by plan_aggregate(), saves it on the job, then passes it to
-    calculate_raster_statistics_for_area(). Older clients can still prepare this
-    object through the separate planning API before submitting a job.
+    calculate_raster_statistics_for_area().
 
     sources maps the formula alias (such as a) to a catalog raster.
     calculations contains the named formulas. area describes the map box,
     uploaded polygons, filtered vector layer or whole-raster selection.
+    pixelPoint supplies the independent clicked location for pixelValue formulas.
     grid contains the selected window's dimensions, pixel alignment and planned
     read sizes. It contains metadata, not raster pixel values.
     sourceSignature is source metadata retained in the stored job contract.
@@ -473,6 +506,7 @@ class AggregateSpec(BaseModel):
     ]
     sourceSignature: tuple[int, int, int, int]
     calculations: tuple[NamedCalculation, ...]
+    pixelPoint: PixelPoint | None = None
     area: AggregateArea
     grid: AggregateGrid
     # Server-only copy of cached values; retained through plan expiry/eviction.
@@ -480,16 +514,42 @@ class AggregateSpec(BaseModel):
         Annotated[tuple[AggregateValue, ...], Field(min_length=1, max_length=5)] | None
     ) = None
 
+    @model_serializer(mode="wrap")
+    def serialize_spec(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        """Retain the sampled point without changing historical point-free plans.
+
+        Args:
+            handler: Pydantic's normal field serializer.
+
+        Returns:
+            Durable calculation fields, with the point only when supplied.
+        """
+        result = handler(self)
+        if self.pixelPoint is None:
+            result.pop("pixelPoint", None)
+        return result
+
     @model_validator(mode="after")
     def validate_cached_result_formulas(self) -> "AggregateSpec":
-        """Require retained values to match the formulas in this stored job.
+        """Validate persisted formula context and any retained values.
 
         Returns:
             This plan with matching cached rows, or an ordinary calculation plan.
 
         Raises:
-            ValueError: If cached rows differ in count, label or formula.
+            ValueError: If a pixel location is missing or cached rows differ.
         """
+        if self.pixelPoint is None and any(
+            node.op == "pixelValue"
+            for item in self.calculations
+            if "pixelValue" in item.expression
+            for node in walk(
+                compile_expression(item.expression, next(iter(self.sources)))
+            )
+        ):
+            raise ValueError("Choose a map location for pixelValue(a)")
         if self.cachedRows is not None and (
             len(self.cachedRows) != len(self.calculations)
             or any(

@@ -1,5 +1,5 @@
 /** Editable statistic cards over the existing durable calculation workflow. */
-import { calculationIntent, chunkPixels } from "./calculation-session.js";
+import { calculationIntent, calculationPixelPoint, chunkPixels } from "./calculation-session.js";
 import { normalizeCalculationArea } from "./calculation-area.js";
 import { catalogSelectionsEqual } from "../selected-area.js";
 
@@ -10,6 +10,7 @@ import { catalogSelectionsEqual } from "../selected-area.js";
  */
 
 export const STATISTIC_PRESETS = Object.freeze({
+    pixel: { label: "Pixel value", expression: "pixelValue(a)" },
     mean: { label: "Mean", expression: "mean(a)" }, sum: { label: "Sum", expression: "sum(a)" },
     count: { label: "Count above 10", expression: "count(a > 10)" },
     "area-threshold": { label: "Area above 10", expression: "areaha(a > 10)" },
@@ -43,7 +44,7 @@ export class SummaryStatisticsController {
         Object.assign(this, { api, jobs, view, getContext, onOpen, onClose, onCancelSelection, onAreaChange, clock });
         this.serial = 0;
         this.vectorRequestStarted = null;
-        this.state = { sources: [], statistics: [], area: null, selectedArea: null, areaChoice: "selection",
+        this.state = { sources: [], statistics: [], area: null, selectedArea: null, pixelPoint: null, areaChoice: "selection",
             active: false, automatic: true, jobs: [], historyError: "", saved: null, undo: false, targetChunkPixels: null };
         this.state.statistics.push(this.makeStatistic(STATISTIC_PRESETS.mean));
         this.executor = dependencies.calculationRequests.createClient("summary", snapshot => this.receive(snapshot));
@@ -67,7 +68,11 @@ export class SummaryStatisticsController {
             message: "Choose a raster", result: null, preparedJob: null, error: false };
     }
     label(card) { return card.label.trim() || `Summary statistic ${card.id}`; }
-    key(card) { return JSON.stringify([sourceKey(card.source), card.expression.trim(), this.state.area, this.state.targetChunkPixels]); }
+    /** Identify calculation inputs, including the click only when this formula uses it.
+     * @param {Object} card Statistic card. @return {string} Stable input identity.
+     */
+    key(card) { return JSON.stringify([sourceKey(card.source), card.expression.trim(), this.state.area, this.state.targetChunkPixels,
+        calculationPixelPoint([card], this.state.pixelPoint)]); }
     /** Whether committed vector changes may automatically update the visible summary.
      * @return {boolean} True when the vector summary is active and automatic updates are enabled.
      */
@@ -82,6 +87,7 @@ export class SummaryStatisticsController {
         const unfinished = this.executor.snapshot.unfinishedCalculation;
         if (unfinished) {
             this.state.targetChunkPixels = unfinished.calculation.targetChunkPixels ?? null;
+            this.state.pixelPoint = unfinished.calculation.pixelPoint ?? null;
             this.state.area = this.state.selectedArea = unfinished.calculation.area;
             this.state.areaChoice = unfinished.calculation.area.kind === "wholeRaster" ? "whole" : ["catalogSelection", "polygonArea"].includes(unfinished.calculation.area.kind) ? "vector" : "selection";
             this.state.sources = [unfinished.calculation.source];
@@ -103,6 +109,7 @@ export class SummaryStatisticsController {
      */
     open(source = null, area) {
         const context = this.getContext();
+        if (!this.state.pixelPoint && context.pixelPoint) this.setPixelPoint(context.pixelPoint, false);
         const sources = [...(context.sources ?? [])];
         for (const item of [source, ...this.state.statistics.map(card => card.source)]) {
             if (item && !sources.some(other => sourceKey(other) === sourceKey(item))) sources.push(item);
@@ -270,6 +277,28 @@ export class SummaryStatisticsController {
             this.state.areaChoice = "selection";
         }
         if (this.state.areaChoice === "selection") this.changeArea(next, automatic);
+    }
+    /** Refresh formulas that depend on the exact map click, even when the area stays fixed.
+     * Unchanged area-only cards keep their results and validation feedback.
+     * @param {{longitude:number,latitude:number}|null} point Canonical WGS84 click from composition.
+     * @param {boolean} [automatic=true] Whether the automatic-update policy applies.
+     * @return {void}
+     */
+    setPixelPoint(point, automatic = true) {
+        if (same(point, this.state.pixelPoint)) return;
+        const keys = this.state.statistics.map(card => this.key(card));
+        this.state.pixelPoint = point ? { ...point } : null;
+        for (const [index, card] of this.state.statistics.entries()) {
+            if (keys[index] === this.key(card)) continue;
+            if (this.batch?.automatic || this.isActive) this.invalidateBatch(card.id);
+            this.executor.discardPendingCalculation();
+            card.preparedJob = null; card.error = false;
+            card.requested = automatic && this.isActive && this.state.automatic && this.state.area ? "automatic" : null;
+            card.requestStarted = card.requested ? this.now() : null;
+            card.vectorSelectionSeconds = undefined;
+            this.validateLater(card, false);
+        }
+        this.render();
     }
     chooseArea(choice) {
         this.state.areaChoice = choice;
@@ -492,6 +521,7 @@ export class SummaryStatisticsController {
         let intent;
         try {
             intent = calculationIntent({ source: first.source, area: this.state.area,
+                pixelPoint: this.state.pixelPoint,
                 targetChunkPixels: this.state.targetChunkPixels,
                 calculations: group.map(card => ({ label: this.label(card), expression: card.expression })) });
         } catch (error) {

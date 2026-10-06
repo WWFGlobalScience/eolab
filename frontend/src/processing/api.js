@@ -1,7 +1,7 @@
 /** Same-origin Processing API for catalog rasters, owned polygon inputs and job results. */
 import { normalizeRasterSamplingArea } from "../selected-area.js";
 import { normalizeCalculationArea, validatePolygonAreaReference } from "./calculation-area.js";
-import { chunkPixels } from "./calculation-session.js";
+import { calculationPixelPoint, chunkPixels } from "./calculation-session.js";
 import { ProcessingDiagnostics, captureRequestNetworkTiming } from "./diagnostics.js";
 
 /** Browser-safe HTTP failure; transport failures remain ordinary errors. */
@@ -54,9 +54,17 @@ function opaqueId(id) {
     return id;
 }
 
-/** Validate fields used to review native output dimensions. @param {Object} grid API grid. @return {void} */
-function validateGrid(grid) {
-    if (!grid || ![grid.width, grid.height].every(value => Number.isSafeInteger(value) && value > 0) ||
+/** Validate fields used to review native output dimensions.
+ * @param {Object} grid API grid.
+ * @param {string} operation Job operation, permitting empty aggregate reads outside coverage.
+ * @return {void}
+ * @throws {Error} If dimensions or execution metadata violate their bounded contract.
+ */
+function validateGrid(grid, operation) {
+    const empty = grid?.width === 0 && grid?.height === 0;
+    if (!grid || ![grid.width, grid.height].every(value => Number.isSafeInteger(value) && value >= 0) ||
+        (grid.width === 0 || grid.height === 0) && !empty ||
+        empty && (operation !== "raster.aggregate.v1" || grid.nativeBlocks !== 0 || grid.decodedBytes !== 0 || grid.execution?.readWindows !== 0) ||
         typeof grid.crs !== "string" || typeof grid.dtype !== "string" ||
         !Array.isArray(grid.transform) || grid.transform.length !== 6 || !grid.transform.every(Number.isFinite)) {
         throw new Error("Processing returned an invalid native grid.");
@@ -64,11 +72,14 @@ function validateGrid(grid) {
     if (grid.execution) validateExecution(grid.execution);
 }
 
-/** Validate bounded execution metadata before presentation. @param {Object} value Plan. @return {void} */
+/** Validate bounded execution metadata, including a zero-read point outside coverage.
+ * @param {Object} value Plan. @return {void}
+ * @throws {Error} If batch dimensions or read-window count are invalid.
+ */
 function validateExecution(value) {
     chunkPixels(value.targetChunkPixels);
-    if (![value.readWidth, value.readHeight, value.evaluationWidth, value.evaluationHeight, value.readWindows]
-        .every(n => Number.isSafeInteger(n) && n > 0) || value.readWindows > 65536 ||
+    if (![value.readWidth, value.readHeight, value.evaluationWidth, value.evaluationHeight]
+        .every(n => Number.isSafeInteger(n) && n > 0) || !Number.isSafeInteger(value.readWindows) || value.readWindows < 0 || value.readWindows > 65536 ||
         value.evaluationWidth > value.readWidth || value.evaluationHeight > value.readHeight) {
         throw new Error("Processing returned invalid batch dimensions.");
     }
@@ -91,7 +102,7 @@ function validatePerformance(value) {
         ["featureReadingSeconds", "projectionSeconds", "rasterizationSeconds"]);
     if (![value.readSeconds, value.calculationSeconds, value.resultWriteSeconds, value.kernelSeconds]
         .every(n => Number.isFinite(n) && n >= 0 && n <= 86400) ||
-        ![value.readWindows, value.evaluationTiles, value.reducerUpdates].every(n => Number.isSafeInteger(n) && n > 0) ||
+        ![value.readWindows, value.evaluationTiles, value.reducerUpdates].every(n => Number.isSafeInteger(n) && (value.readWindows === 0 ? n === 0 : n > 0)) ||
         value.readWindows !== value.execution.readWindows) throw new Error("Processing returned invalid performance measurements.");
 }
 
@@ -121,7 +132,7 @@ function validateJob(job) {
     opaqueId(job?.jobId);
     if (!["queued", "running", "cancelling", "ready", "failed", "cancelled", "interrupted", "expired", "deleted"].includes(job.status) ||
         !job.progress || typeof job.progress !== "object") throw new Error("Processing returned an invalid job state.");
-    if (job.grid) validateGrid(job.grid);
+    if (job.grid) validateGrid(job.grid, job.operation);
     if (job.preparation != null) {
         validateStages(job.preparation, ["seconds"]);
         validateProcessTiming(job.preparation.process);
@@ -325,17 +336,19 @@ export class ProcessingApiClient {
 
     /** Queue complete inputs, coalescing submissions ready in the same microtask turn.
      * Each caller retains its independent promise, retry key and cancellation lifecycle.
-     * @param {Object} submission Source, area, formulas and stable requestId.
+     * @param {Object} submission Source, area, formulas, optional pixelPoint and stable requestId.
      * @return {Promise<Object>} Owned job with preparation details once the worker produces them.
      * @throws {ProcessingRequestError|Error} If admission fails or the response is invalid.
      */
     async submitCalculation(submission) {
         await this.ensureSession();
         const area = normalizeCalculationArea(submission.area);
+        const pixelPoint = calculationPixelPoint(submission.calculations, submission.pixelPoint);
         const body = {
             requestId: submission.requestId,
             sources: {a: {collectionId: submission.source.collectionId, itemId: submission.source.itemId}},
             calculations: submission.calculations,
+            ...(pixelPoint ? { pixelPoint } : {}),
             ...(chunkPixels(submission.targetChunkPixels) == null ? {} : {targetChunkPixels: submission.targetChunkPixels}),
             ...(area.kind === "selectedArea" ? {selectedBounds: area.selectedBounds}
                 : area.kind === "catalogSelection" ? {catalogSelection: area.catalogSelection}

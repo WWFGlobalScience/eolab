@@ -13,26 +13,12 @@ area, not just the clicked pixel or the features returned by feature inspection.
 ## Plot values across raster layers
 
 Choose **Plot raster stack** beneath a histogram or in the map's **More** menu.
-**Raster series** uses your last map click; if you have not clicked yet, it
-prompts you to click the map. Visible raster layers start selected. Expand
-**Rasters** to choose a different set, including layers hidden on the map.
-
-Each raster is one position on the x-axis. Choose map-layer or natural
-layer-name order, reverse that order, and switch between line and scatter plots.
-This compares the source pixel at the same geographic point in each raster;
-it does not align or resample the raster grids. Compare compatible measurements:
-the chart does not convert units between layers.
-
-Select up to 50 rasters per plot. Two pixel requests run at a time and values
-appear as they arrive. A new map click cancels the previous requests while this
-tool is active. The previous plot is faded until new values arrive. Closing or
-switching away stops unfinished reads; reopening a finished plot reuses its values.
-
-**Values & download** lists every selected raster, including NoData, outside
-coverage and failed reads. Missing values leave gaps in the plot and are never
-replaced with zero. **Download CSV** saves the completed table with full numerical
-precision, catalog identities, click coordinates and result status. Plot choices
-are retained while the page is open; they are not included in shared map links.
+**Raster series** runs the same formulas across your selected rasters using
+[raster calculations](raster-calculations.md#plotting-statistics-across-rasters).
+Visible raster layers start selected; expand **Rasters** to choose a different
+set, including layers hidden on the map. Use **Pixel value** (`pixelValue(a)`)
+alongside area formulas such as `mean(a)`, with shared plots, cancellation,
+progress and CSV export. Missing values leave gaps and are never replaced with zero.
 
 ## Choose an area
 

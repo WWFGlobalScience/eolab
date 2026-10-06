@@ -55,9 +55,9 @@ you later edit its card.
 
 ## Plotting statistics across rasters
 
-Open **Raster series** from **More** or a raster histogram, then choose
-**Area statistics**. Use the raster checklist to choose the rasters to calculate.
-Area statistics has no fixed raster-count limit.
+Open **Raster series** from **More** or a raster histogram. Use the raster
+checklist to choose the rasters to calculate. There is one formula workflow,
+with no fixed raster-count limit.
 The same formulas run independently on each raster's native grid, over the
 current sampling area or each raster's whole extent. This does not align rasters
 or perform pixel-by-pixel arithmetic between different rasters.
@@ -65,10 +65,11 @@ or perform pixel-by-pixel arithmetic between different rasters.
 Choose **Change area** to use the existing Summary statistics controls for a
 map box, filtered vector layer, or annotation polygons (including imported
 GeoJSON). **Plot this area across rasters** returns to the series panel.
-Drawing a new map box while area series is active replaces its calculations.
+Drawing a new map box while Raster series is active replaces its calculations.
 
 Add up to five formulas. Within each formula, `a` means the current raster in
-the stack. Those formulas share one job and one read/mask pass per raster.
+the stack. Those formulas share one job per raster. Area reductions share a
+read/mask pass; `pixelValue(a)` reads the exact clicked cell.
 Each statistic starts visible in **Plot 1**. Its checkbox shows or hides it;
 the colored line and marker identify it on the graph. **Add plot** creates another
 plot beside the first. Choose a plot beside each statistic to group related values
@@ -106,7 +107,7 @@ keys. **Recover** retries those requests without creating duplicate jobs.
 
 **Values & download** shows every statistic, including hidden or log-excluded values, and exports all formulas,
 exact scalar values, units, source IDs, area descriptors, job IDs and cache
-status as CSV. **Calculation timings** reports each raster's request-to-result
+status and pixel location as CSV. **Calculation timings** reports each raster's request-to-result
 time and server timings. Raster requests overlap, so their durations must not be
 added. A separate whole-series time includes debounce, formula validation and any
 recovery pauses. Formula choices and series results are not saved in
@@ -134,6 +135,7 @@ aggregate results is allowed, for example `max(a) - min(a)`.
 
 | Expression | Meaning |
 | --- | --- |
+| `pixelValue(a)` | Stored native value at the last map click, independent of the selected area |
 | `count(a)` | Count valid selected native cells, including zero |
 | `count(a > 10)` or `sum(a > 10)` | Count cells satisfying the condition |
 | `sum(a, where=a > 10)` | Sum original values of the matching cells |
@@ -142,8 +144,18 @@ aggregate results is allowed, for example `max(a) - min(a)`.
 | `areaha(a == 4)` | Ground hectares of class 4 intersecting the selection, including boundary fractions |
 | `100 * areaha(a > 10) / areaha(a == a)` | Percentage of valid selected ground area satisfying the condition |
 
+`pixelValue` takes exactly the raster alias, with no `where` or inner expression.
+Click the map first to supply its exact WGS84 location. The containing native
+cell is read at full resolution, without interpolation. NoData, a nonfinite
+value or a point outside the raster returns `no_valid_data`. It does not search
+for a nearby valid cell. A formula containing only pixel values reads at most
+one native cell even when Whole raster is selected. In mixed formulas such as
+`pixelValue(a) - mean(a)`, the point value is independent of the area while
+`mean` still uses the selected box, polygons or whole raster. These formulas
+use the same submission, worker, cancellation, recovery and result cache.
+
 `areaha` requires exactly one boolean pixel expression and does not accept `where`.
-Numeric functions' optional `where` takes a boolean pixel expression. `mean`, `min`, and `max` take numbers;
+Area numeric functions' optional `where` takes a boolean pixel expression. `mean`, `min`, and `max` take numbers;
 `sum` and `count` also accept a condition. Scalar literals within a pixel aggregate
 broadcast over valid source cells. Scale/offset metadata is recorded but **not
 automatically applied**: calculations use the stored values, matching the current
@@ -197,6 +209,10 @@ source signature, native grid, value/inclusion policies, typed rows,
 coverage, creation time, and the CSV checksum.
 Area provenance also retains `grid.groundArea` and `functionInclusion`, distinguishing
 numeric centers from fractional area intersections.
+Pixel calculations additionally retain `pixelPoint` and their clicked-cell
+inclusion rule. API submissions using `pixelValue` require
+`pixelPoint: {longitude, latitude}`; the field is absent for ordinary area
+calculations, and existing saved requests keep their identities.
 
 ## Batch size and timing
 

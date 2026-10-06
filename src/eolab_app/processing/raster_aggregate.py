@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 from typing import Any, Literal
@@ -16,17 +17,20 @@ import numpy as np
 import rasterio
 from numpy.typing import NDArray
 from rasterio.windows import Window, transform as window_transform
+from rasterio.warp import transform as project_coordinates
 
 from eolab_app.execution.bounded_process import ProcessResultWriter
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateArtifact,
     AggregateGrid,
+    AggregateExecutionPlan,
     AggregateSpec,
     AggregatePerformance,
     AggregateKernelStages,
     GroundAreaPlan,
     NamedCalculation,
+    PixelPoint,
     RasterAggregateLimits,
 )
 from eolab_app.processing.aggregate_windows import (
@@ -36,7 +40,12 @@ from eolab_app.processing.aggregate_windows import (
 from eolab_app.processing.artifacts import write_progress
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.ground_area import PixelAreaCalculator
-from eolab_app.processing.raster_expression import Calculation, compile_expression, walk
+from eolab_app.processing.raster_expression import (
+    FUNCTIONS,
+    Calculation,
+    compile_expression,
+    walk,
+)
 from eolab_app.processing.raster_input import (
     native_work,
     validate_supported_raster,
@@ -77,6 +86,33 @@ EXPRESSION_SCRATCH_ARRAYS = 8
 AREA_MASK_BYTES_PER_PIXEL = 160
 # Publish progress at most twice per second to bound filesystem update overhead.
 PROGRESS_INTERVAL_SECONDS = 0.5
+
+
+def pixel_sample_window(
+    dataset: rasterio.io.DatasetReader, point: PixelPoint
+) -> Window:
+    """Locate the native band-one cell containing an exact WGS84 position.
+
+    Args:
+        dataset: Open source with validated georeferencing.
+        point: Validated longitude and latitude of the selected map position.
+
+    Returns:
+        One source cell, or an empty window when the position is outside the
+        raster or cannot be represented in its coordinate reference system.
+        The containing-cell rule matches direct map pixel inspection.
+
+    Raises:
+        rasterio.errors.RasterioError: If coordinate transformation fails.
+    """
+    xs, ys = project_coordinates(
+        "EPSG:4326", dataset.crs, [point.longitude], [point.latitude]
+    )
+    if all(math.isfinite(value) for value in (xs[0], ys[0])):
+        row, column = dataset.index(xs[0], ys[0])
+        if 0 <= row < dataset.height and 0 <= column < dataset.width:
+            return Window(column, row, 1, 1)
+    return Window(0, 0, 0, 0)
 
 
 def get_raster_window_and_mask_source(
@@ -232,6 +268,7 @@ def grid(
     limits: RasterAggregateLimits,
     ground_area: GroundAreaPlan | None = None,
     target_chunk_pixels: int | None = None,
+    pixel_window: Window | None = None,
 ) -> AggregateGrid:
     """Admit native work and bounded expression memory for one plan.
 
@@ -242,22 +279,61 @@ def grid(
         limits: Work and memory ceilings.
         ground_area: Optional ellipsoidal measurement metadata and geometry work.
         target_chunk_pixels: Opt-in total-pixel budget for combined windows/tiles.
+        pixel_window: Optional additional single-cell read for a mixed point
+            and area calculation, conservatively charged as another native block.
 
     Returns:
         Deterministic metadata and conservative memory estimate.
+
+    Raises:
+        ProcessingError: If native reads or expression memory exceed limits.
     """
-    blocks, decoded = native_work(
-        dataset, window, limits.max_native_blocks, limits.max_decoded_bytes
+    blocks, decoded = (
+        native_work(dataset, window, limits.max_native_blocks, limits.max_decoded_bytes)
+        if window.width and window.height
+        else (0, 0)
     )
+    if pixel_window is not None and pixel_window.width:
+        extra_blocks, extra_decoded = native_work(
+            dataset, pixel_window, limits.max_native_blocks, limits.max_decoded_bytes
+        )
+        blocks += extra_blocks
+        decoded += extra_decoded
+        if blocks > limits.max_native_blocks or decoded > limits.max_decoded_bytes:
+            raise ProcessingError(
+                "source_work_too_large",
+                "The area and selected pixel together exceed the native read limit.",
+                413,
+            )
     bh, bw = dataset.block_shapes[0]
     tile_side = (
         AREA_TILE_SIDE
         if ground_area and ground_area.strategy != "rectilinear"
         else TILE_SIDE
     )
-    execution = execution_plan(
-        window, (bh, bw), dataset.width, dataset.height, target_chunk_pixels, tile_side
+    execution = (
+        execution_plan(
+            window,
+            (bh, bw),
+            dataset.width,
+            dataset.height,
+            target_chunk_pixels,
+            tile_side,
+        )
+        if window.width and window.height
+        else AggregateExecutionPlan(
+            targetChunkPixels=target_chunk_pixels,
+            readWidth=1,
+            readHeight=1,
+            evaluationWidth=1,
+            evaluationHeight=1,
+            readWindows=0,
+        )
     )
+    if pixel_window is not None and pixel_window.width:
+        execution = execution.model_copy(
+            update={"readWindows": execution.readWindows + 1}
+        )
     read_pixels = execution.readWidth * execution.readHeight
     tile_pixels = execution.evaluationWidth * execution.evaluationHeight
     # Sum the retained native block, fixed native overhead, and tile-sized
@@ -317,6 +393,7 @@ def plan_aggregate(
     alias: str,
     limits: RasterAggregateLimits,
     target_chunk_pixels: int | None = None,
+    pixel_point: PixelPoint | None = None,
 ) -> AggregateGrid:
     """Estimate raster reads and memory needed for the requested formulas.
 
@@ -334,6 +411,8 @@ def plan_aggregate(
         alias: Variable representing the raster in those formulas, such as a.
         limits: Maximum raster reads, memory, and geometry work.
         target_chunk_pixels: Optional maximum pixels per read/calculation batch.
+        pixel_point: Exact selected map position required by pixelValue.
+            Point-only formulas ignore the area and admit only one source cell.
 
     Returns:
         Raster grid and conservative read/memory estimates, without reading
@@ -345,11 +424,19 @@ def plan_aggregate(
     """
     roots = [compile_expression(item.expression, alias) for item in calculations]
     nodes = sum(sum(1 for _ in walk(root)) for root in roots)
+    functions = {
+        node.op for root in roots for node in walk(root) if node.op in FUNCTIONS
+    }
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
         with rasterio.open(path) as dataset:
             validate_supported_raster(dataset, path)
+            pixel_window = (
+                pixel_sample_window(dataset, pixel_point)
+                if "pixelValue" in functions
+                else None
+            )
             planning_area = area
             if (
                 area.kind == "catalogSelection"
@@ -357,9 +444,12 @@ def plan_aggregate(
                 and dataset.transform.b == dataset.transform.d == 0
             ):
                 planning_area = AggregateArea(kind="bounds", bounds=area.bounds)
-            raster_window, _ = get_raster_window_and_mask_source(
-                dataset, planning_area, limits
-            )
+            pixel_only = functions == {"pixelValue"}
+            raster_window = pixel_window
+            if not pixel_only:
+                raster_window, _ = get_raster_window_and_mask_source(
+                    dataset, planning_area, limits
+                )
             needs_ground_area = any(
                 node.op == "areaha" for root in roots for node in walk(root)
             )
@@ -377,7 +467,21 @@ def plan_aggregate(
                 limits,
                 pixel_area_calculator.metadata if pixel_area_calculator else None,
                 target_chunk_pixels,
+                pixel_window if not pixel_only else None,
             )
+            if pixel_only:
+                result = result.model_copy(
+                    update={
+                        "execution": AggregateExecutionPlan(
+                            targetChunkPixels=target_chunk_pixels,
+                            readWidth=1,
+                            readHeight=1,
+                            evaluationWidth=1,
+                            evaluationHeight=1,
+                            readWindows=int(bool(pixel_window.width)),
+                        )
+                    }
+                )
     return result
 
 
@@ -419,16 +523,48 @@ def calculate_raster_statistics_for_area(
         compile_expression(item.expression, alias)
         for item in calculation_plan.calculations
     ]
-    calculations = [Calculation(root) for root in roots]
+    functions = {
+        node.op for root in roots for node in walk(root) if node.op in FUNCTIONS
+    }
+    pixel_only = functions == {"pixelValue"}
     with rasterio.Env(
         GDAL_CACHEMAX=GDAL_CACHE_BYTES, GDAL_NUM_THREADS=str(GDAL_THREADS)
     ):
         with rasterio.open(raster_path) as dataset, ExitStack() as resources:
             validate_supported_raster(dataset, raster_path)
             source_ready = time.perf_counter()
+            point_started = time.perf_counter()
+            pixel_window = (
+                pixel_sample_window(dataset, calculation_plan.pixelPoint)
+                if "pixelValue" in functions
+                else None
+            )
+            point_setup_seconds = time.perf_counter() - point_started
+            pixel_value = None
+            if pixel_window is not None and pixel_window.width:
+                read_started = time.perf_counter()
+                sample = read_native_raster_window(dataset, pixel_window)
+                read_seconds += time.perf_counter() - read_started
+                read_count = tile_count = completed_blocks = 1
+                if sample.count():
+                    pixel_value = float(sample[0, 0])
+                del sample
+            reduction_started = time.perf_counter()
+            calculations = [Calculation(root, pixel_value) for root in roots]
+            reduction_seconds += time.perf_counter() - reduction_started
+            calculation_seconds += reduction_seconds
             write_progress(directory, "preparing_selected_polygons", 0, 0)
-            raster_area_tools = prepare_raster_area_tools(
-                dataset, calculation_plan, limits
+            raster_area_tools = (
+                RasterAreaTools(
+                    raster_window=pixel_window,
+                    selected_polygons=(),
+                    pixel_area_calculator=None,
+                    selection_setup_seconds=0.0,
+                    pixel_area_setup_seconds=0.0,
+                    retained_polygon_bytes=0,
+                )
+                if pixel_only
+                else prepare_raster_area_tools(dataset, calculation_plan, limits)
             )
             polygons = raster_area_tools.selected_polygons
             if isinstance(polygons, PolygonRasterizer):
@@ -473,12 +609,16 @@ def calculate_raster_statistics_for_area(
                     None,
                     tile_side,
                 )
-            iter_windows = iter_raster_read_windows(
-                raster_area_tools.raster_window,
-                dataset.block_shapes[0],
-                dataset.width,
-                dataset.height,
-                raster_batch_plan,
+            iter_windows = (
+                ()
+                if pixel_only
+                else iter_raster_read_windows(
+                    raster_area_tools.raster_window,
+                    dataset.block_shapes[0],
+                    dataset.width,
+                    dataset.height,
+                    raster_batch_plan,
+                )
             )
             reader = (
                 read_native_raster_block
@@ -606,7 +746,9 @@ def calculate_raster_statistics_for_area(
         temporaryMaskBytes=mask_bytes,
         stages=AggregateKernelStages(
             sourceSetupSeconds=source_ready - started,
-            selectionSetupSeconds=raster_area_tools.selection_setup_seconds,
+            selectionSetupSeconds=(
+                raster_area_tools.selection_setup_seconds + point_setup_seconds
+            ),
             groundAreaSetupSeconds=raster_area_tools.pixel_area_setup_seconds,
             gridCheckSeconds=0.0,
             selectionMaskSeconds=mask_seconds,
@@ -652,6 +794,15 @@ def write_statistics_result(
     with result.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     source = next(iter(calculation_plan.sources.values()))
+    pixel_inclusion = (
+        {"pixelValue": "cell_containing_selected_point"}
+        if any(
+            item["function"] == "pixelValue"
+            for row in rows
+            for item in row["aggregates"]
+        )
+        else {}
+    )
     if performance is not None:
         write_seconds = time.perf_counter() - writing_started
         performance = performance.model_copy(
@@ -673,12 +824,18 @@ def write_statistics_result(
         "resolution": "native",
         "valueDomain": "stored",
         "inclusion": (
-            "per_function" if calculation_plan.grid.groundArea else "cell_center"
+            "per_function"
+            if calculation_plan.grid.groundArea or pixel_inclusion
+            else "cell_center"
         ),
         "functionInclusion": (
-            {"numeric": "cell_center", "areaha": "fractional_cell_intersection"}
+            {
+                "numeric": "cell_center",
+                "areaha": "fractional_cell_intersection",
+                **pixel_inclusion,
+            }
             if calculation_plan.grid.groundArea
-            else {"numeric": "cell_center"}
+            else {"numeric": "cell_center", **pixel_inclusion}
         ),
         "createdAt": datetime.now(timezone.utc).isoformat(),
         **asdict(artifact),

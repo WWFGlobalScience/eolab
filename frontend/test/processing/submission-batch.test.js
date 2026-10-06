@@ -84,6 +84,23 @@ test("25 submissions use one HTTP batch; larger stacks split without dropping ra
     }
 });
 
+test("one batch carries exact pixel points only for formulas that use them",async()=>{
+    let bodies;
+    const api=new ProcessingApiClient(async(path,options)=>{
+        if(path.endsWith("/jobs"))return Response.json({jobs:[]});
+        bodies=JSON.parse(options.body).items;
+        return Response.json({items:bodies.map((_,index)=>({index,job:job(index)}))});
+    });
+    const pixelPoint={longitude:17.123456789,latitude:-3.987654321};
+    await Promise.all([
+        api.submitCalculation({...submission(0),pixelPoint,calculations:[{label:"Pixel",expression:"pixelValue (a)"}]}),
+        api.submitCalculation({...submission(1),pixelPoint}),
+    ]);
+    assert.deepEqual(bodies[0].pixelPoint,pixelPoint);
+    assert.equal(Object.hasOwn(bodies[1],"pixelPoint"),false);
+    assert.equal(bodies[0].wholeRaster,true);
+});
+
 test("partial acceptance separates job, validation and capacity outcomes", async () => {
     const api = new ProcessingApiClient(async path => Response.json(path.endsWith("/jobs") ? {jobs: []} : {items: [
         {index: 2, error: {status: 429, code: "queue_full", message: "Busy", retryAfterSeconds: 5}},

@@ -89,6 +89,10 @@ def calculation_result_cache_keys(
             node.op == "areaha" for root in roots for node in walk(root)
         ),
     }
+    if calculation.pixelPoint is not None and any(
+        node.op == "pixelValue" for root in roots for node in walk(root)
+    ):
+        common["pixelPoint"] = calculation.pixelPoint.model_dump(mode="json")
     return [
         hashlib.sha256(
             json.dumps(
@@ -219,6 +223,7 @@ def restore_cached_calculation_plan(
             sources=request.sources,
             sourceSignature=source_signature,
             calculations=request.calculations,
+            pixelPoint=request.pixelPoint,
             area=area,
             grid=grid,
         )
