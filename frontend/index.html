@@ -638,26 +638,26 @@
               <h2>Raster series</h2>
               <button id="close-raster-series" class="secondary-button" type="button" aria-label="Close raster series">&times;</button>
             </header>
-            <label class="raster-series-mode">Plot <select id="raster-series-mode"><option value="pixel">Pixel values</option><option value="area">Area statistics</option></select></label>
-            <div id="raster-series-area-controls" hidden>
+            <div id="raster-series-area-controls">
               <div class="raster-series-controls">
                 <label>Area <select id="raster-series-area"><option value="selection">Current sampling area</option><option value="whole">Whole raster</option></select></label>
                 <button id="raster-series-edit-area" class="summary-text-button" type="button">Change area</button>
               </div>
-              <p class="raster-series-help">Use the same box, imported polygons or filtered vector layer as Summary statistics. Each formula uses <code>a</code> for each selected raster in turn, on its own pixel grid.</p>
+              <p class="raster-series-help">Area formulas use the same box, imported polygons or filtered vector layer as Summary statistics. Each formula uses <code>a</code> for each selected raster in turn, on its own pixel grid.</p>
               <div id="raster-series-formulas"></div>
               <div class="raster-series-controls">
-                <label>Add statistic <select id="raster-series-add-formula"><option value="">Choose…</option><option value="mean">Mean</option><option value="min">Minimum</option><option value="max">Maximum</option><option value="sum">Sum</option><option value="area">Area above zero (ha)</option><option value="custom">Custom formula</option></select></label>
+                <label>Add statistic <select id="raster-series-add-formula"><option value="">Choose…</option><option value="pixel">Pixel value</option><option value="mean">Mean</option><option value="min">Minimum</option><option value="max">Maximum</option><option value="sum">Sum</option><option value="area">Area above zero (ha)</option><option value="custom">Custom formula</option></select></label>
               </div>
               <details class="raster-series-help"><summary>Formula reference</summary>
                 <ul>
+                  <li><code>pixelValue(a)</code> — Native pixel at your last map click, independent of the selected area.</li>
                   <li><code>mean(a)</code> — Average of valid pixel values.</li>
                   <li><code>min(a)</code> / <code>max(a)</code> — Smallest / largest valid value.</li>
                   <li><code>sum(a)</code> — Sum of valid pixel values.</li>
                   <li><code>count(a &gt; 10)</code> — Count matching pixels.</li>
                   <li><code>areaha(a &gt; 0)</code> — Matching ground area in hectares.</li>
                 </ul>
-                <p>Use arithmetic to combine functions: <code>(mean(a)-min(a))/(max(a)-min(a))</code>. Use <code>where=</code> to filter: <code>sum(a, where=a &gt; 10)</code>. No-data pixels are excluded. Up to five formulas share one pass through each raster. Assign statistics with different units or ranges to separate plots as needed.</p>
+                <p>Use arithmetic to combine functions: <code>(mean(a)-min(a))/(max(a)-min(a))</code>. Use <code>where=</code> to filter area statistics: <code>sum(a, where=a &gt; 10)</code>. No-data pixels are excluded. Up to five formulas share one calculation per raster. Assign statistics with different units or ranges to separate plots as needed.</p>
               </details>
               <div class="raster-series-actions">
                 <button id="raster-series-calculate" type="button">Calculate</button>
@@ -666,7 +666,7 @@
               </div>
               <details class="raster-series-help"><summary>Calculation timings</summary><div id="raster-series-performance"></div></details>
             </div>
-            <p id="raster-series-context">Pixel values across raster layers</p>
+            <p id="raster-series-context">No sampling area selected</p>
             <details>
               <summary id="raster-series-source-summary">Rasters</summary>
               <div id="raster-series-sources"></div>
@@ -678,17 +678,15 @@
             </div>
             <p id="raster-series-status" role="status" aria-live="polite"></p>
             <p id="raster-series-chart-note" hidden></p>
-            <button id="raster-series-add-plot" class="secondary-button" type="button" hidden>+ Add plot</button>
-            <div id="raster-series-plots" tabindex="0" role="region" aria-label="Statistic plots; scroll horizontally for more plots" hidden></div>
-            <svg id="raster-series-chart" viewBox="0 0 680 360" role="img" hidden></svg>
+            <button id="raster-series-add-plot" class="secondary-button" type="button">+ Add plot</button>
+            <div id="raster-series-plots" tabindex="0" role="region" aria-label="Statistic plots; scroll horizontally for more plots"></div>
             <details>
               <summary>Values &amp; download</summary>
               <div class="raster-series-table-scroll">
-                <table><thead><tr><th scope="col">Raster</th><th id="raster-series-statistic-heading" scope="col" hidden>Statistic</th><th id="raster-series-value-heading" scope="col">Pixel value</th><th scope="col">Status</th></tr></thead><tbody id="raster-series-table-body"></tbody></table>
+                <table><thead><tr><th scope="col">Raster</th><th scope="col">Statistic</th><th scope="col">Value</th><th scope="col">Status</th></tr></thead><tbody id="raster-series-table-body"></tbody></table>
               </div>
               <div class="raster-series-actions">
                 <button id="raster-series-download" class="secondary-button" type="button" disabled>Download CSV</button>
-                <button id="raster-series-retry" class="secondary-button" type="button" disabled>Retry pixels</button>
               </div>
             </details>
           </section>
@@ -726,11 +724,12 @@
             </section>
             <div id="calculations-rows"></div>
             <div id="summary-undo" class="downloads-actions" hidden><span>Statistic removed.</span><button id="summary-undo-button" class="summary-text-button" type="button">Undo</button></div>
-            <div class="summary-add-row"><label class="visually-hidden" for="calculations-template">Add statistic</label><select id="calculations-template"><option value="">+ Add statistic</option><option value="mean">Mean</option><option value="count">Count above a threshold</option><option value="sum">Sum</option><option value="area-threshold">Area above a threshold (ha)</option><option value="area-class">Area in a class (ha)</option><option value="percent">Percent above a threshold</option><option value="range">Range</option><option value="custom">Custom</option></select></div>
+            <div class="summary-add-row"><label class="visually-hidden" for="calculations-template">Add statistic</label><select id="calculations-template"><option value="">+ Add statistic</option><option value="pixel">Pixel value</option><option value="mean">Mean</option><option value="count">Count above a threshold</option><option value="sum">Sum</option><option value="area-threshold">Area above a threshold (ha)</option><option value="area-class">Area in a class (ha)</option><option value="percent">Percent above a threshold</option><option value="range">Range</option><option value="custom">Custom</option></select></div>
               <details id="calculations-help"><summary>Formula reference</summary>
                 <p>Use <code>a</code> for the raster selected in that statistic. Presets are editable.</p>
                 <h4>Functions</h4>
                 <ul class="calculation-functions">
+                  <li><code>pixelValue(a)</code> — Native pixel at your last map click, independent of the selected area. No-data and outside coverage return no valid data.</li>
                   <li><code>sum(a)</code> — Add pixel values. To add only values above 10, use <code>sum(a, where=a &gt; 10)</code>.</li>
                   <li><code>areaha(a == 4)</code> — Ground area in hectares where the value is 4. For values above a threshold, use <code>areaha(a &gt; 10)</code>. Includes the fraction of each matching pixel inside your box or selected polygons.</li>
                   <li><code>count(a)</code> — Number of valid pixels. Use <code>count(a &gt; 10)</code> to count matching pixels.</li>

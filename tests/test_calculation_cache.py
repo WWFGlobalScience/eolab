@@ -9,9 +9,13 @@ import pytest
 import eolab_app.processing.calculation_cache as cache
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
+    AggregatePlanRequest,
     AggregateSpec,
     NamedCalculation,
+    PixelPoint,
+    UnpreparedCalculation,
 )
+from eolab_app.processing.shared_calculations import identify_shared_calculation
 from eolab_app.processing.raster_aggregate import (
     calculate_raster_statistics_for_area,
     write_statistics_result,
@@ -59,6 +63,69 @@ def test_cache_ignores_titles_whitespace_and_formula_order(
         update={"calculations": calculation_plan.calculations[:1]}
     )
     assert cache.calculation_result_cache_keys(single) == keys[:1]
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_pixel_cache_and_shared_work_retain_exact_location(
+    tmp_path: Path, mixed: bool
+) -> None:
+    """A cached point survives restoration and cannot serve another map click.
+
+    Args:
+        tmp_path: Private raster, artifacts and provenance files.
+        mixed: Include an area statistic beside the point formula.
+    """
+    path = write_source(
+        tmp_path / "source.tif", np.arange(100, dtype="int16").reshape(10, 10)
+    )
+    point = PixelPoint(longitude=0.035, latitude=9.955)
+    formulas = ["pixelValue(a)", "mean(a)"] if mixed else ["pixelValue(a)"]
+    plan = make_spec(path, formulas, pixel_point=point)
+    request = AggregatePlanRequest(
+        sources=plan.sources,
+        calculations=plan.calculations,
+        wholeRaster=True,
+        pixelPoint=point,
+    )
+    keys = cache.calculation_result_cache_keys(request, plan.sourceSignature)
+    assert keys == cache.calculation_result_cache_keys(plan)
+    artifact = calculate_raster_statistics_for_area(path, plan, tmp_path, LIMITS)
+    saved = cache.prepare_calculation_values_for_cache(plan, artifact.rows)
+    restored = cache.restore_cached_calculation_plan(
+        request, plan.sourceSignature, saved
+    )
+    assert restored is not None
+    assert restored.pixelPoint == point
+    assert [row.value for row in restored.cachedRows] == [
+        row["value"] for row in artifact.rows
+    ]
+    assert float(restored.cachedRows[0].value) == 43
+    assert cache.calculation_result_cache_keys(restored) == keys
+    moved = AggregatePlanRequest.model_validate(
+        {
+            **request.model_dump(mode="json", by_alias=True),
+            "pixelPoint": {"longitude": 0.045, "latitude": point.latitude},
+        }
+    )
+    assert cache.calculation_result_cache_keys(moved, plan.sourceSignature) != keys
+    assert identify_shared_calculation(
+        UnpreparedCalculation(request=moved)
+    ) != identify_shared_calculation(UnpreparedCalculation(request=request))
+    assert (
+        cache.restore_cached_calculation_plan(moved, plan.sourceSignature, saved)
+        is None
+    )
+    cached_directory = tmp_path / "cached"
+    cached_directory.mkdir()
+    write_statistics_result(
+        restored,
+        [row.model_dump(mode="json") for row in restored.cachedRows],
+        cached_directory,
+        cache_hit=True,
+    )
+    provenance = json.loads((cached_directory / "provenance.json").read_text())
+    assert provenance["pixelPoint"] == point.model_dump()
+    assert provenance["cache_hit"] is True
 
 
 @pytest.mark.parametrize(

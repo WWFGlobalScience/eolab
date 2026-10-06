@@ -1,5 +1,5 @@
 /** Calculate the same area statistics for each raster selected in Raster series. */
-import { calculationIntent } from "./calculation-session.js";
+import { calculationIntent, calculationPixelPoint } from "./calculation-session.js";
 import { normalizeCalculationArea } from "./calculation-area.js";
 import { performanceDescription } from "./calculation-performance.js";
 import { describeJobProgress } from "./presentation.js";
@@ -8,7 +8,7 @@ import { describeJobProgress } from "./presentation.js";
  * Calculate up to five formulas over one shared area for each selected raster.
  * Requests run independently through Processing's server queue. This
  * controller keeps per-raster results, pauses for recovery, and
- * cancels obsolete work when the inputs change or area statistics is hidden.
+ * cancels obsolete work when the inputs change or Raster series is hidden.
  */
 export class RasterSeriesCalculations {
     /** Initialize raster-series inputs, results and progress tracking.
@@ -78,7 +78,7 @@ export class RasterSeriesCalculations {
 
     /** Replace the selected rasters, area and formulas after a user edit.
      * Changed calculation inputs cancel old work and clear current results; new
-     * calculations are scheduled only while area statistics is visible. Formula
+     * calculations are scheduled only while Raster series is visible. Formula
      * changes wait for editing to pause; committed areas and sources start next turn. Changes to
      * names, raster order or the area label refresh the display without recalculating.
      * @param {{key:string,label:string,item:{collection:string,id:string}}[]} sources Selected catalog rasters.
@@ -86,28 +86,31 @@ export class RasterSeriesCalculations {
      * whole-raster descriptor, or null when no area has been chosen.
      * @param {string} label Area description displayed beside the plot.
      * @param {{id:number,label:string,expression:string}[]} formulas Selected formulas and display names.
+     * @param {{longitude:number,latitude:number}|null} [pixelPoint=null] Exact committed map click for pixelValue formulas.
      * @return {void}
      * @throws {TypeError|Error} If the area is not a supported Processing descriptor.
      */
-    updateCalculationInputs(sources, area, label, formulas) {
+    updateCalculationInputs(sources, area, label, formulas, pixelPoint = null) {
         const normalized = area ? normalizeCalculationArea(area) : null;
+        const point = calculationPixelPoint(formulas, pixelPoint);
         const formulaKey = formulas.map(({id,expression}) => [id,expression.trim()]);
         const formulasChanged = JSON.stringify(formulaKey) !==
             JSON.stringify(this.formulas.map(({id,expression}) => [id,expression.trim()]));
         const key = JSON.stringify([sources.map(source => [source.key, source.item.collection, source.item.id]).sort(),
-            normalized, formulaKey]);
+            normalized, formulaKey, point]);
         this.formulas = formulas.map(formula => ({ ...formula }));
         this.sources = sources.map(source => ({ ...source }));
         this.area = normalized;
         this.areaLabel = label;
+        this.pixelPoint = point;
         if (this.inputKey !== key) { this.inputKey = key; this.resetResultsForChangedInputs(formulasChanged); }
         else this.onChange();
     }
 
-    /** Schedule missing results when area statistics becomes visible; cancel unfinished work when hidden.
-     * Call when the Raster series panel opens/closes or switches pixel/area mode.
-     * Completed results remain available when the user returns to this mode.
-     * @param {boolean} visible True only when both the panel and its area-statistics mode are active.
+    /** Schedule missing results when Raster series becomes visible; cancel unfinished work when hidden.
+     * Call when the Raster series panel opens or closes.
+     * Completed results remain available when the user returns to the panel.
+     * @param {boolean} visible Whether the Raster series panel is active.
      * @return {void}
      */
     updateCalculationForPanelVisibility(visible) {
@@ -181,6 +184,11 @@ export class RasterSeriesCalculations {
             this.message = !this.area ? "Choose an area or click the map to calculate." : "Select at least one raster.";
             this.onChange(); return;
         }
+        if (!this.pixelPoint && this.formulas.some(({expression}) => /\bpixelValue\s*\(/.test(expression))) {
+            this.busy = false;
+            this.message = "Click the map to choose a pixel for pixelValue(a).";
+            this.onChange(); return;
+        }
         const version = this.version;
         this.startedAt ??= this.now();
         if (retryFailures) {
@@ -189,7 +197,8 @@ export class RasterSeriesCalculations {
         this.busy = this.dispatching = true;
         try {
             const formulas = this.formulas.map(formula => ({ label: "stat-" + formula.id, expression: formula.expression.trim() }));
-            const firstCalculationInputs = calculationIntent({ source: this.getRasterReference(this.sources[0]), area: this.area, calculations: formulas });
+            const firstCalculationInputs = calculationIntent({ source: this.getRasterReference(this.sources[0]), area: this.area,
+                calculations: formulas, pixelPoint: this.pixelPoint });
             // Record all identities before submission can synchronously notify listeners.
             const additions = [];
             for (const source of this.sources) {

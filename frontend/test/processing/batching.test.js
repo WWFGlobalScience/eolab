@@ -83,6 +83,24 @@ test("API rejects corrupt execution metadata and durable timing results",async()
     }
 });
 
+test("out-of-coverage pixel calculations accept zero work and reject malformed empty grids",async()=>{
+    const emptyExecution={targetChunkPixels:65536,readWidth:1,readHeight:1,evaluationWidth:1,evaluationHeight:1,readWindows:0};
+    const emptyGrid={...grid,width:0,height:0,nativeBlocks:0,decodedBytes:0,execution:emptyExecution};
+    const performance={execution:emptyExecution,readWindows:0,evaluationTiles:0,reducerUpdates:0,
+        readSeconds:0,calculationSeconds:0,resultWriteSeconds:0,kernelSeconds:.001};
+    const identifier="J".repeat(32);
+    const emptyJob={jobId:identifier,operation:"raster.aggregate.v1",status:"ready",grid:emptyGrid,progress:{phase:"ready"},
+        result:{url:`/api/processing/jobs/${identifier}/result`,provenanceUrl:`/api/processing/jobs/${identifier}/provenance`,
+            performance,rows:[{label:"Pixel",expression:"pixelValue(a)",state:"no_valid_data",value:null,valueType:"float",aggregates:[]}]}};
+    for(const candidate of [emptyJob,{...emptyJob,operation:"raster.clip.v1"},{...emptyJob,grid:{...emptyGrid,height:1}},
+        {...emptyJob,grid:{...emptyGrid,nativeBlocks:1}},
+        {...emptyJob,result:{...emptyJob.result,performance:{...performance,reducerUpdates:1}}}]) {
+        const client=new ProcessingApiClient(async path=>Response.json(path.endsWith("/jobs")?{jobs:[]}:candidate));
+        if(candidate===emptyJob)assert.equal((await client.getJob(identifier)).result.rows[0].state,"no_valid_data");
+        else await assert.rejects(()=>client.getJob(identifier),/invalid/);
+    }
+});
+
 test("detailed kernel stages remain optional and validate every measured field", async () => {
     const stages = {sourceSetupSeconds:.1,selectionSetupSeconds:.2,groundAreaSetupSeconds:0,gridCheckSeconds:.1,
         selectionMaskSeconds:1.5,areaWeightsSeconds:0,reductionSeconds:.2};

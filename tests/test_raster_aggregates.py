@@ -16,6 +16,7 @@ from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateSpec,
     NamedCalculation,
+    PixelPoint,
     RasterAggregateLimits,
 )
 from eolab_app.processing.models import ProcessingError
@@ -38,6 +39,7 @@ def make_spec(
     area: AggregateArea | None = None,
     limits: RasterAggregateLimits = LIMITS,
     target_chunk_pixels: int | None = None,
+    pixel_point: PixelPoint | None = None,
 ) -> AggregateSpec:
     """Build an immutable native plan from a real closed fixture.
 
@@ -47,6 +49,7 @@ def make_spec(
         area: Explicit selection, defaulting to explicit whole-raster intent.
         limits: Optional reduced admission budget.
         target_chunk_pixels: Optional batch pixel budget.
+        pixel_point: Exact WGS84 map position for pixelValue formulas.
 
     Returns:
         JSON-round-tripped specification ready for execution.
@@ -62,9 +65,228 @@ def make_spec(
         sourceSignature=signature,
         area=area,
         calculations=calculations,
-        grid=plan_aggregate(path, area, calculations, "a", limits, target_chunk_pixels),
+        pixelPoint=pixel_point,
+        grid=plan_aggregate(
+            path, area, calculations, "a", limits, target_chunk_pixels, pixel_point
+        ),
     )
     return AggregateSpec.model_validate_json(spec.model_dump_json(by_alias=True))
+
+
+@pytest.mark.parametrize(
+    "transform,crs",
+    [
+        (from_origin(0, 10, 0.01, 0.01), "EPSG:4326"),
+        (from_origin(0, 1_000_000, 1000, 1000), "EPSG:3857"),
+        (Affine(0.01, 0.002, 0, 0.001, -0.01, 10), "EPSG:4326"),
+    ],
+)
+def test_pixel_value_matches_exact_map_sample_with_one_cell_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transform: Affine,
+    crs: str,
+) -> None:
+    """Native point formulas share direct pixel values across different grids.
+
+    Args:
+        tmp_path: Private source and result files.
+        monkeypatch: Observe the real bounded read rather than replace its result.
+        transform: Native affine, including a rotated grid.
+        crs: Native source coordinate reference system.
+    """
+    from rasterio.warp import transform as project
+    from eolab_app.raster.pixel import read_raster_pixel
+
+    values = np.arange(10_000, dtype="int16").reshape(100, 100)
+    path = write_source(tmp_path / "pixel.tif", values, transform=transform, crs=crs)
+    native_x, native_y = transform * (17.8, 22.6)
+    longitude, latitude = project(crs, "EPSG:4326", [native_x], [native_y])
+    point = PixelPoint(longitude=longitude[0], latitude=latitude[0])
+    expected = read_raster_pixel(path, point.longitude, point.latitude)
+    reads = []
+    original = kernel.read_native_raster_window
+
+    def observed(
+        dataset: rasterio.io.DatasetReader, window: rasterio.windows.Window
+    ) -> np.ma.MaskedArray:
+        """Retain the admitted read dimensions while reading real stored values.
+
+        Args:
+            dataset: Authorized open native source.
+            window: One admitted source read.
+
+        Returns:
+            The real native values with their nodata mask.
+        """
+        reads.append(tuple(window.flatten()))
+        return original(dataset, window)
+
+    monkeypatch.setattr(kernel, "read_native_raster_window", observed)
+    spec = make_spec(path, ["pixelValue(a)"], pixel_point=point)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    assert float(artifact.rows[0]["value"]) == expected.value == values[22, 17]
+    assert reads == [(17, 22, 1, 1)]
+    assert spec.grid.width == spec.grid.height == spec.grid.nativeBlocks == 1
+    assert artifact.performance["readWindows"] == 1
+    assert artifact.performance["temporaryMaskBytes"] == 0
+    provenance = json.loads((tmp_path / "provenance.json").read_text())
+    assert provenance["pixelPoint"] == point.model_dump()
+    assert (
+        provenance["functionInclusion"]["pixelValue"]
+        == "cell_containing_selected_point"
+    )
+
+
+@pytest.mark.parametrize("sample", [-9999.0, float("nan"), float("inf")])
+def test_pixel_value_reports_nodata_and_nonfinite_samples(
+    tmp_path: Path,
+    sample: float,
+) -> None:
+    """A missing selected cell remains missing despite valid surrounding cells.
+
+    Args:
+        tmp_path: Private source and result files.
+        sample: Native nodata or nonfinite value at the selected point.
+    """
+    values = np.ones((10, 10), dtype="float64")
+    values[5, 5] = sample
+    path = write_source(tmp_path / "pixel.tif", values, nodata=-9999)
+    spec = make_spec(
+        path, ["pixelValue(a)"], pixel_point=PixelPoint(longitude=0.055, latitude=9.945)
+    )
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    assert artifact.rows[0]["value"] is None
+    assert artifact.rows[0]["state"] == "no_valid_data"
+    assert artifact.rows[0]["aggregates"][0]["validPixels"] == 0
+
+
+@pytest.mark.parametrize("longitude,latitude", [(2, 7), (0, 10), (10, 5), (5, 0)])
+def test_pixel_value_preserves_direct_picker_cell_boundary_rules(
+    tmp_path: Path,
+    longitude: float,
+    latitude: float,
+) -> None:
+    """Exact cell and outer boundaries match the established pixel inspector.
+
+    Args:
+        tmp_path: Private source and result files.
+        longitude: WGS84 longitude on an exact grid boundary.
+        latitude: WGS84 latitude on an exact grid boundary.
+    """
+    from eolab_app.raster.pixel import read_raster_pixel
+
+    path = write_source(
+        tmp_path / "pixel.tif",
+        np.arange(100, dtype="int16").reshape(10, 10),
+        transform=from_origin(0, 10, 1, 1),
+    )
+    point = PixelPoint(longitude=longitude, latitude=latitude)
+    expected = read_raster_pixel(path, longitude, latitude)
+    spec = make_spec(path, ["pixelValue(a)"], pixel_point=point)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    actual = artifact.rows[0]["value"]
+    assert (float(actual) if actual is not None else None) == expected.value
+
+
+def test_outside_pixel_has_empty_grid_and_no_raster_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out-of-raster point results stay missing without scanning the selected area.
+
+    Args:
+        tmp_path: Private source and result files.
+        monkeypatch: Fail if execution attempts a pixel read.
+    """
+    path = write_source(tmp_path / "pixel.tif", np.ones((100, 100), dtype="uint8"))
+    spec = make_spec(
+        path,
+        ["pixelValue(a)"],
+        target_chunk_pixels=256,
+        pixel_point=PixelPoint(longitude=40, latitude=40),
+    )
+
+    def unexpected(*args: object) -> np.ma.MaskedArray:
+        """Reject a source read for an outside point.
+
+        Args:
+            args: Unused arguments identifying the forbidden read.
+
+        Raises:
+            AssertionError: Every call is unexpected.
+        """
+        raise AssertionError("An outside point must not read source pixels")
+
+    monkeypatch.setattr(kernel, "read_native_raster_window", unexpected)
+    monkeypatch.setattr(kernel, "read_native_raster_block", unexpected)
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    assert spec.grid.window == (0, 0, 0, 0)
+    assert spec.grid.nativeBlocks == spec.grid.decodedBytes == 0
+    assert (
+        artifact.performance["readWindows"]
+        == artifact.performance["evaluationTiles"]
+        == 0
+    )
+    assert artifact.rows[0]["state"] == "no_valid_data"
+
+
+def test_mixed_pixel_and_area_formulas_keep_independent_selection_and_limits(
+    tmp_path: Path,
+) -> None:
+    """A selected pixel outside the area retains its value and admitted read work.
+
+    Args:
+        tmp_path: Private source and result files.
+    """
+    path = write_source(
+        tmp_path / "mixed.tif", np.arange(10_000, dtype="int16").reshape(100, 100)
+    )
+    area = AggregateArea(kind="bounds", bounds=(0.001, 9.901, 0.099, 9.999))
+    point = PixelPoint(longitude=0.755, latitude=9.245)
+    spec = make_spec(
+        path,
+        ["pixelValue(a)", "mean(a)", "pixelValue(a)-mean(a)"],
+        area,
+        pixel_point=point,
+    )
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    assert [float(row["value"]) for row in artifact.rows] == pytest.approx(
+        [7575, 454.5, 7120.5]
+    )
+    assert spec.grid.nativeBlocks == artifact.performance["readWindows"] == 2
+    assert artifact.rows[0]["aggregates"][0]["validPixels"] == 1
+    assert artifact.rows[1]["aggregates"][0]["validPixels"] == 100
+    area_only = make_spec(path, ["mean(a)"], area)
+    with pytest.raises(ProcessingError, match="together exceed"):
+        make_spec(
+            path,
+            ["pixelValue(a)+mean(a)"],
+            area,
+            limits=replace(LIMITS, max_decoded_bytes=area_only.grid.decodedBytes),
+            pixel_point=point,
+        )
+
+
+def test_outside_pixel_does_not_discard_independent_area_result(tmp_path: Path) -> None:
+    """Separate result rows preserve a valid mean when the sampled point misses.
+
+    Args:
+        tmp_path: Private source and result files.
+    """
+    path = write_source(
+        tmp_path / "mixed.tif", np.arange(100, dtype="int16").reshape(10, 10)
+    )
+    spec = make_spec(
+        path,
+        ["pixelValue(a)", "mean(a)"],
+        pixel_point=PixelPoint(longitude=40, latitude=40),
+    )
+    artifact = calculate_raster_statistics_for_area(path, spec, tmp_path, LIMITS)
+    assert artifact.rows[0]["state"] == "no_valid_data"
+    assert float(artifact.rows[1]["value"]) == 49.5
+    assert artifact.rows[1]["state"] == "ok"
+    assert spec.grid.nativeBlocks == artifact.performance["readWindows"] == 1
 
 
 @pytest.mark.parametrize("whole_raster", [False, True])

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CalculationSessionStorage } from "../../src/processing/calculation-session.js";
+import { calculationIntent, CalculationSessionStorage } from "../../src/processing/calculation-session.js";
 
 /** @return {Object} Valid unfinished submission with a recoverable request key. */
 function record() {
@@ -68,4 +68,18 @@ test("malformed and oversized records do not affect valid peer recovery",()=>{
     assert.deepEqual(root.savedClientNames(),["summary"]);
     assert.throws(()=>root.forClient("raster-series:2").write({...record(),extra:"x".repeat(16384)}),/too large/);
     assert.deepEqual(root.savedClientNames(),["summary"]);
+});
+
+test("pixel clicks survive recovery immutably while area-only intent identity remains unchanged",()=>{
+    const original=record(), point={longitude:-122.25,latitude:37.75};
+    assert.equal(JSON.stringify(calculationIntent({...original.intent,pixelPoint:point})),JSON.stringify(calculationIntent(original.intent)));
+    const intent=calculationIntent({...original.intent,pixelPoint:point,calculations:[{label:"Pixel",expression:"pixelValue(a)"}]});
+    const root=new CalculationSessionStorage(storage());root.write({...original,intent});
+    point.longitude=5;
+    assert.deepEqual(root.read().intent.pixelPoint,{longitude:-122.25,latitude:37.75});
+    assert.equal(Object.isFrozen(root.read().intent.pixelPoint),true);
+    for(const invalid of [{longitude:181,latitude:0},{longitude:0,latitude:NaN},
+        {longitude:0,latitude:91},{longitude:"0",latitude:0},{longitude:0,latitude:0,extra:true}]) {
+        assert.throws(()=>calculationIntent({...intent,pixelPoint:invalid}),/valid map point/);
+    }
 });

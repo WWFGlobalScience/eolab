@@ -169,6 +169,7 @@ class ProcessingWorker:
                             alias,
                             self.aggregate_limits,
                             request.targetChunkPixels,
+                            request.pixelPoint,
                         ),
                     ),
                     self.limits.plan_timeout_seconds,
@@ -183,6 +184,7 @@ class ProcessingWorker:
                     sources=request.sources,
                     sourceSignature=signature,
                     calculations=request.calculations,
+                    pixelPoint=request.pixelPoint,
                     area=area,
                     grid=grid,
                 )

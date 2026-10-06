@@ -56,7 +56,7 @@ function fixture(overrides = {}, data = new Map()) {
     const calculationRequests=new CalculationRequests({api,jobs,storage,now:()=>time,requestId:()=>"request-"+String(++serial).padStart(16,"0")});
     const area=new RasterSeriesCalculations({requests:calculationRequests,clock,now:()=>time});
     const view={bind(actions){this.actions=actions;},render(state){this.state=state;},downloadCsv(csv){this.csv=csv;}};
-    const controller=new RasterSeriesController({view,areaStatistics:area,samplePoint:async()=>({inBounds:true,value:1}),onClose(){},onEditArea(){}});
+    const controller=new RasterSeriesController({view,areaStatistics:area,onClose(){},onEditArea(){}});
     controller.updateAvailableRasters([source("1"),source("2")]); controller.setArea(box(0),"First box");
     const tick=async(delay=0)=>{for(const[id,t]of [...timers])if(t.delay===delay){timers.delete(id);t.fn();}await flush();};
     /** Advance the browser clock and execute only callbacks whose deadlines passed.
@@ -70,7 +70,7 @@ function fixture(overrides = {}, data = new Map()) {
         server.set(old.jobId,{...old,status,result:status==="ready"?{cacheHit,rows:old.calculations.map((row,i)=>({...row,value:i?"22":"-123.4567890123456789",unit:row.expression.startsWith("areaha")?"ha":null,state:"ok",valueType:"float",aggregates:[]}))}:null,error:status==="failed"?{detail:"Raster unavailable"}:null});
         await jobs.refresh();await flush();return old.jobId;
     };
-    const open=async()=>{controller.setMode("area");controller.updateSamplingForPanelVisibility(true);await tick();};
+    const open=async()=>{controller.updateSamplingForPanelVisibility(true);await tick();};
     const close=()=>{area.destroy();calculationRequests.destroy();jobs.destroy();};
     return {api,calculationRequests,jobs,storage,data,area,controller,view,requests,plans,server,grid,tick,advance,finish,open,close,elapse:ms=>{time+=ms;}};
 }
@@ -143,7 +143,7 @@ test("committed areas submit on the next turn and coalesce synchronous replaceme
 });
 
 test("opening area statistics and changing selected rasters require no editing pause",async()=>{
-    const h=fixture();h.controller.setMode("area");h.controller.updateSamplingForPanelVisibility(true);
+    const h=fixture();h.controller.updateSamplingForPanelVisibility(true);
     assert.equal(h.requests.length,0);
     await h.advance(0);
     assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
@@ -195,12 +195,85 @@ for(const action of ["hide","cancel"]) {
     });
 }
 
-test("leaving area mode drops the pending stack and waits for acknowledged cancellation",async()=>{
-    const h=fixture();await h.open();h.controller.setMode("pixel");await flush();
+test("hiding raster series drops the pending stack and waits for acknowledged cancellation",async()=>{
+    const h=fixture();await h.open();h.controller.updateSamplingForPanelVisibility(false);await flush();
     assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,2);
     await h.finish("cancelled");await h.finish("cancelled");
     assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
     assert.equal(h.area.results.size,0);h.close();
+});
+
+test("source removal cancels older work and hidden rasters may be explicitly selected",async()=>{
+    const h=fixture();await h.open();
+    h.controller.updateAvailableRasters([{...source("hidden"),visible:false}]);await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,2);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2,"hidden sources start unchecked");
+    assert.match(h.view.state.message,/Select at least one raster/);
+    await h.finish("cancelled");await h.finish("cancelled");
+    h.view.actions.onSelect("hidden",true);await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").at(-1)[1].source.itemId,"hidden");
+    await h.finish();
+    assert.deepEqual(h.view.state.rows.map(row=>row.key),["hidden"]);
+    h.close();
+});
+
+test("completed series CSV escapes spreadsheet text and reopening reuses its results",async()=>{
+    const h=fixture();
+    h.controller.updateAvailableRasters([{...source("1"),label:'=SUM(1,2) "test"'}]);
+    await h.open();await h.finish();
+    const requests=h.requests.length;
+    h.controller.updateSamplingForPanelVisibility(false);await h.open();
+    assert.equal(h.requests.length,requests);
+    const csv=h.controller.exportCsv();
+    assert.ok(csv.includes('"\'=SUM(1,2) ""test"""'));
+    assert.ok(csv.includes('"-123.4567890123456789"'));
+    assert.match(csv,/"catalog","1"/);
+    h.close();
+});
+
+test("Pixel value uses the same jobs as area formulas and captures the exact clicked point",async()=>{
+    const h=fixture();
+    h.controller.setPosition({longitude:0.123456789,latitude:0.87654321});
+    h.controller.addFormula("pixel");await h.open();
+    const submissions=h.requests.filter(([kind])=>kind==="submit").map(([,value])=>value);
+    assert.equal(submissions.length,2,"one job per raster contains both formulas");
+    assert.ok(submissions.every(value=>value.calculations[1].expression==="pixelValue(a)"));
+    assert.deepEqual(submissions.map(value=>value.pixelPoint),[
+        {longitude:0.123456789,latitude:0.87654321},{longitude:0.123456789,latitude:0.87654321}]);
+    await h.finish();await h.finish();
+    assert.equal(h.view.state.statistics[1].label,"Pixel value");
+    assert.match(h.controller.exportCsv(),/""longitude"":0\.123456789,""latitude"":0\.87654321/);
+    h.close();
+});
+
+test("changing the click affects pixel formulas but leaves unchanged area-only work cached",async()=>{
+    const h=fixture();h.controller.chooseArea("whole");await h.open();await h.finish();await h.finish();
+    h.controller.setPosition({longitude:1,latitude:2});await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
+    assert.ok(h.requests.filter(([kind])=>kind==="submit").every(([,value])=>!Object.hasOwn(value,"pixelPoint")));
+    h.controller.editFormula(1,{expression:"pixelValue(a)"});await h.advance(700);
+    h.controller.setPosition({longitude:3,latitude:4});await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,2);
+    await h.finish("cancelled");await h.finish("cancelled");await flush();
+    const replacements=h.requests.filter(([kind])=>kind==="submit").slice(-2);
+    assert.ok(replacements.every(([,value])=>value.pixelPoint.longitude===3&&value.pixelPoint.latitude===4));
+    assert.ok(h.view.state.rows.every(row=>row.state!=="value"),"old-point responses cannot become current values");
+    await h.finish();await h.finish();
+    h.close();
+});
+
+test("pixel formulas explain missing clicks and clear invalid map coordinates",async()=>{
+    const h=fixture();h.controller.editFormula(1,{expression:"pixelValue(a)"});await h.open();
+    assert.equal(h.requests.length,0);
+    assert.match(h.view.state.message,/Click the map.*pixelValue/);
+    h.controller.setPosition({longitude:1,latitude:2});await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="submit").length,2);
+    h.controller.setPosition({longitude:200,latitude:2});await h.advance(0);
+    assert.equal(h.requests.filter(([kind])=>kind==="cancel").length,2);
+    assert.match(h.view.state.message,/Click the map.*pixelValue/);
+    await h.finish("cancelled");await h.finish("cancelled");
+    assert.equal(h.area.results.size,0);
+    h.close();
 });
 
 test("per-raster failure leaves a gap and proceeds to the next raster",async()=>{

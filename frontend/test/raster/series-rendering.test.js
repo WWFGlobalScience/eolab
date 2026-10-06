@@ -33,8 +33,8 @@ function controlsFixture() {
     h.view.actions = {};
     const source = { key: "a", label: "Raster A", selected: true };
     const formula = { id: 1, label: "Mean", expression: "mean(a)", visible: true, plotId: 1, styleIndex: 0 };
-    const state = { active: true, mode: "area", busy: true, sources: [source], rows: [], previousRows: null,
-        showingPrevious: false, message: "Preparing", canDownload: false, canRetry: false, chartType: "line",
+    const state = { active: true, busy: true, sources: [source], rows: [], previousRows: null,
+        showingPrevious: false, message: "Preparing", canDownload: false, chartType: "line",
         statistics: [formula], plots: [{ id: 1, scale: "linear" }],
         area: { formulas: [formula], sources: [source], results: new Map(), areaChoice: "whole",
             elapsedSeconds: null, complete: false, recoverable: false } };
@@ -106,24 +106,16 @@ test("changed controls remain current without overwriting a focused formula edit
     assert.equal(expression.value, "mean(a)", "unfocused inputs reflect the supplied state");
 });
 
-test("area mode clears a previous pixel chart once and mode switches restore controls", () => {
+test("series renders each statistic through the same plots and values table", () => {
     const h = controlsFixture();
-    h.view.chart.append(h.document.createElementNS("http://www.w3.org/2000/svg", "path"));
+    h.state.rows = [{label:"Raster A",statisticLabel:"Pixel value",state:"value",value:3,rawValue:"3"},
+        {label:"Raster A",statisticLabel:"Mean",state:"value",value:2.5,rawValue:"2.5"}];
     h.draw();
-    assert.equal(h.view.chart.children.length, 0);
-    const writes = observeControlWrites(h.document);
-    h.draw(); assert.deepEqual(writes, []);
-    h.state.mode = "pixel"; h.state.position = { latitude: 1, longitude: 2 }; h.state.canRetry = true;
-    h.draw();
-    assert.equal(h.view.areaControls.hidden, true);
-    assert.equal(h.view.retry.hidden, false);
-    assert.equal(h.view.retry.disabled, false);
-    assert.equal(h.document.querySelector("#raster-series-value-heading").textContent, "Pixel value");
-    assert.equal(h.view.context.textContent, "Pixel values at 1.00000, 2.00000");
-    h.state.mode = "area"; h.draw();
-    assert.equal(h.view.areaControls.hidden, false);
-    assert.equal(h.view.retry.hidden, true);
-    assert.equal(h.document.querySelector("#raster-series-value-heading").textContent, "Value");
+    assert.equal(h.plots.length,1);
+    assert.equal(h.plots[0],h.state);
+    assert.deepEqual(h.view.table.children.map(row=>row.children.map(cell=>cell.textContent)),[
+        ["Raster A","Pixel value","3","Value"],["Raster A","Mean","2.5","Value"]]);
+    assert.equal(h.view.context.textContent,"Whole extent of each raster");
 });
 
 test("results return immediately and a burst draws only its latest snapshot", () => {

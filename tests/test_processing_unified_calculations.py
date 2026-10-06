@@ -142,6 +142,95 @@ def test_summary_prepares_and_calculates_without_a_plan_request(
     assert cached["result"]["rows"] == completed["result"]["rows"]
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("outside", [False, True])
+def test_pixel_formula_uses_same_batch_worker_cache_and_owned_provenance(
+    boundary: Any, store: PostgresJobStore, mixed: bool, outside: bool
+) -> None:
+    """Execute point and mixed formulas through the existing durable calculation job.
+
+    Args:
+        boundary: Real HTTP, catalog authorization, native worker and raster.
+        store: Disposable PostgreSQL job and result-cache store.
+        mixed: Include mean over the whole raster alongside the point formula.
+        outside: Choose a point beyond the raster, retaining independent area results.
+    """
+    client, worker, _, _, app = boundary
+    point = (
+        {"longitude": 40.0, "latitude": 40.0}
+        if outside
+        else {"longitude": 0.055, "latitude": 9.945}
+    )
+    formulas = ["pixelValue(a)", "mean(a)"] if mixed else ["pixelValue(a)"]
+    body = {
+        **request_body(wholeRaster=True),
+        "requestId": uuid4().hex,
+        "pixelPoint": point,
+        "calculations": [
+            {"label": expression, "expression": expression} for expression in formulas
+        ],
+    }
+    response = client.post(ENDPOINT + "/batch", json={"items": [body]}, headers=HEADERS)
+    assert response.status_code == 200, response.text
+    submitted = response.json()["items"][0]["job"]
+    owner = hashlib.sha256(client.cookies[COOKIE].encode()).hexdigest()
+    shared_job_id = store.get(submitted["jobId"], owner)["job_id"]
+    with psycopg.connect(store.conninfo) as connection:
+        queued_spec = connection.execute(
+            "SELECT spec FROM processing.jobs WHERE id=%s", (shared_job_id,)
+        ).fetchone()[0]
+    assert queued_spec["request"]["pixelPoint"] == point
+    assert asyncio.run(worker.run_once())
+    completed = client.get(f"/api/processing/jobs/{submitted['jobId']}").json()
+    assert completed["status"] == "ready", completed
+    rows = completed["result"]["rows"]
+    assert rows[0]["state"] == ("no_valid_data" if outside else "ok")
+    assert (float(rows[0]["value"]) if rows[0]["value"] is not None else None) == (
+        None if outside else 505
+    )
+    if mixed:
+        assert rows[1]["state"] == "ok"
+        assert float(rows[1]["value"]) == pytest.approx(4999.5, abs=1e-10, rel=0)
+    else:
+        assert (
+            completed["grid"]["width"]
+            == completed["grid"]["height"]
+            == (0 if outside else 1)
+        )
+        assert completed["result"]["performance"]["readWindows"] == (
+            0 if outside else 1
+        )
+    provenance_url = completed["result"]["provenanceUrl"]
+    assert client.get(provenance_url).json()["pixelPoint"] == point
+    with TestClient(app, base_url="https://testserver") as stranger:
+        assert stranger.get(provenance_url).status_code == 404
+    with psycopg.connect(store.conninfo) as connection:
+        prepared_spec = connection.execute(
+            "SELECT spec FROM processing.jobs WHERE id=%s", (shared_job_id,)
+        ).fetchone()[0]
+    assert prepared_spec["pixelPoint"] == point
+    retry = client.post(
+        ENDPOINT + "/batch", json={"items": [body]}, headers=HEADERS
+    ).json()["items"][0]["job"]
+    assert retry["jobId"] == completed["jobId"]
+    changed = {**body, "pixelPoint": {"longitude": 0.065, "latitude": 9.945}}
+    conflict = client.post(
+        ENDPOINT + "/batch", json={"items": [changed]}, headers=HEADERS
+    ).json()["items"][0]
+    assert conflict["error"]["code"] == "request_conflict"
+    cached = client.post(
+        ENDPOINT + "/batch",
+        json={"items": [{**body, "requestId": uuid4().hex}]},
+        headers=HEADERS,
+    ).json()["items"][0]["job"]
+    assert asyncio.run(worker.run_once())
+    cached = client.get(f"/api/processing/jobs/{cached['jobId']}").json()
+    assert cached["status"] == "ready", cached
+    assert cached["preparation"]["cacheHit"] and cached["result"]["cacheHit"]
+    assert cached["result"]["rows"] == rows
+    assert client.get(cached["result"]["provenanceUrl"]).json()["pixelPoint"] == point
+
+
 @pytest.mark.parametrize("operation", ["summary", "clip"])
 def test_queued_job_cancels_without_starting_preparation(
     boundary: Any, store: Any, operation: str

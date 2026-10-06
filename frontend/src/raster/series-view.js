@@ -1,8 +1,8 @@
-/** Controls and chart presentation for raster pixel and area series. */
-import { formatSeriesNumber, renderOrdinalSeriesChart } from "../charts/series-chart.js";
+/** Controls and chart presentation for raster formula series. */
+import { formatSeriesNumber } from "../charts/series-chart.js";
 import { createStatisticSwatch, RasterSeriesPlotsView } from "./series-plots-view.js";
 
-const STATES = { waiting: "Not sampled", loading: "Reading…", nodata: "No data", outside: "Outside raster", error: "Unavailable", no_matches: "No matches", no_valid_data: "No valid data", invalid_arithmetic: "Invalid arithmetic", overflow: "Overflow" };
+const STATES = { waiting: "Waiting", error: "Unavailable", no_matches: "No matches", no_valid_data: "No valid data", invalid_arithmetic: "Invalid arithmetic", overflow: "Overflow" };
 
 /** Display Raster series without accessing map, renderer or request state. */
 export class RasterSeriesView {
@@ -17,13 +17,10 @@ export class RasterSeriesView {
         this.status = documentContext.querySelector("#raster-series-status");
         this.sources = documentContext.querySelector("#raster-series-sources");
         this.sourceSummary = documentContext.querySelector("#raster-series-source-summary");
-        this.chart = documentContext.querySelector("#raster-series-chart");
         this.chartNote = documentContext.querySelector("#raster-series-chart-note");
         this.table = documentContext.querySelector("#raster-series-table-body");
         this.download = documentContext.querySelector("#raster-series-download");
-        this.retry = documentContext.querySelector("#raster-series-retry");
         this.sourceSignature = null;
-        this.areaControls = documentContext.querySelector("#raster-series-area-controls");
         this.formulaRows = documentContext.querySelector("#raster-series-formulas");
         this.frame = null;
         this.pendingState = null;
@@ -37,9 +34,7 @@ export class RasterSeriesView {
      * @param {(key:string,selected:boolean)=>void} actions.onSelect Change a raster choice.
      * @param {(order:string,direction:string)=>void} actions.onOrder Change plot order.
      * @param {(type:string)=>void} actions.onChartType Change line/scatter presentation.
-     * @param {()=>void} actions.onRetry Retry the selected pixels.
      * @param {()=>void} actions.onDownload Download the current values.
-     * @param {(mode:string)=>void} actions.onMode Pixel or area statistics.
      * @param {(choice:string)=>void} actions.onArea Sampling area or whole raster.
      * @param {()=>void} actions.onEditArea Open existing area controls.
      * @param {(preset:string)=>void} actions.onAddFormula Add statistic.
@@ -63,10 +58,7 @@ export class RasterSeriesView {
         for (const input of [order, direction]) input.addEventListener("change", () => actions.onOrder(order.value, direction.value));
         this.document.querySelector("#raster-series-chart-type").addEventListener("change", event => actions.onChartType(event.target.value));
         this.download.addEventListener("click", actions.onDownload);
-        this.retry.addEventListener("click", actions.onRetry);
-        for (const [id, action] of [["mode", actions.onMode], ["area", actions.onArea]]) {
-            this.document.querySelector("#raster-series-" + id).addEventListener("change", event => action(event.target.value));
-        }
+        this.document.querySelector("#raster-series-area").addEventListener("change", event => actions.onArea(event.target.value));
         this.document.querySelector("#raster-series-add-formula").addEventListener("change", event => {
             actions.onAddFormula(event.target.value); event.target.value = "";
         });
@@ -85,19 +77,16 @@ export class RasterSeriesView {
      * @param {Object} state Plot presentation.
      * @param {boolean} state.active Whether the series panel is open.
      * @param {Object[]} state.sources Available rasters with their selected flag.
-     * @param {Object[]} state.rows Ordered current pixel or statistic results.
+     * @param {Object[]} state.rows Ordered current statistic results.
      * @param {Object[]|null} state.previousRows Previous input's rows while no new value has arrived.
-     * @param {{longitude:number,latitude:number}|null} state.position Current click.
      * @param {string} state.message Progress, guidance or result summary.
      * @param {boolean} state.busy Whether the current workflow is still running.
      * @param {"line"|"scatter"} state.chartType Plot geometry.
      * @param {boolean} state.canDownload Whether a completed table can be exported.
-     * @param {boolean} state.canRetry Whether the current selection can be sampled.
-     * @param {"pixel"|"area"} state.mode Series mode.
-     * @param {Object} [state.area] Area calculation presentation.
-     * @param {Object[]} [state.statistics] All statistics with ordered rows and display settings.
-     * @param {{id:number,scale:string}[]} [state.plots] Independent plot settings.
-     * @param {boolean} [state.showingPrevious] Whether all area charts use previous results.
+     * @param {Object} state.area Area calculation presentation.
+     * @param {Object[]} state.statistics All statistics with ordered rows and display settings.
+     * @param {{id:number,scale:string}[]} state.plots Independent plot settings.
+     * @param {boolean} state.showingPrevious Whether all charts use previous results.
      * @return {void}
      */
     render(state) {
@@ -123,22 +112,8 @@ export class RasterSeriesView {
      * @return {void}
      */
     draw(state) {
-        const areaMode = state.mode === "area";
-        if (this.areaControls.hidden !== !areaMode) this.areaControls.hidden = !areaMode;
-        const mode = this.document.querySelector("#raster-series-mode");
-        if (mode.value !== (state.mode ?? "pixel")) mode.value = state.mode ?? "pixel";
-        if (this.retry.hidden !== areaMode) this.retry.hidden = areaMode;
-        const valueHeading = this.document.querySelector("#raster-series-value-heading");
-        const valueLabel = areaMode ? "Value" : "Pixel value";
-        if (valueHeading.textContent !== valueLabel) valueHeading.textContent = valueLabel;
-        for (const id of ["statistic-heading", "plots", "add-plot"]) {
-            const element = this.document.querySelector("#raster-series-" + id);
-            if (element.hidden !== !areaMode) element.hidden = !areaMode;
-        }
-        if (areaMode) this.renderAreaControls(state);
-        const context = areaMode ? (state.area.areaChoice === "whole" ? "Whole extent of each raster" : state.area.areaLabel || "No sampling area selected") : state.position
-            ? `Pixel values at ${state.position.latitude.toFixed(5)}, ${state.position.longitude.toFixed(5)}`
-            : "Pixel values across raster layers";
+        this.renderAreaControls(state);
+        const context = state.area.areaChoice === "whole" ? "Whole extent of each raster" : state.area.areaLabel || "No sampling area selected";
         if (this.context.textContent !== context) this.context.textContent = context;
         if (this.status.textContent !== state.message) this.status.textContent = state.message;
         const busy = String(state.busy);
@@ -165,29 +140,12 @@ export class RasterSeriesView {
                 }
             }
         }
-        // Area statistics use separate plots; clear the pixel chart only when it has contents.
-        if (!areaMode || this.chart.children.length) this.chart.replaceChildren();
-        const plottedRows = state.previousRows?.some(row => row.state === "value") ? state.previousRows : state.rows;
-        const showingPrevious = areaMode ? state.showingPrevious : plottedRows === state.previousRows;
-        if (this.chart.classList.contains("is-previous") !== !!showingPrevious) this.chart.classList.toggle("is-previous", !!showingPrevious);
+        const showingPrevious = state.showingPrevious;
         if (this.chartNote.hidden !== !showingPrevious) this.chartNote.hidden = !showingPrevious;
-        const chartNote = showingPrevious ? (areaMode ? "Previous results — calculating replacements." : "Previous plot — reading the new click.") : "";
+        const chartNote = showingPrevious ? "Previous results — calculating replacements." : "";
         if (this.chartNote.textContent !== chartNote) this.chartNote.textContent = chartNote;
-        const chartHidden = areaMode || !plottedRows.some(row => row.state === "value");
-        if (this.chart.hidden !== chartHidden) this.chart.hidden = chartHidden;
-        if (chartHidden && this.chart.getAttribute("hidden") === null) this.chart.setAttribute("hidden", "");
-        if (areaMode) this.plotsView.renderPlots(state);
-        if (!this.chart.hidden) {
-            renderOrdinalSeriesChart({
-                documentContext: this.document, chart: this.chart,
-                points: plottedRows.map(row => ({ xLabel: row.label, yValue: row.state === "value" ? row.value : null })),
-                chartType: state.chartType, xAxisLabel: "Raster", yAxisLabel: "Pixel value",
-                ariaLabel: showingPrevious ? "Previous raster series; replacements are pending" : "Pixel values across selected rasters",
-                pointAccessibleLabel: point => `${point.xLabel}: ${formatSeriesNumber(point.yValue)}`,
-                pointTooltip: point => `${point.xLabel}\nPixel value: ${formatSeriesNumber(point.yValue)}`,
-            });
-        }
-        const tableValues = state.rows.map(row => [row.label, ...(areaMode ? [row.statisticLabel] : []),
+        this.plotsView.renderPlots(state);
+        const tableValues = state.rows.map(row => [row.label, row.statisticLabel,
             row.state === "value" ? (row.rawValue ?? formatSeriesNumber(row.value)) + (row.unit ? " " + row.unit : "") : "-",
             row.errorMessage || (row.state === "value" ? (row.cached ? "Cached" : "Value") : STATES[row.state])]);
         const tableSignature = JSON.stringify(tableValues);
@@ -202,7 +160,6 @@ export class RasterSeriesView {
             }));
         }
         if (this.download.disabled !== !state.canDownload) this.download.disabled = !state.canDownload;
-        if (this.retry.disabled !== !state.canRetry) this.retry.disabled = !state.canRetry;
     }
 
 

@@ -12,7 +12,26 @@ export function chunkPixels(value) {
     return value;
 }
 
-/** Copy only the public calculation intent. @param {Object} value Candidate intent. @return {Readonly<Object>} Immutable snapshot. */
+/** Retain a click only for formulas that use pixelValue; the server validates expression syntax.
+ * @param {{expression:string}[]} calculations Named calculation expressions.
+ * @param {{longitude:number,latitude:number}|null|undefined} point Optional exact map click.
+ * @return {Readonly<{longitude:number,latitude:number}>|null} Immutable relevant point, or null when unused or missing.
+ * @throws {TypeError} If a supplied pixelValue point is not a strict canonical WGS 84 position.
+ */
+export function calculationPixelPoint(calculations, point) {
+    if (!calculations.some(({expression}) => /\bpixelValue\s*\(/.test(expression)) || point == null) return null;
+    if (Object.keys(point).sort().join() !== "latitude,longitude" || ![point.longitude, point.latitude].every(Number.isFinite) ||
+        point.longitude < -180 || point.longitude > 180 || point.latitude < -90 || point.latitude > 90) {
+        throw new TypeError("Choose a valid map point for pixelValue(a).");
+    }
+    return Object.freeze({ longitude: point.longitude, latitude: point.latitude });
+}
+
+/** Copy only the public calculation intent, including a click when a formula needs it.
+ * @param {Object} value Candidate source, area, formulas and optional pixelPoint.
+ * @return {Readonly<Object>} Immutable snapshot.
+ * @throws {TypeError|Error} If the source, formulas, area, chunk budget or point is invalid.
+ */
 export function calculationIntent(value) {
     const { collectionId, itemId, label } = value.source;
     if (![collectionId, itemId, label].every(text => typeof text === "string" && text.length > 0 && text.length <= 512)) {
@@ -28,8 +47,10 @@ export function calculationIntent(value) {
         }
         return Object.freeze({ label, expression });
     });
+    const pixelPoint = calculationPixelPoint(calculations, value.pixelPoint);
     return Object.freeze({ source: Object.freeze({ collectionId, itemId, label }),
         ...(chunkPixels(value.targetChunkPixels) === null ? {} : { targetChunkPixels: value.targetChunkPixels }),
+        ...(pixelPoint ? { pixelPoint } : {}),
         area: normalizeCalculationArea(value.area), calculations: Object.freeze(calculations) });
 }
 
