@@ -84,7 +84,8 @@ Missing values and failed rasters leave gaps; the table explains their status.
 Previous plots are faded while replacements are pending. Visibility, plot assignment,
 axis scale, names, chart type and display order change without recalculating.
 
-With automatic updates enabled, inputs calculate after a 700 ms pause. Each selected raster
+Committed area changes, raster selections, and reopening an unfinished area plot
+start calculations immediately. Formula edits wait for a 700 ms pause. Each selected raster
 retains an independent calculation; submissions ready together travel in one HTTP
 batch of up to 50 rasters. Larger stacks use additional batches without dropping
 rasters. No preliminary formula-validation request is needed. Submission errors appear in

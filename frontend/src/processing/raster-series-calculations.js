@@ -78,7 +78,8 @@ export class RasterSeriesCalculations {
 
     /** Replace the selected rasters, area and formulas after a user edit.
      * Changed calculation inputs cancel old work and clear current results; new
-     * calculations are scheduled only while area statistics is visible. Changes to
+     * calculations are scheduled only while area statistics is visible. Formula
+     * changes wait for editing to pause; committed areas and sources start next turn. Changes to
      * names, raster order or the area label refresh the display without recalculating.
      * @param {{key:string,label:string,item:{collection:string,id:string}}[]} sources Selected catalog rasters.
      * @param {Object|null} area Map box, filtered catalog selection, uploaded polygon reference,
@@ -90,13 +91,16 @@ export class RasterSeriesCalculations {
      */
     updateCalculationInputs(sources, area, label, formulas) {
         const normalized = area ? normalizeCalculationArea(area) : null;
+        const formulaKey = formulas.map(({id,expression}) => [id,expression.trim()]);
+        const formulasChanged = JSON.stringify(formulaKey) !==
+            JSON.stringify(this.formulas.map(({id,expression}) => [id,expression.trim()]));
         const key = JSON.stringify([sources.map(source => [source.key, source.item.collection, source.item.id]).sort(),
-            normalized, formulas.map(({id,expression}) => [id,expression.trim()])]);
+            normalized, formulaKey]);
         this.formulas = formulas.map(formula => ({ ...formula }));
         this.sources = sources.map(source => ({ ...source }));
         this.area = normalized;
         this.areaLabel = label;
-        if (this.inputKey !== key) { this.inputKey = key; this.resetResultsForChangedInputs(); }
+        if (this.inputKey !== key) { this.inputKey = key; this.resetResultsForChangedInputs(formulasChanged); }
         else this.onChange();
     }
 
@@ -116,16 +120,17 @@ export class RasterSeriesCalculations {
     /** Clear results after a calculation input changes and schedule replacements when visible.
      * Keep completed values separately for the faded previous plot. Cancel pending
      * work so each replacement is validated by its submission endpoint.
+     * @param {boolean} debounce Whether changed formulas must wait for editing to pause.
      * @return {void}
      */
-    resetResultsForChangedInputs() {
+    resetResultsForChangedInputs(debounce) {
         if (this.results.size) this.previousResults = new Map(this.results);
         this.cancelRemainingRasters();
         this.results = new Map();
         this.complete = false;
         this.startedAt = null;
         this.elapsedSeconds = null;
-        if (this.active) this.scheduleRemainingCalculations();
+        if (this.active) this.scheduleRemainingCalculations(debounce);
         else this.onChange();
     }
 
@@ -147,17 +152,18 @@ export class RasterSeriesCalculations {
         this.onChange();
     }
 
-    /** Schedule remaining calculations after 700 ms without another edit.
-     * Used after input changes or reopening an unfinished area plot. Replace the
-     * previous timer; the delayed submission includes server formula validation.
+    /** Coalesce committed inputs on the next turn, or wait 700 ms for formula edits.
+     * Used after input changes or reopening an unfinished area plot. Replacing the
+     * timer preserves cancellation before dispatch and includes server formula validation.
+     * @param {boolean} [debounce=false] Whether changed formulas require an editing pause.
      * @return {void}
      */
-    scheduleRemainingCalculations() {
+    scheduleRemainingCalculations(debounce = false) {
         this.clock.clearTimeout(this.timer);
         this.startedAt ??= this.now();
-        this.message = "Waiting for edits to finish…";
+        this.message = debounce ? "Waiting for edits to finish…" : "Submitting calculations…";
         this.busy = true;
-        this.timer = this.clock.setTimeout(() => void this.calculateRemainingRasters(false), 700);
+        this.timer = this.clock.setTimeout(() => void this.calculateRemainingRasters(false), debounce ? 700 : 0);
         this.onChange();
     }
 
