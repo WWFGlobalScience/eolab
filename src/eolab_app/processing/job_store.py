@@ -355,8 +355,10 @@ class PostgresJobStore:
                         "SELECT count(*) AS waiting FROM processing.jobs WHERE status='queued'"
                     )
                     subscriber_cursor.execute(
-                        "SELECT count(*) AS records, count(*) FILTER (WHERE owner=%s AND status='queued') AS owned "
-                        "FROM processing.subscribed_jobs",
+                        "SELECT (SELECT count(*) FROM processing.job_subscribers) AS records,"
+                        "(SELECT count(*) FROM processing.job_subscribers s "
+                        "JOIN processing.jobs j ON j.id=s.job_id "
+                        "WHERE s.owner=%s AND s.status IS NULL AND j.status='queued') AS owned",
                         (owner,),
                     )
                 existing_rows = cursor.fetchall()
@@ -535,7 +537,7 @@ class PostgresJobStore:
                 )
             cursor.execute(
                 "SELECT COALESCE(sum(reserved_bytes),0) AS bytes "
-                "FROM processing.jobs WHERE id<>%s",
+                "FROM processing.jobs WHERE reserved_bytes>0 AND id<>%s",
                 (identifier,),
             )
             used = cursor.fetchone()
@@ -732,7 +734,8 @@ class PostgresJobStore:
             cursor.execute(
                 "SELECT count(*) FILTER (WHERE status IN ('running','cancelling')) AS active,"
                 "coalesce(sum(execution_memory_bytes) FILTER (WHERE status IN ('running','cancelling')),0) AS memory,"
-                "coalesce(sum(reserved_bytes),0) AS disk FROM processing.jobs"
+                "coalesce(sum(reserved_bytes),0) AS disk FROM processing.jobs "
+                "WHERE status IN ('running','cancelling') OR reserved_bytes>0"
             )
             capacity = cursor.fetchone()
             if (
@@ -772,8 +775,9 @@ class PostgresJobStore:
             )
             claimed = cursor.fetchone()
             cursor.execute(
-                "SELECT count(DISTINCT job_id) AS waiting,count(DISTINCT owner) AS owners "
-                "FROM processing.subscribed_jobs WHERE status='queued'"
+                "SELECT count(DISTINCT j.id) AS waiting,count(DISTINCT s.owner) AS owners "
+                "FROM processing.jobs j JOIN processing.job_subscribers s ON s.job_id=j.id "
+                "WHERE j.status='queued' AND s.status IS NULL"
             )
             backlog = cursor.fetchone()
             LOGGER.info(

@@ -583,7 +583,7 @@ def test_worker_restart_invalidates_legacy_queued_jobs(
     with psycopg.connect(store.conninfo) as conn:
         assert conn.execute(
             "SELECT version FROM processing.schema_version ORDER BY version"
-        ).fetchall() == [(n,) for n in range(1, 14)]
+        ).fetchall() == [(n,) for n in range(1, 15)]
         assert (
             conn.execute(
                 "SELECT column_name FROM information_schema.columns WHERE table_schema='processing' "
