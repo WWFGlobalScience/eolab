@@ -173,6 +173,13 @@ def test_pixel_formula_uses_same_batch_worker_cache_and_owned_provenance(
     response = client.post(ENDPOINT + "/batch", json={"items": [body]}, headers=HEADERS)
     assert response.status_code == 200, response.text
     submitted = response.json()["items"][0]["job"]
+    owner = hashlib.sha256(client.cookies[COOKIE].encode()).hexdigest()
+    shared_job_id = store.get(submitted["jobId"], owner)["job_id"]
+    with psycopg.connect(store.conninfo) as connection:
+        queued_spec = connection.execute(
+            "SELECT spec FROM processing.jobs WHERE id=%s", (shared_job_id,)
+        ).fetchone()[0]
+    assert queued_spec["request"]["pixelPoint"] == point
     assert asyncio.run(worker.run_once())
     completed = client.get(f"/api/processing/jobs/{submitted['jobId']}").json()
     assert completed["status"] == "ready", completed
@@ -183,7 +190,7 @@ def test_pixel_formula_uses_same_batch_worker_cache_and_owned_provenance(
     )
     if mixed:
         assert rows[1]["state"] == "ok"
-        assert float(rows[1]["value"]) == 4999.5
+        assert float(rows[1]["value"]) == pytest.approx(4999.5, abs=1e-10, rel=0)
     else:
         assert (
             completed["grid"]["width"]
@@ -197,8 +204,11 @@ def test_pixel_formula_uses_same_batch_worker_cache_and_owned_provenance(
     assert client.get(provenance_url).json()["pixelPoint"] == point
     with TestClient(app, base_url="https://testserver") as stranger:
         assert stranger.get(provenance_url).status_code == 404
-    owner = hashlib.sha256(client.cookies[COOKIE].encode()).hexdigest()
-    assert store.get(completed["jobId"], owner)["spec"]["pixelPoint"] == point
+    with psycopg.connect(store.conninfo) as connection:
+        prepared_spec = connection.execute(
+            "SELECT spec FROM processing.jobs WHERE id=%s", (shared_job_id,)
+        ).fetchone()[0]
+    assert prepared_spec["pixelPoint"] == point
     retry = client.post(
         ENDPOINT + "/batch", json={"items": [body]}, headers=HEADERS
     ).json()["items"][0]["job"]
