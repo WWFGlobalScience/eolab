@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import PurePath
 from typing import Any
@@ -154,14 +155,14 @@ class ProcessingService:
             artifacts: Confined result-file adapter.
             changes: Lifecycle-managed owned-job notification provider.
             submission_wait_seconds: Observation budget per calculation submission,
-                from zero (immediate acknowledgement) to one second. The final
+                finite and non-negative; zero gives immediate acknowledgement. The final
                 owned-state read also incurs the ordinary database access latency.
 
         Raises:
-            ValueError: If the submission observation budget is outside its bounds.
+            ValueError: If the submission observation budget is negative or non-finite.
         """
-        if not 0 <= submission_wait_seconds <= 1:
-            raise ValueError("Submission wait must be between zero and one second")
+        if submission_wait_seconds < 0 or not math.isfinite(submission_wait_seconds):
+            raise ValueError("Submission wait must be finite and non-negative")
         self.jobs = jobs
         self.artifacts = artifacts
         self.changes = changes
