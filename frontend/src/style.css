@@ -2092,11 +2092,10 @@ h5 {
 
 .catalog-result-name {
   min-width: 0;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   font-size: 0.86rem;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .catalog-result-context {

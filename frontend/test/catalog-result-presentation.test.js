@@ -103,6 +103,73 @@ test("Catalog result identity safely falls back to titles and Item IDs", () => {
   );
 });
 
+test("Catalog results preserve curated titles containing units and punctuation", () => {
+  const titles = [
+    "West Maui groundwater recharge - No units protected - model year 50 - mm/year",
+    "West Maui groundwater recharge - No units protected - model year 50 - L/day",
+    "West Maui groundwater recharge — Existing and proposed units protected — model year 35 — L/day",
+    "Groundwater recharge / annual mean",
+    "Recharge \\ runoff comparison",
+  ];
+
+  for (const title of titles) {
+    assert.deepEqual(
+      buildCatalogResultPresentation(
+        {
+          id: "curated-raster",
+          properties: { title },
+          assets: { data: { title } },
+        },
+        "Raster",
+      ),
+      {
+        filename: title,
+        context: null,
+        datasetType: "Raster",
+        fullTitle: title,
+        accessibleLabel: `More details for ${title}, Raster`,
+      },
+      title,
+    );
+  }
+});
+
+test("Catalog results keep em dashes inside actual filenames", () => {
+  const presentation = buildCatalogResultPresentation(
+    {
+      id: "raster-with-punctuation",
+      properties: { title: "Model Outputs/recharge — model year 35.tif" },
+    },
+    "Raster",
+  );
+  assert.equal(presentation.filename, "recharge — model year 35.tif");
+  assert.equal(presentation.context, "Model Outputs");
+});
+
+test("Catalog results infer legacy layer labels only from vector containers", () => {
+  const presentation = buildCatalogResultPresentation(
+    {
+      id: "geopackage-layer",
+      properties: { title: "Maui/Survey — 2020.gpkg — wetlands" },
+      assets: { data: { title: "Maui/Survey — 2020.gpkg" } },
+    },
+    "Vector",
+  );
+  assert.equal(presentation.filename, "Survey — 2020.gpkg");
+  assert.equal(presentation.context, "Layer: wetlands");
+});
+
+test("Catalog results retain compact paths for scanner-supported file formats", () => {
+  for (const filename of ["rain.TIFF", "sites.shp", "sites.geojson", "sites.zip"]) {
+    const presentation = buildCatalogResultPresentation(
+      { id: filename, properties: { title: `Maui/${filename}` } },
+      undefined,
+    );
+    assert.equal(presentation.filename, filename);
+    assert.equal(presentation.context, "Maui");
+  }
+});
+
 test("Catalog result counts use concise result language", () => {
   assert.equal(formatCatalogResultCount({ numberMatched: 0 }), "0 results");
   assert.equal(formatCatalogResultCount({ numberMatched: 1 }), "1 result");
