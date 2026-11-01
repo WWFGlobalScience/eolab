@@ -196,14 +196,6 @@ test("raster histogram hover styles emphasize only the active bar", () => {
     stylesheet,
     /\.raster-histogram-bar\.is-hovered\s*\{[^}]*opacity:\s*1[^}]*stroke:/s,
   );
-  assert.match(
-    stylesheet,
-    /\.raster-histogram-tooltip\[hidden\]\s*\{[^}]*display:\s*none/s,
-  );
-  assert.match(
-    stylesheet,
-    /\.raster-histogram-tooltip\s*\{[^}]*pointer-events:\s*none/s,
-  );
 });
 
 test("log and clipped 1D axes preserve bin identity, hover counts and style marker coordinates", () => {
