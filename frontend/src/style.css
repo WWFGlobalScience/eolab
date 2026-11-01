@@ -1363,7 +1363,8 @@ h5 {
   margin: 0;
 }
 
-.raster-histogram-heading {
+.raster-histogram-heading,
+.raster-series-plot-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1376,7 +1377,8 @@ h5 {
   padding: 5px 8px;
 }
 
-.raster-histogram-heading .section-label {
+.raster-histogram-heading h3,
+#raster-series-plot-title {
   margin: 0;
 }
 
@@ -1408,6 +1410,7 @@ h5 {
 }
 
 .raster-histogram-chart[hidden],
+.raster-series-statistics-chart[hidden],
 .raster-percentile-controls[hidden] {
   display: none;
 }
@@ -1451,7 +1454,7 @@ h5 {
 .raster-series-plot-tooltip {
   --chart-tooltip-background: rgb(20 20 20 / 92%);
   --chart-tooltip-color: var(--surface-2);
-  --chart-tooltip-font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   pointer-events: none;
 }
 
@@ -1469,27 +1472,38 @@ h5 {
 
 .raster-histogram-tooltip text {
   fill: var(--chart-tooltip-color);
-  font: var(--chart-tooltip-font);
 }
 
 .raster-series-plot-tooltip {
   background: var(--chart-tooltip-background);
   color: var(--chart-tooltip-color);
   border: 1px solid var(--chart-tooltip-color);
-  font: var(--chart-tooltip-font);
 }
+
+.raster-histogram-axes text,
+.series-chart-x-axis text,
+.series-chart-y-axis text {
+  fill: var(--text-2);
+  font-size: 11px;
+}
+
+.raster-histogram-axes .raster-histogram-axis-title,
+.series-chart-axis-title { font-size: 12px; }
+.series-chart-axis-title { fill: var(--text-1); font-weight: 650; }
 
 .raster-histogram-axes text,
 .raster-series-statistics-chart .series-chart-x-axis text,
 .raster-series-statistics-chart .series-chart-y-axis text {
-  fill: var(--text-2);
-  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1;
 }
 
 .raster-histogram-axes .raster-histogram-axis-title,
 .raster-series-statistics-chart .series-chart-axis-title {
   fill: var(--text-2);
-  font: 12px/1 system-ui, sans-serif;
+  font-family: system-ui, sans-serif;
+  font-weight: 400;
+  line-height: 1;
 }
 
 .raster-histogram-grid,
@@ -3203,9 +3217,6 @@ article.raster-histogram-summary {
 .raster-histogram-summary-status {
   color: var(--text-3);
   font-size: 0.68rem;
-}
-
-.raster-histogram-summary-status {
   grid-column: 1 / -1;
 }
 
@@ -3238,11 +3249,6 @@ article.raster-histogram-summary {
 
 .raster-bivariate-statistics[hidden] {
   display: none;
-}
-
-.raster-histogram-heading h3,
-.raster-histogram-heading .section-label {
-  margin: 0;
 }
 
 .panel-footer {
@@ -4273,9 +4279,6 @@ article.raster-histogram-summary {
 .series-chart-point:hover,
 .series-chart-point.is-selected { fill: var(--series-color, var(--brand)); stroke: var(--text-1); }
 .series-chart-point:focus { outline: none; stroke: var(--text-1); stroke-width: 4; }
-.series-chart-x-axis text,
-.series-chart-y-axis text { fill: var(--text-2); font-size: 11px; }
-.series-chart-axis-title { fill: var(--text-1); font-size: 12px; font-weight: 650; }
 .vector-time-series-selection {
   display: flex;
   align-items: center;
@@ -5113,7 +5116,6 @@ summary:hover > .raster-disclosure-chevron {
 .categorical-area-fill { position: absolute; inset: 0; }
 .categorical-area-toggle { justify-self: start; }
 .categorical-area-toggle[hidden] { display: none; }
-.raster-histogram-chart[hidden] { display: none; }
 @media (max-width: 600px) {
   .categorical-area-row { grid-template-columns: minmax(36px, 1fr) 48px 76px; }
   .categorical-area-name { grid-column: 1 / -1; }
