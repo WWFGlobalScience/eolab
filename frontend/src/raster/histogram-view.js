@@ -9,44 +9,15 @@ import {
     formatRasterPixelValue
 } from "./value-format.js";
 import { getRasterStyleColor } from "./style.js";
-import { drawHistogramAxes, formatHistogramTick, histogramScales } from "./histogram-axes.js";
+import { scaleLinear } from "d3";
+import { bindChartInspection, createChartTooltip, drawChartAxes } from "../charts/chart-presentation.js";
+import { formatHistogramTick, histogramScales } from "./histogram-axes.js";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const HISTOGRAM_CHART_WIDTH = 640;
 const HISTOGRAM_CHART_HEIGHT = 190;
 const HISTOGRAM_PLOT_HEIGHT = 116;
-const HISTOGRAM_TOOLTIP_HEIGHT = 42;
-const HISTOGRAM_TOOLTIP_MARGIN = 4;
 const chartObservers = new WeakMap();
-
-/**
- * Build the immediate in-chart presentation for one histogram bin.
- *
- * @param {Document} documentContext DOM document used to create SVG nodes.
- * @param {number} width Tooltip width fitted inside its chart.
- * @return {{element: SVGGElement, text: SVGTextElement, counts: SVGTextElement}} Tooltip elements.
- */
-function createHistogramTooltip(documentContext, width) {
-    const tooltip = documentContext.createElementNS(SVG_NAMESPACE, "g");
-    tooltip.classList.add("raster-histogram-tooltip");
-    tooltip.setAttribute("hidden", "");
-    tooltip.setAttribute("aria-hidden", "true");
-    const background = documentContext.createElementNS(
-        SVG_NAMESPACE,
-        "rect"
-    );
-    background.setAttribute("width", String(width));
-    background.setAttribute("height", String(HISTOGRAM_TOOLTIP_HEIGHT));
-    background.setAttribute("rx", "3");
-    const text = documentContext.createElementNS(SVG_NAMESPACE, "text");
-    text.setAttribute("x", "8");
-    text.setAttribute("y", "16");
-    const counts = documentContext.createElementNS(SVG_NAMESPACE, "text");
-    counts.setAttribute("x", "8");
-    counts.setAttribute("y", "32");
-    tooltip.append(background, text, counts);
-    return { element: tooltip, text, counts };
-}
 
 /**
  * Format one bin's compact hover readout.
@@ -123,7 +94,7 @@ function drawHistogramThresholdMarkers(
 }
 
 /**
- * Render the validated fixed-bin distribution into its SVG chart.
+ * Render the validated bins and retain keyboard focus through redraws.
  *
  * SVG elements do not implement HTMLElement.hidden, so visibility is changed
  * through the actual attribute that the stylesheet consumes.
@@ -149,13 +120,15 @@ function drawRasterHistogramChart(
     markers,
     axes
 ) {
+    const focusedBin = chart.contains(documentContext.activeElement)
+        ? documentContext.activeElement.getAttribute("data-bin-index") : null;
     const { counts, edges } = statistics.histogram;
     const plot = { left: 48, top: 28, width: width - 60, height: HISTOGRAM_PLOT_HEIGHT, bottom: 28 + HISTOGRAM_PLOT_HEIGHT };
     const scales = histogramScales(statistics, plot.width, axes);
-    const tooltipWidth = Math.min(360, width - 2 * HISTOGRAM_TOOLTIP_MARGIN);
     chart.setAttribute("viewBox", `0 0 ${width} ${HISTOGRAM_CHART_HEIGHT}`);
     chart.setAttribute("preserveAspectRatio", "none");
-    chart.setAttribute("role", "img");
+    chart.setAttribute("role", "group");
+    chart.setAttribute("tabindex", "-1");
     const bars = [];
     const title = documentContext.createElementNS(SVG_NAMESPACE, "title");
     const provenance = statistics.estimated
@@ -181,7 +154,17 @@ function drawRasterHistogramChart(
         `X scale: ${scales.xAxis.scale}; Y scale: ${scales.yAxis.scale}. ` +
         markerDescription;
     chart.replaceChildren(title);
-    drawHistogramAxes(chart, plot, scales, valueLabel, documentContext);
+    const yTicks = [0, 0.5, 1];
+    drawChartAxes(documentContext, chart, plot,
+        {scale: scaleLinear([0, 1], [plot.left, plot.left + plot.width]), values: scales.ticks.map(tick => tick.fraction),
+            format: fraction => scales.ticks.find(tick => tick.fraction === fraction).label, edgeLabels: true},
+        {scale: scaleLinear([0, 1], [plot.bottom, plot.top]), values: yTicks,
+            format: fraction => formatHistogramTick(scales.yAxis.valueAt(fraction), scales.yAxis.scale === "log" ?
+                scales.yAxis.valueAt(fraction) / 10 : (scales.yAxis.maximum - scales.yAxis.minimum) / 2)}, [
+            {text: `Sampled pixels (%)${scales.yAxis.scale === "log" ? " · log" : ""}`, x: plot.left, y: 15, anchor: "start"},
+            {text: (scales.offset === 0 ? valueLabel : `${valueLabel} (offset ${scales.offset >= 0 ? "+" : ""}${scales.offset})`) +
+                (scales.xAxis.scale === "log" ? " · log" : ""), x: plot.left + plot.width / 2, y: plot.bottom + 38},
+        ]);
     for (const [binIndex, count] of counts.entries()) {
         const samplePercent = count / statistics.validSampleCount * 100;
         const interval = scales.xAxis.interval(edges[binIndex], edges[binIndex + 1]);
@@ -191,6 +174,9 @@ function drawRasterHistogramChart(
         const barWidth = (interval[1] - interval[0]) * plot.width;
         const bar = documentContext.createElementNS(SVG_NAMESPACE, "rect");
         bar.classList.add("raster-histogram-bar");
+        bar.setAttribute("tabindex", "0");
+        bar.setAttribute("role", "img");
+        bar.setAttribute("data-bin-index", String(binIndex));
         if (samplePercent > scales.yAxis.maximum || samplePercent < scales.yAxis.minimum ||
             edges[binIndex] < scales.minimum || edges[binIndex + 1] > scales.maximum) {
             bar.classList.add("histogram-axis-clipped");
@@ -221,49 +207,31 @@ function drawRasterHistogramChart(
         markers,
         documentContext
     );
-    const tooltip = createHistogramTooltip(documentContext, tooltipWidth);
+    const tooltip = createChartTooltip(documentContext, chart);
     let activeBar = null;
-    for (const { binIndex, bar, center } of bars) {
+    const inspectionState = {focused: null, hovered: null};
+    /** Show one bin's exact counts through the shared chart inspection contract.
+     * @param {{binIndex:number,bar:SVGRectElement,center:number}|null} inspection Inspected bin, or dismissal.
+     * @return {void}
+     */
+    const inspectBin = inspection => {
+        activeBar?.classList.remove("is-hovered");
+        activeBar = inspection?.bar ?? null;
+        if (!inspection) { tooltip.hide(); return; }
+        activeBar.classList.add("is-hovered");
+        const {binIndex, center} = inspection;
         const count = counts[binIndex];
-        const samplePercent = count / statistics.validSampleCount * 100;
-        const preferredTooltipX =
-            center - tooltipWidth / 2;
-        const tooltipX = Math.max(
-            HISTOGRAM_TOOLTIP_MARGIN,
-            Math.min(
-                preferredTooltipX,
-                width - tooltipWidth -
-                HISTOGRAM_TOOLTIP_MARGIN
-            )
-        );
-        bar.addEventListener("pointerenter", () => {
-            activeBar?.classList.remove("is-hovered");
-            activeBar = bar;
-            activeBar.classList.add("is-hovered");
-            tooltip.text.textContent = formatHistogramBinTooltip(
-                edges[binIndex],
-                edges[binIndex + 1],
-                scales.offset
-            );
-            tooltip.counts.textContent = `${count.toLocaleString()} pixels · ${samplePercent.toFixed(2)}% of sample`;
-            tooltip.element.setAttribute(
-                "transform",
-                `translate(${tooltipX} ${HISTOGRAM_TOOLTIP_MARGIN})`
-            );
-            tooltip.element.removeAttribute("hidden");
-        });
-        bar.addEventListener("pointerleave", () => {
-            if (activeBar !== bar) {
-                return;
-            }
-            activeBar.classList.remove("is-hovered");
-            activeBar = null;
-            tooltip.element.setAttribute("hidden", "");
-        });
+        tooltip.show(formatHistogramBinTooltip(edges[binIndex], edges[binIndex + 1], scales.offset) + "\n" +
+            `${count.toLocaleString()} pixels · ${(count / statistics.validSampleCount * 100).toFixed(2)}% of sample`, center);
+    };
+    for (const { binIndex, bar, center } of bars) {
+        bindChartInspection(bar, {binIndex, bar, center}, inspectBin, inspectionState);
     }
-    chart.append(tooltip.element);
     chart.setAttribute("aria-label", title.textContent);
     chart.removeAttribute("hidden");
+    if (focusedBin !== null) {
+        (bars.find(item => String(item.binIndex) === focusedBin)?.bar ?? chart).focus({preventScroll: true});
+    }
 }
 
 /**

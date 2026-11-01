@@ -1451,7 +1451,7 @@ h5 {
 }
 
 .raster-histogram-tooltip,
-.raster-series-plot-tooltip {
+.chart-tooltip {
   --chart-tooltip-background: rgb(20 20 20 / 92%);
   --chart-tooltip-color: var(--surface-2);
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1459,46 +1459,47 @@ h5 {
 }
 
 .raster-histogram-tooltip[hidden],
-.raster-series-plot-tooltip[hidden] {
+.chart-tooltip[hidden] {
   display: none;
 }
 
-.raster-histogram-tooltip rect {
+.raster-histogram-tooltip rect,
+.chart-tooltip rect {
   fill: var(--chart-tooltip-background);
   stroke: var(--chart-tooltip-color);
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
 }
 
-.raster-histogram-tooltip text {
+.raster-histogram-tooltip text,
+.chart-tooltip text {
   fill: var(--chart-tooltip-color);
 }
 
-.raster-series-plot-tooltip {
+div.chart-tooltip {
   background: var(--chart-tooltip-background);
   color: var(--chart-tooltip-color);
   border: 1px solid var(--chart-tooltip-color);
 }
 
-.raster-histogram-axes text,
 .series-chart-x-axis text,
 .series-chart-y-axis text {
   fill: var(--text-2);
   font-size: 11px;
 }
 
-.raster-histogram-axes .raster-histogram-axis-title,
 .series-chart-axis-title { font-size: 12px; }
 .series-chart-axis-title { fill: var(--text-1); font-weight: 650; }
 
-.raster-histogram-axes text,
+.raster-histogram-chart .series-chart-x-axis text,
+.raster-histogram-chart .series-chart-y-axis text,
 .raster-series-statistics-chart .series-chart-x-axis text,
 .raster-series-statistics-chart .series-chart-y-axis text {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   line-height: 1;
 }
 
-.raster-histogram-axes .raster-histogram-axis-title,
+.raster-histogram-chart .series-chart-axis-title,
 .raster-series-statistics-chart .series-chart-axis-title {
   fill: var(--text-2);
   font-family: system-ui, sans-serif;
@@ -1506,13 +1507,14 @@ h5 {
   line-height: 1;
 }
 
-.raster-histogram-grid,
+.raster-histogram-chart .series-chart-y-axis .tick line,
 .raster-series-statistics-chart .series-chart-y-axis .tick line {
   stroke: var(--border-2);
   stroke-dasharray: 2 3;
 }
 
-.raster-histogram-baseline,
+.raster-histogram-chart .domain,
+.raster-histogram-chart .series-chart-x-axis .tick line,
 .raster-series-statistics-chart .domain,
 .raster-series-statistics-chart .series-chart-x-axis .tick line {
   fill: none;

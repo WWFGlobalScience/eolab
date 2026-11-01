@@ -29,6 +29,16 @@ const FOCUSED_VIEW_IMPORTS = {
     ],
 };
 
+test("histogram and series drawing share presentation code that knows no raster workflow", async () => {
+    const root = new URL("../../src/", import.meta.url);
+    for (const path of ["raster/histogram-view.js", "charts/series-chart.js"]) {
+        const source = await readFile(new URL(path, root), "utf8");
+        assert.match(source, /from ["'][^"']*chart-presentation\.js["']/);
+    }
+    const source = await readFile(new URL("charts/chart-presentation.js", root), "utf8");
+    assert.deepEqual([...source.matchAll(/from ["']([^"']+)["']/g)].map(match => match[1]), ["d3"]);
+});
+
 test("focused raster-control views depend only on presentation and explicit result helpers", async () => {
     for (const [moduleName, expectedImports] of Object.entries(
         FOCUSED_VIEW_IMPORTS

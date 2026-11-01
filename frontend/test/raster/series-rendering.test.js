@@ -621,9 +621,14 @@ test("temporal plots use actual UTC spacing and retain NoData gaps through prese
     assert.equal(yTitle.getAttribute("style"), "font-size: 12px");
     assert.equal(chart.querySelector(".series-chart-x-axis").querySelector("text").style.getPropertyValue("font-size"), "11px");
     chart.querySelector(".series-chart-line-hit").dispatchEvent(new Event("pointermove"));
-    assert.equal(view.cards.get(1).tooltip.hidden, true, "the line does not repeat the statistic name on hover");
+    assert.equal(view.cards.get(1).tooltip.element.getAttribute("hidden"), "", "the line does not repeat the statistic name on hover");
     points[1].dispatchEvent(new Event("pointermove"));
-    assert.equal(view.cards.get(1).tooltip.hidden, false, "points retain their observation values");
+    assert.equal(view.cards.get(1).tooltip.element.getAttribute("hidden"), null, "points retain their observation values");
+    points[0].dispatchEvent(new Event("focus"));
+    assert.match(view.cards.get(1).tooltip.element.textContent, /1\.0000000000000001 K/);
+    const escape = new Event("keydown"); Object.defineProperty(escape, "key", {value:"Escape"});
+    points[0].dispatchEvent(escape);
+    assert.equal(view.cards.get(1).tooltip.element.getAttribute("hidden"), "");
     assert.match(points[1].getAttribute("aria-label"), /1 Jan 2000 01:00 UTC/);
     assert.match(points[1].getAttribute("aria-label"), /2\.0000000000000001 K/);
     state.chartType = "scatter";

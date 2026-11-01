@@ -400,9 +400,10 @@ test("RasterControlsView updates histogram availability without hiding vector-ar
 });
 
 test("RasterControlsView reveals a successful histogram presentation", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     const chart = documentContext.querySelector("#raster-histogram-chart");
+    chart.namespaceURI = "http://www.w3.org/2000/svg";
     chart.setAttribute("hidden", "");
 
     view.renderHistogram(RASTER_STATISTICS, DEFAULT_RASTER_STYLE);
@@ -416,7 +417,7 @@ test("RasterControlsView reveals a successful histogram presentation", () => {
     );
     assert.equal(
         chart.children.filter(
-            (child) => child.classNames.includes("raster-histogram-tooltip")
+            (child) => child.classNames.includes("chart-tooltip")
         ).length,
         1
     );
@@ -426,9 +427,10 @@ test("RasterControlsView reveals a successful histogram presentation", () => {
 });
 
 test("RasterControlsView labels exact bounded histogram provenance", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     const chart = documentContext.querySelector("#raster-histogram-chart");
+    chart.namespaceURI = "http://www.w3.org/2000/svg";
 
     view.renderHistogram(EXACT_RASTER_STATISTICS, DEFAULT_RASTER_STYLE, "Raster value (K)");
 
