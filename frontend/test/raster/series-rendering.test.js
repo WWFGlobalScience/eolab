@@ -626,9 +626,10 @@ test("temporal plots use actual UTC spacing and retain NoData gaps through prese
     assert.equal(view.cards.get(1).tooltip.element.getAttribute("hidden"), null, "points retain their observation values");
     points[0].dispatchEvent(new Event("focus"));
     assert.match(view.cards.get(1).tooltip.element.textContent, /1\.0000000000000001 K/);
-    const escape = new Event("keydown"); Object.defineProperty(escape, "key", {value:"Escape"});
+    const escape = new Event("keydown", {cancelable:true}); Object.defineProperty(escape, "key", {value:"Escape"});
     points[0].dispatchEvent(escape);
     assert.equal(view.cards.get(1).tooltip.element.getAttribute("hidden"), "");
+    assert.equal(escape.defaultPrevented, true, "inspection owns its first Escape");
     assert.match(points[1].getAttribute("aria-label"), /1 Jan 2000 01:00 UTC/);
     assert.match(points[1].getAttribute("aria-label"), /2\.0000000000000001 K/);
     state.chartType = "scatter";

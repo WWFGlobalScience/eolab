@@ -100,6 +100,7 @@ export function createChartTooltip(documentContext, host) {
 /** Give pointer and keyboard inspection one state and dismissal behavior.
  * A focused value remains inspected when the pointer leaves. Only pointer
  * movement replaces it, avoiding changes caused by scrolling under the pointer.
+ * Escape dismisses active inspection before a surrounding panel can close.
  * @template T
  * @param {SVGElement} element Focusable chart datum.
  * @param {T} inspection Caller-owned datum description.
@@ -119,7 +120,9 @@ export function bindChartInspection(element, inspection, onInspect, state) {
         onInspect(state.focused ?? state.hovered);
     });
     element.addEventListener("keydown", event => {
-        if (event.key !== "Escape") return;
+        if (event.key !== "Escape" || state.focused === null && state.hovered === null) return;
+        event.preventDefault();
+        event.stopPropagation();
         state.focused = null; state.hovered = null; onInspect(null);
     });
 }

@@ -78,10 +78,14 @@ test("raster histogram rendering displays all 64 SVG bars", () => {
   bars[63].dispatchEvent(new Event("pointermove"));
   bars[63].dispatchEvent(new Event("pointerleave"));
   assert.equal(tooltip.children[1].textContent, "-9.375–-8.75", "leaving the pointer restores the focused bin");
-  const escape = new Event("keydown"); Object.defineProperty(escape, "key", {value: "Escape"});
+  const escape = new Event("keydown", {cancelable: true}); Object.defineProperty(escape, "key", {value: "Escape"});
   bars[1].dispatchEvent(escape);
   assert.equal(tooltip.getAttribute("hidden"), "");
   assert.equal(bars[1].classList.contains("is-hovered"), false);
+  assert.equal(escape.defaultPrevented, true, "active inspection consumes Escape before the panel shortcut");
+  const closePanel = new Event("keydown", {cancelable: true}); Object.defineProperty(closePanel, "key", {value: "Escape"});
+  bars[1].dispatchEvent(closePanel);
+  assert.equal(closePanel.defaultPrevented, false, "a second Escape is available to the surrounding panel");
 
   clearRasterHistogramChart(chart);
   assert.equal(chart.getAttribute("hidden"), "");
