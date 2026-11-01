@@ -1,5 +1,6 @@
 /** Plot cards and legends for area statistics; calculation state stays with the controller. */
 import { formatSeriesNumber, renderOrdinalSeriesChart } from "../charts/series-chart.js";
+import { createChartTooltip } from "../charts/chart-presentation.js";
 
 /** Default color and distinguishable dash/marker for each of the five statistics. */
 // The calculator accepts at most five formulas per raster. The controller
@@ -91,7 +92,7 @@ export class RasterSeriesPlotsView {
         const appearance = {};
         for (const [name, caption, value, min, max] of [
             ["pointSize", "Point size (px)", 5, 1, 24], ["xTickCount", "X tick count", 5, 2, 30],
-            ["yTickCount", "Y tick count", 5, 2, 30], ["axisFontSize", "Axis font size (px)", 10, 8, 24],
+            ["yTickCount", "Y tick count", 5, 2, 30], ["axisFontSize", "Axis font size (px)", 11, 8, 24],
         ]) {
             const label = this.document.createElement("label"); label.textContent = caption;
             const input = this.document.createElement("input"); input.type = "number"; input.min = String(min); input.max = String(max);
@@ -112,8 +113,8 @@ export class RasterSeriesPlotsView {
         const chart = this.document.createElementNS("http://www.w3.org/2000/svg", "svg");
         chart.classList.add("raster-series-statistics-chart"); chart.setAttribute("role", "group");
         const empty = this.document.createElement("p"); empty.className = "raster-series-empty-plot";
-        const tooltip = this.document.createElement("div"); tooltip.className = "raster-series-plot-tooltip"; tooltip.hidden = true;
-        card.append(header, legend, note, chart, empty, tooltip);
+        card.append(header, legend, note, chart, empty);
+        const tooltip = createChartTooltip(this.document, card);
         this.container.append(card);
         const elements = { card, title, options, plot, scale, axes, appearance, error, legend, note, chart, empty, tooltip, signature: null };
         for (const input of [scale, ...Object.values(appearance), ...Object.values(axes).flatMap(axis => [axis.range, ...axis.fields])]) {
@@ -222,7 +223,7 @@ export class RasterSeriesPlotsView {
         const focusSeries = focused?.closest?.("[data-series-id]")?.getAttribute("data-series-id");
         const focusPoint = focused?.getAttribute?.("data-point-index");
         const focusLegend = legend.contains(focused) ? focused?.dataset?.statisticId : null;
-        chart.replaceChildren(); legend.replaceChildren(); tooltip.hidden = true;
+        chart.replaceChildren(); legend.replaceChildren(); tooltip.hide();
         const values = series.flatMap(item => item.points).filter(point => Number.isFinite(point.yValue));
         const units = [...new Set(values.map(point => point.unit || "unit unspecified"))];
         const excluded = plot.scale === "log" ? values.filter(point => point.yValue <= 0).length : 0;
@@ -249,17 +250,18 @@ export class RasterSeriesPlotsView {
             : "Waiting for statistic values.";
         if (!chart.hidden) elements.domains = renderOrdinalSeriesChart({
             documentContext: this.document, chart, series, chartType: state.chartType, yScale: plot.scale,
-            width: chart.clientWidth, height: 260 + Math.max(0, (plot.axisFontSize ?? 10) - 10) * 5,
-            pointSize: plot.pointSize ?? 5, xTickCount: plot.xTickCount ?? 5, yTickCount: plot.yTickCount ?? 5, axisFontSize: plot.axisFontSize ?? 10,
+            width: chart.clientWidth, height: 260 + Math.max(0, (plot.axisFontSize ?? 11) - 11) * 5,
+            pointSize: plot.pointSize ?? 5, xTickCount: plot.xTickCount ?? 5, yTickCount: plot.yTickCount ?? 5, axisFontSize: plot.axisFontSize ?? 11,
             yBounds: plot.bounds ?? null, xBounds: state.temporal ? plot.xBounds ?? null : null,
             xReverse: !!state.temporal && state.direction === "reverse",
             xScale: state.temporal ? "numeric" : "ordinal", xAxisLabel: state.temporal ? "Time (UTC)" : "Raster",
-            yAxisLabel: (units.length === 1 && units[0] !== "unit unspecified" ? units[0] : "Value") + (plot.scale === "log" ? " (log)" : ""),
+            yAxisLabel: (units.length === 1 && units[0] !== "unit unspecified" ? `Value (${units[0]})` : "Value") + (plot.scale === "log" ? " · log" : ""),
+            yAxisLabelPosition: "top",
             ariaLabel: `Plot ${plot.id}${state.showingPrevious ? "; previous results" : ""}: ${series.map(item => item.label).join("; ")}`,
             pointAccessibleLabel: (point, item, index) => this.describePoint(series, index, plot.scale, state.showingPrevious),
             onInspect: inspection => {
-                tooltip.hidden = !inspection?.point;
-                tooltip.textContent = inspection?.point ? this.describePoint(series, inspection.index, plot.scale, state.showingPrevious) : "";
+                if (inspection?.point) tooltip.show(this.describePoint(series, inspection.index, plot.scale, state.showingPrevious));
+                else tooltip.hide();
                 this.highlightStatistic(inspection ? Number(inspection.series.id) : null);
             },
         });

@@ -1,7 +1,7 @@
 /** Draw ordered numeric observations for vector and raster series with D3. */
-import { axisBottom, axisLeft, extent, line as seriesLine, scaleLinear, scaleLog, select } from "d3";
+import { extent, line as seriesLine, scaleLinear, scaleLog } from "d3";
+import { bindChartInspection, createSvgElement, drawChartAxes } from "./chart-presentation.js";
 
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 360;
 const CHART_MARGIN = Object.freeze({ top: 20, right: 24, bottom: 92, left: 72 });
@@ -59,24 +59,6 @@ function ordinalTickIndexes(count, maximum = 7) {
 }
 
 /**
- * Create one namespaced SVG element with string attributes.
- *
- * @param {Document} documentContext Owning document.
- * @param {string} name SVG element name.
- * @param {Record<string,string|number>} attributes SVG attributes.
- * @param {string|null} [text=null] Optional text content.
- * @return {SVGElement} New SVG element.
- */
-function svgElement(documentContext, name, attributes, text = null) {
-    const element = documentContext.createElementNS(SVG_NAMESPACE, name);
-    for (const [attribute, value] of Object.entries(attributes)) {
-        element.setAttribute(attribute, String(value));
-    }
-    if (text !== null) element.textContent = text;
-    return element;
-}
-
-/**
  * Draw a line, scatter or grouped bar plot over ordered observations.
  *
  * Null Y values retain their X position and break line segments, so callers can
@@ -96,13 +78,14 @@ function svgElement(documentContext, name, attributes, text = null) {
  * @param {[number,number]|null} [configuration.yBounds=null] Validated increasing Y display bounds; positive for log scales.
  * @param {boolean} [configuration.xReverse=false] Reverse the numeric display axis without changing observations.
  * @param {number} [configuration.width=680] Measured SVG width; labels retain their screen size.
- * @param {number} [configuration.height=360] SVG height in screen pixels.
+ * @param {number} [configuration.height=360] SVG height in screen pixels; explicit tick fonts can add caption space without shrinking the plot.
  * @param {number} [configuration.pointSize=9] Marker diameter in screen pixels.
  * @param {number|null} [configuration.xTickCount=null] Maximum X tick labels; null adapts to chart width.
  * @param {number} [configuration.yTickCount=5] Desired Y tick count, rounded by the numeric scale.
- * @param {number|null} [configuration.axisFontSize=null] Tick and axis-title font size in screen pixels; null keeps the caller's CSS.
+ * @param {number|null} [configuration.axisFontSize=null] Tick font size in screen pixels; axis titles are one pixel larger. Null keeps the caller's CSS.
  * @param {string} configuration.xAxisLabel Horizontal-axis title.
  * @param {string} configuration.yAxisLabel Vertical-axis title.
+ * @param {"left"|"top"} [configuration.yAxisLabelPosition="left"] Place the Y title beside or above the plot.
  * @param {string} configuration.ariaLabel Chart-level accessible description.
  * @param {(point:Object,series:ChartSeries,index:number)=>string} configuration.pointAccessibleLabel Accessible point label.
  * @param {((point:Object)=>string)|null} [configuration.pointTooltip=null] Native tooltip text, required unless onInspect is supplied.
@@ -131,6 +114,7 @@ export function renderOrdinalSeriesChart({
     axisFontSize = null,
     xAxisLabel,
     yAxisLabel,
+    yAxisLabelPosition = "left",
     ariaLabel,
     pointAccessibleLabel,
     pointTooltip = null,
@@ -194,8 +178,16 @@ export function renderOrdinalSeriesChart({
     const fontGrowth = Math.max(0, (axisFontSize ?? 10) - 10);
     const tickLength = Math.max(0, ...indexes.map(index => formatTickLabel(points[index].xLabel, width < 480 ? 18 : 28).length));
     const margin = {...CHART_MARGIN,
+        top: yAxisLabelPosition === "top" ? Math.max(CHART_MARGIN.top, (axisFontSize ?? 11) + 17) : CHART_MARGIN.top,
         left: axisFontSize === null ? CHART_MARGIN.left : Math.max(CHART_MARGIN.left, tickLength * axisFontSize * 0.5 + 8),
         bottom: CHART_MARGIN.bottom + fontGrowth * 5};
+    if (axisFontSize !== null) {
+        // Leave room for rotated monospaced ticks, then the horizontal axis title.
+        const captionHeight = Math.ceil(tickLength * axisFontSize * 0.62 * Math.sin(35 * Math.PI / 180) + axisFontSize * 2.5 + 17);
+        const extraHeight = Math.max(0, captionHeight - margin.bottom);
+        margin.bottom += extraHeight;
+        height += extraHeight;
+    }
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
     const sortedX = chartType === "bar" && xScale === "numeric" ? [...new Set(numericX)].sort((a, b) => a - b) : [];
@@ -216,61 +208,55 @@ export function renderOrdinalSeriesChart({
     [minimum, maximum] = y.domain().map(value => yScale === "log" ? Math.log10(value) : value);
     const baselineValue = Math.max(y.domain()[0], Math.min(0, y.domain()[1]));
     const barBaseline = y(baselineValue);
-    const xAxisY = margin.top + plotHeight;
     chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
     chart.setAttribute("aria-label", ariaLabel);
-    const xAxis = svgElement(documentContext, "g", {
-        class: "series-chart-x-axis", transform: `translate(0 ${xAxisY})`,
-    });
     const ticks = (xScale === "numeric" ? indexes.map(index => numericX[index]) : indexes)
         .filter(value => value >= horizontal.domain()[0] && value <= horizontal.domain()[1]);
-    select(xAxis).call(axisBottom(horizontal).tickValues([...new Set(ticks)])
-        .tickFormat(value => formatTickLabel(points[xScale === "numeric" ? numericX.indexOf(value) : value].xLabel, width < 480 ? 18 : 28))
-        .tickSizeOuter(0));
-    select(xAxis).selectAll("text").attr("transform", "rotate(-35)").attr("text-anchor", "end");
-    if (axisFontSize !== null) select(xAxis).selectAll("text").style("font-size", `${axisFontSize}px`);
-    const yAxis = svgElement(documentContext, "g", {
-        class: "series-chart-y-axis", transform: `translate(${margin.left} 0)`,
-    });
     // Generate log ticks in exponent space so subnormal or maximum finite
     // values never overflow the library's decimal tick-step calculation.
     const yTicks = yScale === "log" ? scaleLinear([minimum, maximum]).ticks(yTickCount)
         .map(value => Math.min(Number.MAX_VALUE, Math.max(Number.MIN_VALUE, 10 ** value))) : y.ticks(yTickCount);
-    select(yAxis).call(axisLeft(y).tickValues(yTicks).tickSize(-plotWidth).tickSizeOuter(0)
-        .tickFormat(formatSeriesNumber));
-    if (axisFontSize !== null) select(yAxis).selectAll("text").style("font-size", `${axisFontSize}px`);
-    chart.append(xAxis, yAxis);
+    const topYTitle = yAxisLabelPosition === "top";
+    const yTitleX = topYTitle ? margin.left : axisFontSize === null ? 16 : Math.max(16, axisFontSize + 4);
+    const yTitleY = topYTitle ? margin.top - 13 : margin.top + plotHeight / 2;
+    drawChartAxes(documentContext, chart, {left: margin.left, top: margin.top, width: plotWidth, height: plotHeight},
+        {scale: horizontal, values: [...new Set(ticks)], rotation: -35,
+            format: value => formatTickLabel(points[xScale === "numeric" ? numericX.indexOf(value) : value].xLabel, width < 480 ? 18 : 28)},
+        {scale: y, values: yTicks, format: formatSeriesNumber}, [
+            {text: xAxisLabel, x: margin.left + plotWidth / 2, y: height - 8},
+            {text: yAxisLabel, x: yTitleX, y: yTitleY, rotation: topYTitle ? 0 : -90, anchor: topYTitle ? "start" : "middle"},
+        ], axisFontSize);
     const clipId = `series-chart-clip-${++clipSerial}`;
-    const definitions = svgElement(documentContext, "defs", {});
-    const clip = svgElement(documentContext, "clipPath", { id: clipId });
-    clip.append(svgElement(documentContext, "rect", { x: margin.left, y: margin.top, width: plotWidth, height: plotHeight }));
+    const definitions = createSvgElement(documentContext, "defs", {});
+    const clip = createSvgElement(documentContext, "clipPath", { id: clipId });
+    clip.append(createSvgElement(documentContext, "rect", { x: margin.left, y: margin.top, width: plotWidth, height: plotHeight }));
     definitions.append(clip); chart.append(definitions);
     const pointElements = [];
     const pointGroups = [];
     const inspectionState = { focused: null, hovered: null };
     const clipAttributes = xBounds || yBounds ? { "clip-path": `url(#${clipId})` } : {};
     for (const [seriesIndex, item] of plottedSeries.entries()) {
-        const group = series || xBounds || yBounds ? svgElement(documentContext, "g", { ...(series ? { "data-series-id": item.id } : {}), ...clipAttributes }) : chart;
+        const group = series || xBounds || yBounds ? createSvgElement(documentContext, "g", { ...(series ? { "data-series-id": item.id } : {}), ...clipAttributes }) : chart;
         if (item.color) group.setAttribute("style", `--series-color: ${item.color}`);
         if (group !== chart) chart.append(group);
-        const pointGroup = series || xBounds || yBounds ? svgElement(documentContext, "g", { ...(series ? { "data-series-id": item.id } : {}), ...clipAttributes }) : chart;
+        const pointGroup = series || xBounds || yBounds ? createSvgElement(documentContext, "g", { ...(series ? { "data-series-id": item.id } : {}), ...clipAttributes }) : chart;
         if (item.color) pointGroup.setAttribute("style", `--series-color: ${item.color}`);
         if (pointGroup !== chart) pointGroups.push(pointGroup);
         if (chartType === "line") {
             const path = seriesLine().defined(canPlot)
                 .x((point, index) => x(index)).y(point => y(point.yValue))(item.points);
-            const line = svgElement(documentContext, "path", {
+            const line = createSvgElement(documentContext, "path", {
                 class: "series-chart-line",
                 d: path,
                 "stroke-dasharray": item.dash ?? "none",
             });
             group.append(line);
             if (onInspect) {
-                const hit = svgElement(documentContext, "path", {
+                const hit = createSvgElement(documentContext, "path", {
                     class: "series-chart-line-hit", d: path, tabindex: 0, role: "img",
                     "aria-label": item.label, "data-series-line": item.id,
                 });
-                bindInspection(hit, { series: item, point: null, index: null }, onInspect, inspectionState);
+                bindChartInspection(hit, { series: item, point: null, index: null }, onInspect, inspectionState);
                 group.append(hit);
             }
         }
@@ -285,7 +271,7 @@ export function renderOrdinalSeriesChart({
                 triangle: "M0,-6L5,4L-5,4z", cross: "M-5,0h10M0,-5v10" };
             const markerPath = markerPaths[item.marker];
             const barHeight = Math.abs(y(point.yValue) - barBaseline);
-            const circle = svgElement(documentContext, chartType === "bar" ? "rect" : markerPath ? "path" : "circle", {
+            const circle = createSvgElement(documentContext, chartType === "bar" ? "rect" : markerPath ? "path" : "circle", {
                 class: chartType === "bar" ? "series-chart-point series-chart-bar" : "series-chart-point",
                 cx: x(index),
                 cy: y(point.yValue),
@@ -310,8 +296,8 @@ export function renderOrdinalSeriesChart({
                     onPointSelect(point);
                 });
             }
-            if (onInspect) bindInspection(circle, { series: item, point, index }, onInspect, inspectionState);
-            else circle.append(svgElement(
+            if (onInspect) bindChartInspection(circle, { series: item, point, index }, onInspect, inspectionState);
+            else circle.append(createSvgElement(
                 documentContext,
                 "title",
                 {},
@@ -322,49 +308,6 @@ export function renderOrdinalSeriesChart({
         });
     }
     chart.append(...pointGroups);
-    const yTitleX = axisFontSize === null ? 16 : Math.max(16, axisFontSize + 4);
-    chart.append(
-        svgElement(documentContext, "text", {
-            class: "series-chart-axis-title", ...(axisFontSize !== null ? {style: `font-size: ${axisFontSize}px`} : {}),
-            x: margin.left + plotWidth / 2,
-            y: height - 8,
-            "text-anchor": "middle",
-        }, xAxisLabel),
-        svgElement(documentContext, "text", {
-            class: "series-chart-axis-title", ...(axisFontSize !== null ? {style: `font-size: ${axisFontSize}px`} : {}),
-            x: yTitleX,
-            y: margin.top + plotHeight / 2,
-            transform: `rotate(-90 ${yTitleX} ${margin.top + plotHeight / 2})`,
-            "text-anchor": "middle",
-        }, yAxisLabel)
-    );
     chart.removeAttribute("hidden");
     return { pointElements, xDomain: horizontal.domain(), yDomain: y.domain() };
-}
-
-/**
- * Give pointer and keyboard users the same details without a second native tooltip.
- * @param {SVGElement} element Focusable line or point.
- * @param {Object} inspection Series and optional observation to describe.
- * @param {(inspection:Object|null)=>void} onInspect Display or clear the details.
- * @param {{focused:Object|null,hovered:Object|null}} state Shared focus and pointer state for this chart.
- * @return {void}
- */
-function bindInspection(element, inspection, onInspect, state) {
-    element.addEventListener("focus", () => { state.focused = inspection; onInspect(inspection); });
-    // Moving focus can scroll a line under a stationary pointer. Only actual
-    // pointer movement should replace the keyboard user's inspected value.
-    element.addEventListener("pointermove", () => { state.hovered = inspection; onInspect(inspection); });
-    element.addEventListener("pointerleave", () => {
-        if (state.hovered === inspection) state.hovered = null;
-        onInspect(state.focused);
-    });
-    element.addEventListener("blur", () => {
-        if (state.focused === inspection) state.focused = null;
-        onInspect(state.hovered);
-    });
-    element.addEventListener("keydown", event => {
-        if (event.key !== "Escape") return;
-        state.focused = null; state.hovered = null; onInspect(null);
-    });
 }
