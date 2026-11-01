@@ -1,0 +1,41 @@
+name: Catalog PostgreSQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalog-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check regression formatting
+        run: |
+          python -m pip install 'black==26.5.1'
+          python -m black --check scripts/test_catalog_postgres.py tests/test_catalog_ingestion_postgres.py
+      - name: Reproduce the original four-writer deadlock
+        shell: bash
+        run: |
+          set +e
+          python scripts/test_catalog_postgres.py --baseline 2>&1 | tee "$RUNNER_TEMP/catalog-deadlock-baseline.log"
+          baseline_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$baseline_status" -ne 1 ]; then
+            echo "Expected the unchanged regression to fail against unpatched pgSTAC."
+            exit 1
+          fi
+          grep -F 'CATALOG_BASELINE_DEADLOCK_REPRODUCED' "$RUNNER_TEMP/catalog-deadlock-baseline.log"
+      - name: Verify the migrated catalog with four writers
+        if: ${{ !cancelled() }}
+        run: python scripts/test_catalog_postgres.py
