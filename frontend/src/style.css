@@ -1447,24 +1447,36 @@ h5 {
   font: 700 10px/1 system-ui, sans-serif;
 }
 
-.raster-histogram-tooltip {
+.raster-histogram-tooltip,
+.raster-series-plot-tooltip {
+  --chart-tooltip-background: rgb(20 20 20 / 92%);
+  --chart-tooltip-color: var(--surface-2);
+  --chart-tooltip-font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   pointer-events: none;
 }
 
-.raster-histogram-tooltip[hidden] {
+.raster-histogram-tooltip[hidden],
+.raster-series-plot-tooltip[hidden] {
   display: none;
 }
 
 .raster-histogram-tooltip rect {
-  fill: rgb(20 20 20 / 92%);
-  stroke: var(--surface-2);
+  fill: var(--chart-tooltip-background);
+  stroke: var(--chart-tooltip-color);
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
 }
 
 .raster-histogram-tooltip text {
-  fill: var(--surface-2);
-  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  fill: var(--chart-tooltip-color);
+  font: var(--chart-tooltip-font);
+}
+
+.raster-series-plot-tooltip {
+  background: var(--chart-tooltip-background);
+  color: var(--chart-tooltip-color);
+  border: 1px solid var(--chart-tooltip-color);
+  font: var(--chart-tooltip-font);
 }
 
 .raster-histogram-axes text,

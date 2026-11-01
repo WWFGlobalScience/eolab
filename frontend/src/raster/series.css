@@ -78,7 +78,7 @@
 .raster-series-progress-message strong { font-size: 1.35rem; line-height: 1.25; }
 .raster-series-progress-message p { margin: 0; font-size: 0.9rem; overflow-wrap: anywhere; }
 .raster-series-progress-message progress { width: 100%; height: 0.65rem; accent-color: var(--brand); }
-#raster-series-results[hidden], #raster-series-add-plot[hidden], #raster-series-plots[hidden], .raster-series-statistics-chart[hidden], .raster-series-plot-tooltip[hidden], .raster-series-empty-plot[hidden] { display: none; }
+#raster-series-results[hidden], #raster-series-add-plot[hidden], #raster-series-plots[hidden], .raster-series-statistics-chart[hidden], .raster-series-empty-plot[hidden] { display: none; }
 .raster-series-plot { position: relative; box-sizing: border-box; flex: 1 0 min(100%, 32rem); min-width: 0; padding: 0.25rem 0; display: flex; flex-direction: column; scroll-margin-block-start: 3rem; }
 .raster-series-plot-header { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; min-height: 2rem; }
 .raster-series-plot-header[hidden] { display: none; }
@@ -107,7 +107,7 @@
 .raster-series-statistics-chart.is-previous { opacity: 0.25; }
 .raster-series-statistics-chart .is-muted { opacity: 0.2; }
 .raster-series-empty-plot { aspect-ratio: 680 / 360; margin: 0; display: grid; place-content: center; font-size: 0.8rem; text-align: center; padding: 0 1rem; box-sizing: border-box; }
-.raster-series-plot-tooltip { position: absolute; left: 0.65rem; right: 0.65rem; top: 3rem; padding: 0.65rem; background: var(--surface-1); color: var(--text-1); border: 1px solid var(--border-1); box-shadow: 0 2px 8px #0003; border-radius: 0.3rem; white-space: pre-line; overflow-wrap: anywhere; font-size: 0.75rem; pointer-events: none; z-index: 1; }
+.raster-series-plot-tooltip { position: absolute; left: 0.65rem; right: 0.65rem; top: 3rem; padding: 0.65rem; box-shadow: 0 2px 8px #0003; border-radius: 0.3rem; white-space: pre-line; overflow-wrap: anywhere; z-index: 1; }
 
 @media (pointer: coarse) {
   #raster-series button, #raster-series select, #raster-series summary { min-width: 44px; min-height: 44px; }
