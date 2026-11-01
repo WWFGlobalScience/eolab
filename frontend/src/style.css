@@ -1488,8 +1488,7 @@ div.chart-tooltip {
   font-size: 11px;
 }
 
-.series-chart-axis-title { font-size: 12px; }
-.series-chart-axis-title { fill: var(--text-1); font-weight: 650; }
+.series-chart-axis-title { fill: var(--text-1); font-size: 12px; font-weight: 650; }
 
 .raster-histogram-chart .series-chart-x-axis text,
 .raster-histogram-chart .series-chart-y-axis text,
