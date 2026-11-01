@@ -87,11 +87,7 @@ class TemporalRasterDataset:
         self.count = self.native_dataset.count
         self.dtypes = self.native_dataset.dtypes
         self.name = self.native_dataset.name
-        self.files = self.native_dataset.files
         self.driver = self.native_dataset.driver
-        self.scales = self.native_dataset.scales
-        self.offsets = self.native_dataset.offsets
-        self.units = self.native_dataset.units
         self.transform = observation.transform
         self.cyclic_x = observation.cyclic_x
         self._column_offset = 0
@@ -101,6 +97,42 @@ class TemporalRasterDataset:
         self.nodatavals = (self.nodata,)
         self.mask_flag_enums = self.native_dataset.mask_flag_enums
         self._update_grid_metadata()
+
+    @property
+    def files(self) -> list[str]:
+        """Read native file dependencies when a source validator needs them.
+
+        Returns:
+            GDAL's file list for this open observation, including any sidecars.
+        """
+        return self.native_dataset.files
+
+    @property
+    def scales(self) -> tuple[float, ...]:
+        """Read band scales when a statistics grid needs their metadata.
+
+        Returns:
+            The scale stored for each native band.
+        """
+        return self.native_dataset.scales
+
+    @property
+    def offsets(self) -> tuple[float, ...]:
+        """Read band offsets when a statistics grid needs their metadata.
+
+        Returns:
+            The offset stored for each native band.
+        """
+        return self.native_dataset.offsets
+
+    @property
+    def units(self) -> tuple[str | None, ...]:
+        """Read band units when a statistics grid needs their metadata.
+
+        Returns:
+            The unit stored for each native band, or None when unspecified.
+        """
+        return self.native_dataset.units
 
     def _update_grid_metadata(self) -> None:
         """Update the view bounds and logical blocks after a column rotation."""

@@ -23,7 +23,10 @@ from eolab_app.processing.aggregate_models import (
     RasterAggregateLimits,
 )
 from eolab_app.processing.polygon_areas import PolygonSummaryInput
-from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
+from eolab_app.processing.raster_aggregate import (
+    calculate_raster_statistics_for_area,
+    plan_statistics_grid,
+)
 from eolab_app.processing.temporal_grid import (
     plan_temporal_calculation_grid,
     plan_temporal_grid,
@@ -44,7 +47,10 @@ from eolab_app.processing.temporal_stack_models import (
     TemporalStackSpec,
 )
 from eolab_app.raster.source_models import TemporalIntervalSelection
-from eolab_app.raster.source_contract import read_native_raster_window
+from eolab_app.raster.source_contract import (
+    read_native_raster_window,
+    require_signed_raster_dependencies,
+)
 from eolab_app.raster.temporal import (
     ResolvedTemporalInterval,
     TemporalObservation,
@@ -94,6 +100,57 @@ def calculate_series(
     with (directory / "result.csv").open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     return spec, artifact, rows
+
+
+@pytest.mark.parametrize("metadata", ["files", "scales", "offsets", "units"])
+def test_series_leaves_unused_native_metadata_for_its_consumers(
+    interval: ResolvedTemporalInterval,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: str,
+) -> None:
+    """Skip unused metadata in series reads while preserving ordinary reader access.
+
+    Args:
+        interval: Real TIFF observations on a common admitted grid.
+        tmp_path: Private calculation output directory.
+        monkeypatch: Observe the native metadata getter without replacing reads.
+        metadata: File dependencies or band metadata unused by the series.
+    """
+    native_metadata = getattr(rasterio.io.DatasetReader, metadata)
+    requested: list[str] = []
+
+    def read_metadata(dataset: rasterio.io.DatasetReader) -> object:
+        """Record native metadata access and return its original value.
+
+        Args:
+            dataset: Open real TIFF whose metadata is being requested.
+
+        Returns:
+            The selected native file list or band metadata, unchanged.
+        """
+        requested.append(dataset.name)
+        return native_metadata.__get__(dataset, type(dataset))
+
+    monkeypatch.setattr(rasterio.io.DatasetReader, metadata, property(read_metadata))
+    _, _, rows = calculate_series(
+        interval, "mean", AggregateArea(kind="wholeRaster"), tmp_path / "series"
+    )
+    assert [float(row["value"]) for row in rows] == pytest.approx([2.75, 4, 43 / 6])
+    assert requested == []
+    observation = interval.observations[0]
+    with TemporalRasterDataset(observation) as dataset:
+        if metadata == "files":
+            require_signed_raster_dependencies(dataset, observation)
+        else:
+            grid = plan_statistics_grid(
+                dataset,
+                Window(0, 0, dataset.width, dataset.height),
+                1,
+                RasterAggregateLimits(),
+            )
+            assert (grid.scale, grid.offset, grid.storedUnit) == ("1.0", "0.0", None)
+    assert requested == [str(observation.path)]
 
 
 @pytest.mark.parametrize("statistic", ["count", "sum", "mean", "min", "max", "stdev"])
