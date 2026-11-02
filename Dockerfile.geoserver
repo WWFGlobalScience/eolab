@@ -6,6 +6,7 @@ COPY geoserver/reader-assessment/pom.xml ./pom.xml
 RUN mvn --batch-mode --no-transfer-progress dependency:go-offline
 
 COPY geoserver/reader-assessment/src/ ./src/
+COPY geoserver/epsg_overrides.properties /epsg_overrides.properties
 COPY tests/fixtures/vectors/ /tests/fixtures/vectors/
 RUN mvn --batch-mode --no-transfer-progress package
 
@@ -52,6 +53,9 @@ COPY --from=imagen-nodata-builder --chmod=0444 \
 
 COPY --chmod=0444 geoserver/jmx-exporter.yml \
     /opt/eolab-jmx/jmx-exporter.yml
+
+COPY --chmod=0444 geoserver/epsg_overrides.properties \
+    /opt/eolab-geoserver/epsg_overrides.properties
 
 COPY --chmod=0555 deployment/require-read-only-scan-source.sh \
     /usr/local/bin/require-read-only-scan-source

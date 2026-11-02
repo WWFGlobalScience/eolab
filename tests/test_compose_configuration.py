@@ -244,6 +244,13 @@ def test_geoserver_has_bounded_tunable_rendering_resources() -> None:
         'export EXTRA_JAVA_OPTS="-Xms256m -Xmx${GEOSERVER_MAX_HEAP_SIZE} '
         in startup
     )
+    assert (
+        "-Duser.projections.override.file=/opt/eolab-geoserver/epsg_overrides.properties"
+        in startup
+    )
+    assert (
+        "COPY --chmod=0444 geoserver/epsg_overrides.properties" in geoserver_dockerfile
+    )
     assert "'^[1-9][0-9]*$'" in startup
     assert "'^[1-9][0-9]*[mMgG]$'" in startup
     assert 'if [ "$heap_megabytes" -lt 256 ]' in startup
