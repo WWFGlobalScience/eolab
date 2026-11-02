@@ -49,3 +49,25 @@ test("equal numeric observations share a safe centered coordinate", () => {
   ], "numeric");
   assert.deepEqual(positions, [364, 364]);
 });
+
+test("large numeric series retain complete domains for scatter and bar charts", () => {
+  const points = Array.from({length: 200000}, (_, index) => ({
+    xValue: index, xLabel: String(index), yValue: index % 17 - 8,
+  }));
+  for (const chartType of ["scatter", "bar"]) {
+    const documentContext = new FakeRasterControlDocument();
+    const chart = documentContext.querySelector("#vector-time-series-chart");
+    const rendered = renderOrdinalSeriesChart({
+      documentContext, chart, points, chartType, xScale: "numeric", xBounds: [0, 0.5],
+      xAxisLabel: "Time", yAxisLabel: "Value", ariaLabel: "Large series",
+      pointAccessibleLabel: point => point.xLabel, pointTooltip: point => point.xLabel,
+    });
+    assert.deepEqual(rendered.xDomain, [0, 0.5]);
+    assert.deepEqual(rendered.yDomain, [-8, 8], "all observations contribute to the automatic Y domain");
+    assert.equal(rendered.pointElements.length, 1, "custom bounds display only the first observation");
+    if (chartType === "bar") {
+      const barWidth = Number(rendered.pointElements[0].circle.getAttribute("width"));
+      assert.ok(Number.isFinite(barWidth) && barWidth > 0);
+    }
+  }
+});

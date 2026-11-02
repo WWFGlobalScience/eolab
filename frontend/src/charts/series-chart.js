@@ -148,9 +148,7 @@ export function renderOrdinalSeriesChart({
     if (finitePoints.length === 0) {
         throw new TypeError("An ordinal series chart requires a finite Y value.");
     }
-    const values = finitePoints.map(point => yScale === "log" ? Math.log10(point.yValue) : point.yValue);
-    let minimum = Math.min(...values);
-    let maximum = Math.max(...values);
+    let [minimum, maximum] = extent(finitePoints, point => yScale === "log" ? Math.log10(point.yValue) : point.yValue);
     if (chartType === "bar" && yScale === "linear") {
         minimum = Math.min(0, minimum);
         maximum = Math.max(0, maximum);
@@ -191,8 +189,10 @@ export function renderOrdinalSeriesChart({
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
     const sortedX = chartType === "bar" && xScale === "numeric" ? [...new Set(numericX)].sort((a, b) => a - b) : [];
-    const spacing = sortedX.length > 1
-        ? Math.min(...sortedX.slice(1).map((value, index) => value - sortedX[index])) : 1;
+    let spacing = sortedX.length > 1 ? Infinity : 1;
+    for (let index = 1; index < sortedX.length; index++) {
+        spacing = Math.min(spacing, sortedX[index] - sortedX[index - 1]);
+    }
     const xDomain = xScale === "numeric" ? extent(numericX) : [0, points.length - 1];
     const horizontal = scaleLinear()
         .domain(xBounds ?? (chartType === "bar" ? [xDomain[0] - spacing / 2, xDomain[1] + spacing / 2] : xDomain))
