@@ -129,7 +129,7 @@ async def prepare_temporal_stack(
         (
             "plan",
             (
-                source,
+                source.observations[0],
                 area,
                 context.aggregate_limits,
                 request.metrics.calculations,

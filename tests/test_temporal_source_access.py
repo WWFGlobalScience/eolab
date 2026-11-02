@@ -371,6 +371,8 @@ def test_interval_selection_preserves_gaps_and_time_support(era5_archive: Path) 
             assert interval.time_support == "mean_rate"
             observations = interval.observations
             assert [value.time.hour for value in observations] == [0, 2]
+            assert observations[0].crs is observations[1].crs
+            assert observations[0].transform is observations[1].transform
             assert [
                 (value.time - value.reference_time).total_seconds()
                 for value in observations

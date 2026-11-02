@@ -143,7 +143,7 @@ def _calculate(
     """
     directory.mkdir()
     limits = RasterAggregateLimits()
-    grid = plan_temporal_grid(interval, area, limits)
+    grid = plan_temporal_grid(interval.observations[0], area, limits)
     spec = TemporalMapSpec(
         source=TemporalIntervalSelection(
             collectionId="eolab-temporal-datasets",

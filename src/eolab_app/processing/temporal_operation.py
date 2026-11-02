@@ -192,7 +192,7 @@ async def prepare_temporal_map(
         )
     status, grid = await context.run_native(
         temporal_process_target,
-        ("plan", (source, area, context.aggregate_limits)),
+        ("plan", (source.observations[0], area, context.aggregate_limits)),
         None,
         context.native,
     )

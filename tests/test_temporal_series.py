@@ -89,7 +89,7 @@ def calculate_series(
         ),
         statistic=statistic,
         area=area,
-        grid=plan_temporal_grid(source, area, limits),
+        grid=plan_temporal_grid(source.observations[0], area, limits),
         unit="cells" if statistic == "count" else source.unit,
         timeSupport=source.time_support,
         observationCount=len(source.observations),
@@ -451,7 +451,7 @@ def test_series_preserves_cyclic_cells_across_dates(tmp_path: Path) -> None:
     point = PixelPoint(longitude=179.0, latitude=0.0)
     limits = RasterAggregateLimits()
     grid, _ = plan_temporal_calculation_grid(
-        source, spec.area, limits, calculations, point
+        source.observations[0], spec.area, limits, calculations, point
     )
     directory = tmp_path / "formulas"
     directory.mkdir()
@@ -570,7 +570,7 @@ def test_temporal_formulas_match_ordinary_raster_calculations(
     point = PixelPoint(longitude=10.5, latitude=11.5)
     limits = RasterAggregateLimits()
     grid, ground_area = plan_temporal_calculation_grid(
-        interval, area, limits, calculations, point
+        interval.observations[0], area, limits, calculations, point
     )
     assert ground_area is not None and ground_area.strategy == "rectilinear"
     directory = tmp_path / "temporal"
@@ -653,7 +653,7 @@ def test_temporal_point_formulas_ignore_area_and_read_only_the_selected_cell(
     calculations = (NamedCalculation(label="Point", expression="pixelValue(a)"),)
     limits = RasterAggregateLimits()
     grid, ground_area = plan_temporal_calculation_grid(
-        interval, area, limits, calculations, point
+        interval.observations[0], area, limits, calculations, point
     )
     assert ground_area is None
     assert reads == []
@@ -703,7 +703,7 @@ def test_temporal_stack_csv_preserves_named_results_and_path_free_provenance(
     area = AggregateArea(kind="wholeRaster")
     limits = RasterAggregateLimits()
     grid, ground_area = plan_temporal_calculation_grid(
-        interval, area, limits, metrics.calculations, metrics.pixelPoint
+        interval.observations[0], area, limits, metrics.calculations, metrics.pixelPoint
     )
     spec = TemporalStackSpec(
         source=TemporalIntervalSelection(
