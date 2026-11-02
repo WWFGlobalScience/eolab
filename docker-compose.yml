@@ -190,6 +190,7 @@ services:
     volumes:
       - processing-data:/processing-data
       - vector-uploads:/vector-uploads:ro
+      - habitat-credentials:/run/habitat-credentials:ro
       - type: bind
         source: ${EOLAB_SCAN_MOUNT_PATH}
         target: /scan-source
@@ -356,3 +357,5 @@ volumes:
     name: ${EOLAB_PROCESSING_DATA_VOLUME_NAME:-eolab-processing-data}
   vector-uploads:
     name: ${EOLAB_VECTOR_UPLOAD_DATA_VOLUME_NAME:-eolab-vector-uploads}
+  habitat-credentials:
+    name: ${EOLAB_HABITAT_CREDENTIALS_VOLUME_NAME:-eolab-habitat-credentials}
