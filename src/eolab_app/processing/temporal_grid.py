@@ -22,7 +22,7 @@ from eolab_app.processing.raster_aggregate import (
     prepare_raster_area_tools,
 )
 from eolab_app.processing.raster_expression import FUNCTIONS, compile_expression, walk
-from eolab_app.raster.temporal import ResolvedTemporalInterval, TemporalRasterDataset
+from eolab_app.raster.temporal import TemporalObservation, TemporalRasterDataset
 
 
 class TemporalReadGrid(BaseModel):
@@ -73,14 +73,14 @@ def temporal_grid_windows(grid: TemporalReadGrid) -> Iterator[Window]:
 
 
 def plan_temporal_grid(
-    interval: ResolvedTemporalInterval,
+    observation: TemporalObservation,
     area: AggregateArea,
     limits: RasterAggregateLimits,
 ) -> TemporalReadGrid:
     """Select a common crop and native tiles without reading observation values.
 
     Args:
-        interval: Authorized nonempty observations sharing their admitted native grid.
+        observation: One authorized observation representing the admitted common grid.
         area: Validated bounds, polygons, vector selection or whole-grid choice.
         limits: Existing Processing lifecycle and geometry settings.
 
@@ -91,7 +91,6 @@ def plan_temporal_grid(
         ProcessingError: If the area cannot be projected or does not overlap.
         OSError: If source metadata cannot be read.
     """
-    observation = interval.observations[0]
     with TemporalRasterDataset(observation) as dataset:
         window, polygons = get_raster_window_and_mask_source(dataset, area, limits)
         try:
@@ -102,7 +101,7 @@ def plan_temporal_grid(
 
 
 def plan_temporal_calculation_grid(
-    interval: ResolvedTemporalInterval,
+    observation: TemporalObservation,
     area: AggregateArea,
     limits: RasterAggregateLimits,
     calculations: tuple[NamedCalculation, ...],
@@ -115,7 +114,7 @@ def plan_temporal_calculation_grid(
     hectare window when required. Planning reads no observation values.
 
     Args:
-        interval: Authorized nonempty observations sharing an admitted grid.
+        observation: One authorized observation representing the admitted common grid.
         area: Validated selected area, ignored by point-only formulas.
         limits: Existing Processing lifecycle and geometry settings.
         calculations: Validated named formulas using the raster alias a.
@@ -133,7 +132,6 @@ def plan_temporal_calculation_grid(
     functions = {
         node.op for root in roots for node in walk(root) if node.op in FUNCTIONS
     }
-    observation = interval.observations[0]
     with TemporalRasterDataset(observation) as dataset:
         if functions == {"pixelValue"}:
             return (

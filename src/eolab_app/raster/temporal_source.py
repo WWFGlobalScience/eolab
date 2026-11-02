@@ -108,8 +108,9 @@ def get_temporal_observations(
         mount: Source mount enclosing the admitted descriptor and archive.
 
     Returns:
-        Observations in increasing label order. Intervals may have gaps or be
-        empty; an exact observation request returns one observation.
+        Observations in increasing label order, sharing their immutable admitted
+        grid metadata. Intervals may have gaps or be empty; an exact observation
+        request returns one observation.
 
     Raises:
         RasterAssetError: If the variable is unknown or a source escapes its mount.
@@ -144,8 +145,10 @@ def get_temporal_observations(
             raster_path = (root / member).resolve()
             if member.is_absolute() or not raster_path.is_relative_to(root):
                 raise RasterAssetError("The selected raster is outside its archive.")
-            transform = Affine.from_gdal(*json.loads(grid))
-            crs = CRS.from_user_input(projection)
+            if not observations:
+                transform = Affine.from_gdal(*json.loads(grid))
+                crs = CRS.from_user_input(projection)
+                cyclic_x = crs.is_geographic and math.isclose(width * transform.a, 360)
             observations.append(
                 TemporalObservation(
                     path=raster_path,
@@ -158,8 +161,7 @@ def get_temporal_observations(
                     transform=transform,
                     crs=crs,
                     nodata=None if nodata is None else float(nodata),
-                    cyclic_x=crs.is_geographic
-                    and math.isclose(width * transform.a, 360),
+                    cyclic_x=cyclic_x,
                 )
             )
     if isinstance(selection, TemporalRasterSelection) and not observations:

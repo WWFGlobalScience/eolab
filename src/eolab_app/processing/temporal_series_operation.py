@@ -166,7 +166,7 @@ async def prepare_temporal_series(
     area = await prepare_series_area(context, request, queued.polygonArea)
     status, grid = await context.run_native(
         temporal_series_process_target,
-        ("plan", (source, area, context.aggregate_limits)),
+        ("plan", (source.observations[0], area, context.aggregate_limits)),
         None,
         context.native,
     )

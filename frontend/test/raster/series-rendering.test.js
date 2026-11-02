@@ -235,9 +235,11 @@ test("result presentation counts requested positions, including waiting, failed 
     assert.equal(h.plots[0], h.state);
     assert.equal(h.view.plots.hidden, false);
     assert.equal(h.view.addPlot.hidden, false);
+    h.view.values.open = true; h.view.values.dispatchEvent(new Event("toggle"));
     assert.equal(h.view.table.children.length, 2);
     assert.equal(h.view.valueCaption.textContent, "");
     assert.equal(h.view.root.classList.contains("raster-series-single-result"), false);
+    h.view.values.open = false; h.view.values.dispatchEvent(new Event("toggle"));
     rows.length = 0; h.draw();
     assert.equal(h.view.values.open, false, "zero positions do not masquerade as a scalar");
     assert.equal(h.view.results.hidden, true);
@@ -282,7 +284,34 @@ test("one temporal observation uses values; several timestamps in the same datas
     h.draw();
     assert.equal(h.view.values.open, false);
     assert.equal(h.plots.at(-1), h.state);
+    h.view.values.open = true; h.view.values.dispatchEvent(new Event("toggle"));
     assert.equal(h.view.table.children.length, 2);
+});
+
+test("closed values create no table rows and opening shows the latest results", () => {
+    const h = controlsFixture();
+    const rows = Array.from({length: 1000}, (_, index) => ({label: `Observation ${index}`,
+        statisticLabel: "Mean", state: "value", value: index, rawValue: String(index), unit: "K"}));
+    h.state.rows = rows; h.state.statistics[0].rows = rows;
+    h.state.canDownload = true;
+    h.draw();
+    assert.equal(h.view.values.open, false);
+    assert.equal(h.view.table.children.length, 0);
+    assert.equal(h.view.download.disabled, false, "downloads do not depend on opening the table");
+    rows.at(-1).rawValue = "999.125"; rows.at(-1).value = 999.125;
+    h.draw();
+    assert.equal(h.view.table.children.length, 0, "closed updates leave all values in the owner snapshot");
+    h.view.values.open = true; h.view.values.dispatchEvent(new Event("toggle"));
+    assert.equal(h.view.table.children.length, rows.length);
+    assert.deepEqual(h.view.table.children.at(-1).children.map(cell => cell.textContent),
+        ["Observation 999", "Mean", "999.125 K", "Value"]);
+    const firstRow = h.view.table.children[0];
+    h.view.values.dispatchEvent(new Event("toggle"));
+    assert.equal(h.view.table.children[0], firstRow, "unchanged opening events retain table nodes");
+    h.state.active = false; h.view.render(h.state);
+    rows.at(-1).rawValue = "1000";
+    h.view.values.dispatchEvent(new Event("toggle"));
+    assert.equal(h.view.table.children[0], firstRow, "a queued disclosure event does not draw after closing the panel");
 });
 
 test("the first temporal calculation opens a prominent plot progress area with measured work", () => {
