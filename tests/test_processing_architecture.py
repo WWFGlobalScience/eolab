@@ -210,6 +210,18 @@ def test_processing_deployment_preserves_source_and_artifact_mount_ownership() -
         }
     ]
     assert "processing-data:/processing-data" in worker_mounts
+    assert "habitat-credentials:/run/habitat-credentials:ro" in worker_mounts
+    for name, service in services.items():
+        if name != "processing-worker":
+            assert not any(
+                (
+                    mount.split(":", 1)[0]
+                    if isinstance(mount, str)
+                    else mount.get("source")
+                )
+                == "habitat-credentials"
+                for mount in service.get("volumes", ())
+            ), name
     for name in ("app", "geoserver"):
         assert "processing-data:/processing-data:ro" in services[name]["volumes"], name
 

@@ -322,11 +322,15 @@ deployment before building it. The pit-filling search cutoff is in
 
 Habitat condition can fetch its original scientific inputs from Earth Engine
 inside a model run. Set `EOLAB_HABITAT_EARTH_ENGINE_PROJECT` and
-`EOLAB_HABITAT_EARTH_ENGINE_CREDENTIALS_FILE` in Compose, and mount that
-service-account JSON key read-only in `processing-worker`, outside Catalog data
-mounts. The file setting is the absolute path **inside the container**. Never put
-the key in browser configuration or commit it. Leave both settings blank to use
-only manually selected rasters.
+`EOLAB_HABITAT_EARTH_ENGINE_CREDENTIALS_FILE` in Compose. Place the service-account
+JSON key in the dedicated `habitat-credentials` volume, readable by the worker's
+`eolab` user. Compose mounts that volume read-only at `/run/habitat-credentials`
+in `processing-worker` only. For a file named `service-account-key.json`, set the
+credential path to `/run/habitat-credentials/service-account-key.json`. Use a
+separate `EOLAB_HABITAT_CREDENTIALS_VOLUME_NAME` for each deployment. Keep the key
+outside Catalog data and the repository; never put it in browser configuration.
+Leave the project and credential-path settings blank to use only manually
+selected rasters.
 
 In **Tools → Models → Habitat condition**, choose **Original model inputs from
 Earth Engine** as the input source, select the assessment year, then choose an
