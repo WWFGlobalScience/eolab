@@ -56,6 +56,7 @@ COPY --chmod=0444 geoserver/jmx-exporter.yml \
 
 COPY --chmod=0444 geoserver/epsg_overrides.properties \
     /opt/eolab-geoserver/epsg_overrides.properties
+RUN chmod 0755 /opt/eolab-geoserver
 
 COPY --chmod=0555 deployment/require-read-only-scan-source.sh \
     /usr/local/bin/require-read-only-scan-source
