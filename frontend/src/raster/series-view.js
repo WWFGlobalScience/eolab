@@ -90,6 +90,9 @@ export class RasterSeriesView {
         this.formulaNodes = new Map();
         this.frame = null;
         this.pendingState = null;
+        this.values.addEventListener("toggle", () => {
+            if (this.snapshot?.active) this.renderValuesTable(this.snapshot.rows);
+        });
         this.resizeObserver = new this.document.defaultView.ResizeObserver(entries => {
             const width = entries[0].contentRect.width;
             if (width === this.width) return;
@@ -306,21 +309,33 @@ export class RasterSeriesView {
         const chartNote = showingPrevious ? "Previous results — calculating replacements." : "";
         if (this.chartNote.textContent !== chartNote) this.chartNote.textContent = chartNote;
         if (!hidePlots) this.plotsView.renderPlots(state);
-        const tableValues = state.rows.map(row => [row.label, row.statisticLabel,
+        this.renderValuesTable(state.rows);
+        if (this.download.disabled !== !state.canDownload) this.download.disabled = !state.canDownload;
+    }
+
+    /** Update the values table only while its disclosure is open.
+     * Opening the disclosure renders the latest retained rows, including results
+     * received while it was closed. Exact values and download data stay unchanged.
+     * @param {SeriesValueRow[]} rows Latest ordered result values.
+     * @return {void}
+     */
+    renderValuesTable(rows) {
+        if (!this.values.open) return;
+        const tableValues = rows.map(row => [row.label, row.statisticLabel,
             row.state === "value" ? (row.rawValue ?? formatSeriesNumber(row.value)) + (row.unit ? " " + row.unit : "") : "-",
             row.errorMessage || (row.state === "value" ? (row.cached ? "Cached" : "Value") : STATES[row.state])]);
         const tableSignature = JSON.stringify(tableValues);
         if (this.tableSignature !== tableSignature) {
             this.tableSignature = tableSignature;
-            this.table.replaceChildren(...tableValues.map(values => {
+            this.table.replaceChildren();
+            for (const values of tableValues) {
                 const tr = this.document.createElement("tr");
                 for (const value of values) {
                     const cell = this.document.createElement("td"); cell.textContent = value; tr.append(cell);
                 }
-                return tr;
-            }));
+                this.table.append(tr);
+            }
         }
-        if (this.download.disabled !== !state.canDownload) this.download.disabled = !state.canDownload;
     }
 
     /** Identify the plotted source, sample area and period beside its legend.
