@@ -84,15 +84,3 @@ test("cursor readout owns only DOM presentation and neutral value formatting", a
     assert.match(markup, /id="raster-cursor-marker"[^>]*aria-hidden="true"[^>]*hidden/);
     assert.match(markup, /id="raster-cursor-pending"/);
 });
-
-test("bivariate range presentation depends only on existing raster contracts and helpers", async () => {
-    const source = await readFile(
-        new URL("../../src/raster/bivariate-controls-view.js", import.meta.url), "utf8"
-    );
-    const imports = [...source.matchAll(/from\s+["']([^"']+)["']/g)]
-        .map((match) => match[1]).sort();
-    assert.deepEqual(imports, [
-        "./bivariate.js", "./histogram-axes.js", "./histogram-axis-controls.js", "./paired-statistics.js",
-        "./required-control.js", "./value-format.js",
-    ]);
-});

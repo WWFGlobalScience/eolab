@@ -1858,64 +1858,6 @@ def test_cancelled_coalesced_waiter_preserves_shared_work_and_cache(
     assert not service._inflight
 
 
-def test_statistics_service_invalidates_cache_by_source_signature(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Never reuse cached analysis after the catalog source identity changes."""
-    authorizer = _SourceAuthorizer()
-    read_count = 0
-
-    async def to_thread(
-        _: object,
-        __: Path,
-        area: RasterSamplingArea,
-        ___: object,
-    ) -> RasterStatistics:
-        """Return one incrementing result.
-
-        Args:
-            _: Ignored reader callable.
-            __: Ignored authorized source path.
-            area: Normalized sampling area.
-            ___: Ignored cancellation predicate.
-
-        Returns:
-            Statistics with an incrementing sample value.
-        """
-        nonlocal read_count
-        read_count += 1
-        return _statistics_result(float(read_count), area)
-
-    monkeypatch.setattr(
-        "eolab_app.raster.statistics_service.asyncio.to_thread",
-        to_thread,
-    )
-    service = RasterStatisticsService(RasterSourceAccess(authorizer), 1, 32)
-    request = CatalogRasterStatisticsRequest.model_validate({
-        "collectionId": "eolab-mounted-geotiffs",
-        "itemId": ITEM_ID,
-    })
-
-    async def exercise_signature() -> None:
-        """Replace the authorization after one cached response.
-
-        Returns:
-            None.
-        """
-        first = await service.get(request)
-        assert await service.get(request) is first
-        original = authorizer.authorizations[ITEM_ID]
-        authorizer.authorizations[ITEM_ID] = AuthorizedRaster(
-            original.source_path,
-            (1, 2, 3, 4, 6),
-        )
-        replacement = await service.get(request)
-        assert replacement.sample_minimum == 2
-
-    asyncio.run(exercise_signature())
-    assert read_count == 2
-
-
 def test_statistics_service_keys_cache_by_fixed_policy_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

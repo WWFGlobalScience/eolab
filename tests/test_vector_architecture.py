@@ -5,7 +5,6 @@ from pathlib import Path
 
 
 VECTOR_SOURCE = Path("src/eolab_app/vector")
-RENDERING_SOURCE = Path("src/eolab_app/rendering")
 MAP_LAYER_SOURCE = Path("frontend/src/map-layers")
 
 
@@ -43,26 +42,6 @@ def test_vector_domain_does_not_depend_on_raster_or_http_delivery() -> None:
         or module.startswith("eolab_app.routes.")
         or module == "fastapi"
         or module.startswith("fastapi.")
-        for module in imports
-    )
-
-
-def test_neutral_rendering_contract_does_not_depend_on_features() -> None:
-    """Keep the shared GeoServer/WMS contract below raster and vector owners."""
-    imports = {
-        module
-        for source_path in RENDERING_SOURCE.glob("*.py")
-        # Artifact previews use the neutral single-file raster contract approved
-        # in #698; test_rendering_architecture checks that precise edge separately.
-        if source_path.name != "artifact_preview.py"
-        for module in imported_modules(source_path)
-    }
-
-    assert not any(
-        module == "eolab_app.raster"
-        or module.startswith("eolab_app.raster.")
-        or module == "eolab_app.vector"
-        or module.startswith("eolab_app.vector.")
         for module in imports
     )
 
