@@ -194,6 +194,11 @@ functions.
 The **Raster summary** model in **Tools → Models** also calculates a statistic
 or formula for a raster and area.
 
+![The top of the Raster summary setup card, with a run name, Aboveground biomass raster and Visible map area selected](docs/images/eolab-model-raster-summary.jpg)
+
+*Choose the raster and analysis area before setting the summary formula further
+down the card.*
+
 #### Make a series plot
 
 After selecting vector features, the inspector offers two complementary plots:
@@ -225,13 +230,27 @@ independent styles.
 *Follow changing weather by choosing another hour or variable from the same
 dataset. Here, blue shading shows rainfall at one available observation time.*
 
-To go beyond one observation, open **Tools → Models**:
+To go beyond one observation, open **Tools → Models**.
 
-- **Map for a period** summarizes observations across your chosen dates into
-  a raster, with a second map showing how many observations contributed.
-- **Time series for an area** calculates a spatial statistic for each
-  observation and returns a CSV. For example, follow mean temperature within a
-  watershed over time.
+#### Map for a period
+
+Summarize observations across your chosen dates into a raster, with a second
+map showing how many observations contributed.
+
+![The top of the Map for a period setup card, with ERA5 hourly weather, 2 metre temperature and Whole month selected](docs/images/eolab-model-period-map.jpg)
+
+*Start with a dataset and variable, then choose the dates and statistic further
+down the card.*
+
+#### Time series for an area
+
+Calculate a spatial statistic for each observation and download a CSV. For
+example, follow mean temperature within a watershed over time.
+
+![The top of the Time series for an area setup card, with a run name, weather dataset, temperature variable and time-range choice](docs/images/eolab-model-area-time-series.jpg)
+
+*Choose the observations to use before selecting the analysis area and its
+statistic further down the card.*
 
 **Raster statistics** also compares observations as a plotted series. Select
 the dates for the calculation explicitly; they are independent of the single
@@ -249,6 +268,27 @@ values, ready for further analysis in GIS software. For example, extract biomass
 data within a project's boundary instead of downloading the whole regional
 dataset.
 
+#### How do I download a clip?
+
+1. Add a raster to **Map layers**, then pan and zoom to the area you need.
+2. Open **Tools → Models** and choose **Raster clip**.
+3. Give the run a name, choose **Raster**, and set **Analysis area** to
+   **Visible map area**. Choose **Sampling area** for a sampling box or
+   **Vector layer** for selected polygons instead.
+4. Select **Run model** and follow its progress in **Runs**.
+5. When the run is ready, select **Download** under **Clipped raster** to save
+   the GeoTIFF.
+
+![The top of the Raster clip setup card, named Biomass clip example, with Aboveground biomass and Visible map area selected](docs/images/eolab-model-raster-clip.jpg)
+
+*Name the clip and choose its raster and area. This example clips biomass data
+to the visible map area.*
+
+![A completed biomass clip beside the map of Sabah, showing the Clipped raster result and its Download link](docs/images/eolab-clip-download.jpg)
+
+*The completed run offers a GeoTIFF download. Save files you need before the
+expiry shown in the run.*
+
 ### Estimate downstream beneficiaries
 
 Open **Tools → Models** and choose **Downstream ecosystem beneficiaries** to
@@ -259,6 +299,11 @@ flow using elevation and watershed data. Adjust **Buffer radius** and the
 optional **Maximum straight-line distance** to choose the coverage used for the
 calculation. Values are resampled onto the model's calculation grid, and only
 positive values are included.
+
+![The top of the Downstream ecosystem beneficiaries setup card, with a vector starting mask and all nine Sabah corridor features selected](docs/images/eolab-model-downstream-beneficiaries.jpg)
+
+*Choose a starting mask. Selecting a polygon layer shows how many features will
+be included; the values layer and calculation settings follow below.*
 
 Results include a downstream coverage map, a map of the selected values within
 that coverage, and summary statistics. With population counts as the values and
@@ -277,6 +322,11 @@ habitat-response rasters. The model learns the relationship between the
 environment and habitat responses at the reference sites inside that area, then
 compares observed responses elsewhere with those expected under reference
 conditions.
+
+![The top of the Habitat condition setup card, showing Original model inputs from Earth Engine and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
+
+*The Habitat card starts with the input source. Earth Engine mode also offers
+an assessment year; area and reference-site choices follow below.*
 
 The **Reference similarity** map shows the result on a scale from 0 to 1: higher
 values indicate greater similarity to reference conditions. Downloadable
