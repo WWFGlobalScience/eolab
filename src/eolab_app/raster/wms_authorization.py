@@ -152,7 +152,8 @@ class PublishedRasterAuthorization:
             query: Globally bounded and feature-validated public query entries.
 
         Returns:
-            Server-owned upstream query entries.
+            Server-owned upstream query entries with workspace-qualified
+            continuous styles or an inline categorical style.
 
         Raises:
             PublishedLayerRequestError: If the categorical definition is invalid.
@@ -160,7 +161,15 @@ class PublishedRasterAuthorization:
         normalized = {name.lower(): value for name, value in query}
         definition = normalized.get("raster_style")
         if definition is None:
-            return query
+            # Global WMS and GeoWebCache identify workspace styles by their full name.
+            return [
+                (
+                    (name, f"eolab:{RASTER_WMS_STYLE_NAME}")
+                    if name.lower() in {"style", "styles"} and value
+                    else (name, value)
+                )
+                for name, value in query
+            ]
         style = parse_categorical_raster_style_json(definition)
         document = build_categorical_raster_sld(normalized["layers"], style, 1)
         forwarded = [
