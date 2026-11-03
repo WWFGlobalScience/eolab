@@ -15,28 +15,35 @@ the places you are studying.*
 
 ## What can you do with EOLab
 
-- Find shared raster, vector and temporal datasets in a searchable Catalog.
-- Combine layers and change colors, ranges, transparency, categories and labels
-  to make patterns easier to see.
-- Click to inspect features and pixels; compare distributions with histograms.
-- Calculate values, areas and custom formulas for a box or selected polygons,
-  compare rasters in a chart, and download the results.
-- Explore data time cubes: choose observations, summarize a period into a map,
-  or calculate a time series for an area.
-- Clip raster data to an area and download it for further analysis.
-- Estimate the number of people downstream of selected areas, such as proposed
-  restoration sites, using a population dataset.
-- Assess habitat condition by comparing observed conditions with those expected
-  from reference sites.
-- Upload polygon GeoPackages, filter features, or draw and share polygons with
-  names and notes.
-- Publish a map link so other people can explore your layers and join shared
-  polygon work.
+**Find data:** Find shared raster, vector and temporal datasets in a searchable
+Catalog built on the SpatioTemporal Asset Catalog (STAC) standard.
 
-For example, a workshop can compare weather observations, measure conditions
-inside selected project areas, and explore which places lie downstream of
-proposed restoration sites. Participants can share a map, contribute polygons
-and download results for further work.
+**Explore data:** Combine layers and change colors, ranges, transparency,
+categories and labels to make patterns easier to see. Click to inspect features
+and pixels, and compare distributions with histograms. Calculate values, areas
+and custom formulas for a box or selected polygons, compare rasters in charts,
+and download the results.
+
+**Slice through time:** Explore data time cubes by choosing individual
+observations or summarizing a period into a map. Calculate a time series of the
+mean, maximum or standard deviation within a custom area, such as a watershed
+defined by an uploaded polygon.
+
+**Clip and download data:** Extract raster data for a sampling box or selected
+polygons and download a GeoTIFF that preserves the original resolution and
+values, ready for further analysis.
+
+**Estimate downstream beneficiaries:** Use a population dataset to estimate how
+many people live downstream of selected areas, such as proposed restoration
+sites. Map the downstream coverage and summarize the population within it.
+
+**Assess habitat condition:** Compare observed habitat conditions with those
+expected from selected reference sites. Map their similarity to identify places
+whose condition differs from comparable reference areas.
+
+**Collaborate with others:** Upload and filter project boundaries, or draw
+polygons with names and notes. Publish a map link so others can explore your
+layers, and use shared polygon layers to collect everyone's contributions.
 
 ## A quick tour
 
