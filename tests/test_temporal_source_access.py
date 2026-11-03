@@ -228,6 +228,17 @@ def test_api_reads_selections_and_refreshes_statistics(era5_archive: Path) -> No
         assert paired.status_code == 200, paired.text
         assert paired.json()["xMinimum"] == 10
         assert paired.json()["yMinimum"] == 20
+        same_observation_request = {**pair_request, "yRaster": source}
+        same_observation = api.post(
+            "/api/raster-analysis/paired-statistics", json=same_observation_request
+        )
+        assert same_observation.status_code == 200, same_observation.text
+        histogram = same_observation.json()["histogram"]
+        assert histogram["xEdges"] == histogram["yEdges"]
+        assert histogram["xMarginalCounts"] == histogram["yMarginalCounts"]
+        numpy.testing.assert_array_equal(
+            histogram["counts"], numpy.diag(histogram["xMarginalCounts"])
+        )
         precipitation = {**source, "variable": PRECIPITATION}
         other = api.post(
             "/api/raster-analysis/statistics", json={**request, "source": precipitation}
@@ -291,6 +302,14 @@ def test_api_reads_selections_and_refreshes_statistics(era5_archive: Path) -> No
         assert refreshed_pair.status_code == 200, refreshed_pair.text
         assert refreshed_pair.json()["xMinimum"] == 40
         assert refreshed_pair.json()["yMinimum"] == 50
+        refreshed_same_observation = api.post(
+            "/api/raster-analysis/paired-statistics", json=same_observation_request
+        )
+        assert (
+            refreshed_same_observation.status_code == 200
+        ), refreshed_same_observation.text
+        assert refreshed_same_observation.json()["xMinimum"] == 40
+        assert refreshed_same_observation.json()["yMinimum"] == 40
         refreshed_categories = api.post(
             "/api/raster-analysis/statistics", json=categorical_request
         )

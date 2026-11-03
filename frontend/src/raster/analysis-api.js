@@ -176,7 +176,7 @@ export async function loadRasterStatistics(
  * Load bounded paired statistics for two ordered original raster sources.
  *
  * @param {Object} xItem Raster source assigned to the X reference grid.
- * @param {Object} yItem Distinct raster source aligned to X.
+ * @param {Object} yItem Raster source aligned to X, possibly the same source.
  * @param {Object} samplingArea Whole overlap, selected bounds or filtered catalog/uploaded polygons.
  * @param {AbortSignal} signal Cancellation signal for stale pair intent.
  * @param {typeof globalThis.fetch} [fetchImplementation=globalThis.fetch]
