@@ -448,7 +448,7 @@ def calculate_raster_statistics_for_area(
 ) -> AggregateArtifact:
     """Calculate summary statistics for a selected area of a raster.
 
-    Read the raster in blocks, exclude nodata pixels and pixels outside the
+    Read the raster in saved batches, exclude nodata pixels and pixels outside the
     selected area, and evaluate the expressions in calculation_plan. Write the
     results to CSV and record the inputs and calculation details in a
     provenance file.
@@ -533,22 +533,7 @@ def calculate_raster_statistics_for_area(
                 polygons.close()
             pixel_area_calculator = raster_area_tools.pixel_area_calculator
             last_progress = 0.0
-            tile_side = (
-                AREA_TILE_SIDE
-                if pixel_area_calculator and not pixel_area_calculator.rectilinear
-                else TILE_SIDE
-            )
-            if calculation_plan.grid.execution:
-                raster_batch_plan = calculation_plan.grid.execution
-            else:
-                raster_batch_plan = plan_raster_read_windows(
-                    raster_area_tools.raster_window,
-                    dataset.block_shapes[0],
-                    dataset.width,
-                    dataset.height,
-                    None,
-                    tile_side,
-                )
+            raster_batch_plan = calculation_plan.grid.execution
             iter_windows = (
                 ()
                 if pixel_only
