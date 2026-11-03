@@ -43,10 +43,10 @@ conditions with those expected from selected reference sites. Map their
 similarity to identify places whose condition differs from comparable reference
 areas.
 
-**[Collaborate with others](#collaborate-with-others):** Upload and filter project
-boundaries, or draw polygons with names and notes. Publish a map link so others
-can explore your layers, and use shared polygon layers to collect everyone's
-contributions.
+**[Collaborate with others](#collaborate-with-others):** Publish a map link so
+others can explore your layers and see saved contributions in shared polygon
+layers. Draw polygons with names and notes, or upload and filter your own
+project boundaries.
 
 ## A quick tour
 
@@ -120,14 +120,28 @@ resize the box to explore another area. Each visible raster has its own chart.
 
 Use **Axes & scale** to inspect a useful range or switch to logarithmic axes
 when values span several orders of magnitude. These controls change the chart
-display. They do not change the sampled data or the map's colors. Categorical
-rasters show named classes and their ground areas when a matching sample is
-available.
+display. They do not change the sampled data or the map's colors.
 
 ![A magenta drought-severity map over Asia with a blue sampling box and its one-dimensional histogram](docs/images/eolab-histograms.jpg)
 
 *Explore July 2022 drought-severity values across Asia. The box identifies the
 sampled area; the histogram shows which values are common there.*
+
+#### Compare category areas
+
+Categorical rasters represent named classes, such as biomes or land-cover types.
+Hover over the map to read a class name and code. With box sampling selected,
+click the map to compare how much of the sampling area each class covers.
+
+The chart shows estimated ground area in hectares and each class's percentage
+of valid area inside the sampling box. Missing-data pixels are excluded; valid
+values without a matching category are included as **Unmapped**. Move or resize
+the box to compare another place.
+
+![A categorical biome map around Sicily and southern Italy beside bars showing each class's percentage of valid area and estimated hectares within a blue sampling box](docs/images/eolab-categorical-areas.jpg)
+
+*Compare the relative areas of biome classes in a 200 km sampling box. The blue
+box marks the sampled area; the bars include both land and marine classes.*
 
 #### Compare two rasters
 
@@ -282,6 +296,54 @@ keeping the reference sites used for training independent of that mask.
 
 ### Collaborate with others
 
+#### Share your map
+
+Choose **Publish map** in the workspace header, enter a title and link name,
+then select **Create map link**. The resulting page opens your chosen layers,
+styles, order, visibility and starting view so others can explore the map
+without the Catalog panel.
+
+Include a shared polygon layer so people opening the map can see everyone's
+saved contributions immediately. Shared layers stay live as people save changes.
+
+![The PACHA workshop map showing shared site-condition polygons and notes, with Becky and Rafael Antelo listed as contributors](docs/images/eolab-shared-polygons.jpg)
+
+*A shared workshop map brings saved polygons, contributor names and notes into
+one view. Everyone can see the contributions; each person edits only their own.*
+
+Older **Copy map link** views may use a link that stores the view directly in
+the URL.
+
+The browser also remembers the last valid map on that deployment. **Reset
+view** returns to an empty map and the configured starting position. **Undo
+reset** restores the immediately previous map.
+
+Map links do not include private local polygons, editing access,
+histogram results, feature plots or processing jobs. Private uploads remain
+private, and model-result previews must be reopened from **Runs**. Maps use the
+site's current datasets; missing data can prevent full restoration.
+
+#### Draw and share polygons
+
+Use **Shared layers → Create layer** to start a shared polygon layer, or **Join
+layer** with a share code and your contributor name. Draw polygons, edit their
+boundaries, and add names and notes. Everyone sees the saved polygons; you can
+edit only your own. **Share layer** copies the code for someone else to join.
+
+If you arrived through a shared map link, choose **Draw polygon** on its shared
+layer and enter your contributor name when asked to add your own polygons.
+
+**Import GeoJSON** brings simple polygons into an editable local layer saved on
+your device. It accepts WGS84 longitude/latitude Polygon features without holes,
+including names and notes. Other file attributes and styles are not imported.
+Use **Polygon uploads…** for a GeoPackage whose attributes you want to retain.
+
+Drawn or imported polygons can define supported analysis areas. Save edits
+before calculating or exporting. **Export GeoJSON** downloads all saved
+polygons in the layer, including those hidden by its filter, so you can keep a
+copy outside EOLab. Private local polygons are not included in map links; share
+them in a shared layer when collaborators need to see them.
+
 #### Bring your own polygons
 
 Open **Map layers → Polygon uploads…** to add a GeoPackage (`.gpkg`) containing
@@ -303,42 +365,6 @@ For an existing Catalog vector or uploaded layer, use **Filter** to narrow the
 features, then select that polygon layer when choosing your analysis area.
 This is useful for working with one country, watershed or project group without
 preparing another file.
-
-#### Draw and share polygons
-
-Use **Shared layers → Create layer** to start a shared polygon layer, or **Join
-layer** with a share code and your contributor name. Draw polygons, edit their
-boundaries, and add names and notes. Everyone sees the saved polygons; you can
-edit only your own. **Share layer** copies the code for someone else to join.
-
-**Import GeoJSON** brings simple polygons into an editable local layer saved on
-your device. It accepts WGS84 longitude/latitude Polygon features without holes,
-including names and notes. Other file attributes and styles are not imported.
-Use **Polygon uploads…** for a GeoPackage whose attributes you want to retain.
-
-Drawn or imported polygons can define supported analysis areas. Save edits
-before calculating or exporting. **Export GeoJSON** downloads all saved
-polygons in the layer, including those hidden by its filter, so you can keep a
-copy outside EOLab. Private local polygons are not included in map links; share
-them in a shared layer when collaborators need to see them.
-
-#### Share your map
-
-Choose **Publish map** in the workspace header, enter a title and link name,
-then select **Create map link**. The resulting page opens your chosen layers,
-styles, order, visibility and starting view so others can explore the map
-without the Catalog panel. Shared polygon layers remain live: collaborators
-see saved changes and can join with the layer's share code. Older **Copy map
-link** views may use a link that stores the view directly in the URL.
-
-The browser also remembers the last valid map on that deployment. **Reset
-view** returns to an empty map and the configured starting position. **Undo
-reset** restores the immediately previous map.
-
-Map links do not include private local polygons, editing access,
-histogram results, feature plots or processing jobs. Private uploads remain
-private, and model-result previews must be reopened from **Runs**. Maps use the
-site's current datasets; missing data can prevent full restoration.
 
 ## Run models and use their results
 
