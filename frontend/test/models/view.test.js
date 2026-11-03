@@ -73,8 +73,8 @@ test("raster choices separate map layers from completed runs and explain unavail
     h.view.render(h.state);
     assert.deepEqual(h.view.setup.inputs.raster.source.children.slice(1).map(group => group.label), ["Map layers", "Completed runs"]);
     assert.equal(h.view.setup.run.disabled, false);
-    assert.equal(h.view.setup.inputs.raster.resultActions.hidden, false);
-    assert.equal(h.view.setup.inputs.raster.olderResults.hidden, false);
+    assert.equal(h.view.setup.form.querySelectorAll("button").some(button =>
+        ["Refresh results", "Load older results"].includes(button.textContent)), false);
     h.state.draft.inputs.raster.raster.available = false; h.state.draft.sources[1].available = false; h.view.render(h.state);
     assert.equal(h.view.setup.run.disabled, true);
     assert.match(h.view.setup.inputs.raster.source.children[2].children[0].textContent, /unavailable/);

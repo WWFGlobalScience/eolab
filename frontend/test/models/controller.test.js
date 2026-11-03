@@ -908,11 +908,33 @@ test("progress observation preserves setup and explicit cancellation targets jus
     assert.deepEqual(h.cancelled, [job().jobId]); assert.equal(h.controller.state.runs[0].status, "cancelled");
 });
 
-test("history pagination is independent of the shared recent-job preview", async () => {
-    const cursors = []; const h = fixture({listModelRuns: async cursor => { cursors.push(cursor); return {jobs: [job({jobId: (cursor ? "2" : "1").repeat(32)})], nextCursor: cursor ? null : "older"}; }});
-    await h.controller.loadRuns(); await h.controller.loadRuns(true);
-    assert.deepEqual(cursors, [null, "older"]); assert.equal(h.controller.state.runs.length, 2);
-    assert.equal(h.jobs.tracked.size, 2);
+test("Runs history controls load result inputs while preserving unfinished setup", async () => {
+    const cursors = [], artifacts = fileManifest();
+    const result = job({status: "ready", expiresAt: artifacts.expiresAt, artifacts});
+    const view = new ModelsView(new SummaryControlDocument());
+    const h = fixture({listModelRuns: async cursor => {
+        cursors.push(cursor);
+        return {jobs: cursor ? [result] : [], nextCursor: cursor ? null : "older"};
+    }}, view);
+    h.controller.chooseModel({...model, inputs: {...model.inputs, raster: {type: "raster", label: "Raster"}}});
+    const draft = h.controller.state.draft;
+    h.controller.editDraft({label: "Unfinished summary", parameters: {summary: "mean(a)"}});
+    view.navigation.runs.dispatchEvent(new Event("click")); await new Promise(resolve => setImmediate(resolve));
+    view.elements.more.dispatchEvent(new Event("click")); await new Promise(resolve => setImmediate(resolve));
+    view.elements["refresh-runs"].dispatchEvent(new Event("click")); await new Promise(resolve => setImmediate(resolve));
+    view.navigation.setup.dispatchEvent(new Event("click"));
+    assert.deepEqual(cursors, [null, "older", null]);
+    assert.equal(h.controller.state.draft, draft); assert.equal(h.controller.state.page, "setup");
+    assert.equal(view.setup.label.value, "Unfinished summary");
+    assert.equal(view.setup.parameters.summary.value, "mean(a)");
+    const source = draft.sources.find(value => value.kind === "runArtifact" && value.artifactId === artifacts.files[0].artifactId);
+    assert.ok(view.setup.inputs.raster.source.querySelectorAll("option").some(option => option.value === modelSourceKey(source)));
+    view.setup.inputs.raster.source.value = modelSourceKey(source);
+    view.setup.inputs.raster.source.dispatchEvent(new Event("change"));
+    assert.deepEqual(captureModelSubmission(draft, "older-result-input").inputs.raster,
+        {kind: "runArtifact", jobId: result.jobId, artifactId: artifacts.files[0].artifactId});
+    assert.equal(h.submitted.length, 0);
+    h.controller.destroy();
 });
 
 test("duplicate uses the saved recipe and inputs without submitting or changing its source run", async () => {
