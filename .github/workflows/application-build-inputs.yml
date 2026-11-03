@@ -2,53 +2,14 @@ name: Application build inputs
 
 on:
   pull_request:
-    paths:
-      - Dockerfile.app
-      - Dockerfile.geoserver
-      - pyproject.toml
-      - deployment/application-*
-      - deployment/start-geoserver.sh
-      - deployment/*beneficiaries*
-      - services/jobs/**
-      - src/eolab_app/vector/outline*
-      - src/eolab_app/vector/selection_source.py
-      - tests/test_outline_jobs.py
-      - src/eolab_jobs/**
-      - tests/test_jobs_client.py
-      - src/eolab_app/routes/jobs_proxy.py
-      - tests/test_job_service.py
-      - tests/test_job_lifecycle.py
-      - frontend/src/raster/categorical-style.js
-      - frontend/test/raster/categorical-style.test.js
-      - frontend/src/raster/appearance-state.js
-      - frontend/src/raster/categorical-editor-view.js
-      - frontend/src/raster/appearance-controls-view.js
-      - frontend/src/raster/controls-view.js
-      - frontend/src/raster/raster-viewer.js
-      - frontend/src/raster/leaflet.js
-      - frontend/src/raster/histogram-controls-view.js
-      - frontend/test/raster/**
-      - frontend/test-support/raster/**
-      - frontend/src/saved-map-view/**
-      - frontend/test/saved-map-view/**
-      - frontend/index.html
-      - frontend/src/style.css
-      - src/eolab_app/saved_maps/**
-      - tests/test_saved_maps.py
-      - tests/fixtures/saved-map-v3-categorical.json
-      - src/eolab_app/raster/categorical_sld.py
-      - src/eolab_app/raster/styles.py
-      - src/eolab_app/raster/wms_authorization.py
-      - src/eolab_app/rendering/**
-      - src/eolab_app/routes/composite_map.py
-      - src/eolab_app/routes/wms_proxy.py
-      - tests/test_categorical_rendering.py
-      - tests/test_raster_categorical_styles.py
-      - tests/test_habitat_earth_engine_model.py
-      - geoserver/reader-assessment/**
-      - geoserver/epsg_overrides.properties
-      - .github/workflows/application-build-inputs.yml
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      reproducibility:
+        description: Also verify two cold builds and rejected build inputs
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -62,7 +23,38 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - name: Verify CI change selection
+        run: python3 .github/tests/test_select_ci_checks.py -v
+      - name: Select checks for changed files
+        id: changes
+        shell: bash
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_REPRODUCIBILITY: ${{ github.event_name != 'workflow_dispatch' || inputs.reproducibility }}
+        run: |
+          python3 scripts/select_ci_checks.py --event "$CI_EVENT" \
+            --base "$CI_BASE" --head "$CI_HEAD" \
+            --reproducibility "$CI_REPRODUCIBILITY" | tee "$GITHUB_OUTPUT"
+      - name: Build the installed application for regression tests
+        if: steps.changes.outputs.application == 'true' && steps.changes.outputs.reproducibility != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/application-builds
+          revision=$(git rev-parse HEAD)
+          docker build --pull --platform linux/amd64 \
+            --build-arg SOURCE_COMMIT="$revision" \
+            -f Dockerfile.app -t eolab-build-inputs:2 . \
+            2>&1 | tee artifacts/application-builds/build-2.log
+          docker run --rm --network none --entrypoint cat \
+            eolab-build-inputs:2 /app/build-environment.json \
+            > artifacts/application-builds/environment-2.json
+          docker image inspect eolab-build-inputs:2 \
+            > artifacts/application-builds/image-2.json
       - name: Build twice without layer or pip caches
+        if: steps.changes.outputs.reproducibility == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -81,6 +73,7 @@ jobs:
           done
           diff -u artifacts/application-builds/environment-{1,2}.json
       - name: Reject an unreviewed wheel hash
+        if: steps.changes.outputs.reproducibility == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -98,6 +91,7 @@ jobs:
           fi
           grep -q 'DO NOT MATCH THE HASHES' artifacts/application-builds/invalid-hash.log
       - name: Reject an incompatible declared build backend
+        if: steps.changes.outputs.reproducibility == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -114,6 +108,7 @@ jobs:
           fi
           grep -q 'incompatible with setuptools>=9999' artifacts/application-builds/invalid-backend.log
       - name: Backend and native fixtures against the installed application
+        if: steps.changes.outputs.application == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -131,6 +126,7 @@ jobs:
                 --basetemp=/tmp/eolab-build-tests -ra --tb=short
             ' 2>&1 | tee artifacts/application-builds/backend-tests.log
       - name: Build and smoke the standalone Job service image
+        if: steps.changes.outputs.application == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -150,13 +146,18 @@ jobs:
           curl --fail http://127.0.0.1:8082/api/jobs/openapi.json > artifacts/application-builds/jobs-openapi.json
           python3 services/jobs/smoke.py http://127.0.0.1:8082
       - name: Frontend tests in the recorded Node build stage
+        if: steps.changes.outputs.application == 'true'
         run: |
           docker build --target frontend-builder -f Dockerfile.app -t eolab-build-inputs:frontend .
           docker run --rm --network none eolab-build-inputs:frontend npm test
       - name: Native GeoServer extension and categorical rendering fixtures
+        if: steps.changes.outputs.application == 'true'
         run: docker build --target reader-assessment-builder -f Dockerfile.geoserver -t eolab-build-inputs:geoserver-extension .
+      - name: No application tests needed for documentation-only changes
+        if: steps.changes.outputs.application == 'false'
+        run: echo 'Only documentation changed; application builds and tests are not needed.'
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.changes.outputs.application == 'true'
         with:
           name: application-build-inputs-${{ github.run_id }}
           path: artifacts/application-builds/
