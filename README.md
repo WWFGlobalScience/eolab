@@ -8,10 +8,10 @@ It is especially useful for workshops and collaborative analysis. A facilitator
 can publish the participants' datasets once, and everyone can explore the same
 material in real time without installing a desktop GIS or creating an account.
 
-![A weather map in EOLab with controls for choosing the variable, month and observation time](docs/images/eolab-temporal-map.jpg)
+![Green aboveground-biomass shading with orange corridor polygons over Sabah, alongside the map's layers and legend](docs/images/eolab-biomass-corridors.jpg)
 
-*Explore an observation on the map, then choose another date or variable from
-the same dataset.*
+*Combine a biomass map with corridor polygons to explore the landscape around
+the places you are studying.*
 
 ## What can you do with EOLab
 
@@ -85,10 +85,10 @@ Open **Style** to bring out the pattern you care about:
 - For vectors, use one symbol, categories, or numeric classes with editable
   breaks. Turn on **Show labels** when names or values help explain the map.
 
-![A raster style editor beside the map it colors](docs/images/eolab-dynamic-styling.jpg)
+![Country polygons colored from yellow to red by area, beside their numeric-class styling controls](docs/images/eolab-dynamic-styling.jpg)
 
-*Adjust the color range to reveal differences in the data. Styling changes the
-appearance of your map, leaving the original values intact.*
+*Choose class breaks and colors to reveal differences between polygons.
+Styling changes the appearance of your map, leaving the original values intact.*
 
 ### Explore what is under the pointer
 
@@ -99,19 +99,9 @@ For visible vectors, EOLab highlights the features under the click and opens
 their attributes in **Feature inspector**. Use **Previous** and **Next** when
 several features overlap. Clicking empty space does not open an empty result.
 
-For rasters, inspect the value at the clicked pixel or open **Histograms** to
-see how values are distributed within a sampling box. Move or resize the box
-to explore another area:
-
-- **1D** mode shows distributions for the active visible rasters.
-- **2D** mode compares the top two visible continuous rasters and marks them
-  **X** and **Y** in Map layers. Reorder those layers to change the pair, or swap
-  the axes in the analysis panel. Other layers stay in Map layers but are
-  temporarily hidden from the map while 2D mode is active.
-
-A two-variable map combines the X and Y values in one color, helping you
-locate combinations such as high values in both layers. Returning to **1D**
-restores the individual raster styles.
+For rasters, inspect the value at the clicked pixel or open **Histograms** in
+**1D** mode to see how values are distributed within a sampling box. Move or
+resize the box to explore another area. Each visible raster has its own chart.
 
 Use **Axes & scale** to inspect a useful range or switch to logarithmic axes
 when values span several orders of magnitude. These controls change the chart
@@ -119,10 +109,31 @@ display. They do not change the sampled data or the map's colors. Categorical
 rasters show named classes and their ground areas when a matching sample is
 available.
 
-![A raster histogram beside its sampling box on the map](docs/images/eolab-histograms.jpg)
+![A magenta drought-severity map over Asia with a blue sampling box and its one-dimensional histogram](docs/images/eolab-histograms.jpg)
 
-*The box identifies the sampled area; the histogram shows which values are
-common there. Use Raster statistics for calculated area totals and formulas.*
+*Explore July 2022 drought-severity values across Asia. The box identifies the
+sampled area; the histogram shows which values are common there.*
+
+### Compare two rasters
+
+Choose **2D** in Histograms to compare the top two visible continuous rasters.
+Map layers marks them **X** and **Y**. Reorder the rasters to choose the pair,
+or swap the axes in the analysis panel. Other layers stay in Map layers but are
+temporarily hidden while the comparison is active.
+
+The joint histogram shows which pairs of values occur together within the same
+sampling area. A coordinated map palette combines both rasters in one color,
+helping you locate those combinations on the map.
+
+![A blue-and-rose bivariate map of Sabah beside a joint histogram of human modification and aboveground biomass, with distributions along both axes](docs/images/eolab-bivariate.jpg)
+
+*Compare human modification and biomass in the same 100 km sampling window.
+Larger squares show more common combinations; the outer histograms
+show each raster's distribution.*
+
+Adjust the palette and each raster's color range to explore the comparison.
+Returning to **1D** restores the individual raster styles. Use **Raster
+statistics** when you need calculated area totals or formulas.
 
 ### Measure an area and compare rasters
 
@@ -158,6 +169,11 @@ dataset. Search with `type:temporal`, add a dataset, and choose its **Variable**
 **Month** and **Date and time (UTC)** in Map layers. Only available observations
 are listed. **Add another view** lets you compare dates or variables with
 independent styles.
+
+![Blue hourly precipitation over the Atlantic and Africa, with controls for the variable, month and UTC observation time](docs/images/eolab-temporal-map.jpg)
+
+*Follow changing weather by choosing another hour or variable from the same
+dataset. Here, blue shading shows rainfall at one available observation time.*
 
 To go beyond one observation, open **Tools → Models**:
 
@@ -234,57 +250,28 @@ them in a shared layer when collaborators need to see them.
 
 ### Run a model and explore its results
 
-Open **Tools → Models**, choose a model, select its inputs and area, then choose
-**Run model** (or **Run analysis** for the temporal tools). You can keep using
-the map while it works. **Runs** shows progress, completed results and **Cancel
-run**; closing the panel does not cancel a calculation.
+Open **Tools → Models** to choose from the available models:
 
-| Model | What you can do |
-| --- | --- |
-| Raster summary | Calculate statistics and formulas for a selected raster and area; download the values. |
-| Raster clip | Download the part of a raster you need as a GeoTIFF. |
-| Map for a period | Turn observations over a date range into a summary map. |
-| Time series for an area | Download a statistic for each available observation in an area. |
-| Downstream ecosystem beneficiaries | Map downstream coverage from a starting area and summarize a values layer within it. |
-| Habitat condition | Compare observed habitat conditions with those expected from selected reference sites. |
+- **Raster summary** — calculate a statistic or formula for a raster and area.
+- **Raster clip** — download the part of a raster you need as a GeoTIFF.
+- **Map for a period** — summarize observations over a date range into a map.
+- **Time series for an area** — download a statistic for each observation in
+  your chosen area.
+- **Downstream ecosystem beneficiaries** — map downstream coverage from
+  selected starting areas and summarize a layer such as population within it.
+- **Habitat condition** — compare observed conditions with those expected from
+  selected reference sites, using the Montana Prairie model.
 
-For **Downstream ecosystem beneficiaries**, choose a **Starting mask** from a
-Catalog or uploaded polygon layer, or a Catalog raster whose positive cells
-mark the starting locations, then choose **Values to summarize**. For example,
-explore downstream coverage from restoration areas and summarize a population
-layer within that coverage.
-The selected starting areas are combined into one calculation. Inspect the
-coverage map, masked values and statistics together; downstream coverage alone
-does not demonstrate a measured benefit to everyone within it.
+Choose the inputs and area, then select **Run model** (or **Run analysis** for
+the temporal tools). Follow progress in **Runs** while continuing to use the
+map. Closing the panel does not cancel work; use **Cancel run** to stop it.
 
-![The downstream model setup with starting-area and values-layer choices](docs/images/eolab-downstream-model.jpg)
-
-*Choose where the calculation starts and what to summarize downstream.*
-
-**Habitat condition** needs an analysis area, reference sites and raster inputs.
-Choose reference sites from a Catalog or uploaded polygon layer, or a raster
-whose cells equal to 1 mark the reference sites. Choose your own rasters or
-**Original model inputs from Earth Engine** when the deployment is configured
-for it. The first Earth Engine run downloads inputs;
-later matching runs reuse them. **Reference similarity** ranges from 0 to 1.
-Its interpretation depends on your reference sites and scientific settings;
-the current configuration follows the Montana Prairie model and is not a
-universally validated habitat-quality score. A known display problem affects
-its EPSG:6933 output in GeoServer; calculation results can still be downloaded
-([tracked here](https://github.com/springinnovate/eolab/issues/1002)).
-
-Completed raster results offer **Show on map** where supported and **Download**.
-Once on the map, use the usual styling and analysis tools. Some raster inputs
-also let you choose an unexpired result from a previous run; use **Refresh
-results** or **Load older results** to find it. Supported choices depend on the
-input: for example, the downstream starting mask requires a Catalog raster or
-a Catalog/uploaded polygon layer.
-
-Use **Duplicate with changes** to repeat a run with different inputs. Runs and
-their files belong to your browser session and have expiry dates. **Keep for
-another 7 days** extends retention; download files you need to keep outside
-EOLab. A map link does not preserve a run or make its private outputs available
-to someone else.
+Download completed results or choose **Show on map** where offered. Some raster
+inputs also accept results from earlier runs. **Duplicate with changes** lets
+you repeat a run with different choices. Runs belong to your browser session
+and have expiry dates: **Keep for another 7 days** extends retention. Download
+files you want to keep, since a map link does not preserve the run or share its
+private outputs.
 
 ### Share your map
 
@@ -299,73 +286,10 @@ The browser also remembers the last valid map on that deployment. **Reset
 view** returns to an empty map and the configured starting position. **Undo
 reset** restores the immediately previous map.
 
-Map links do not include private local polygons, editing credentials,
+Map links do not include private local polygons, editing access,
 histogram results, feature plots or processing jobs. Private uploads remain
-private, and model-result previews must be reopened from **Runs**. Maps refer
-to the deployment's current sources; missing data can prevent full restoration.
-
-## Add your own data
-
-For private polygon files, use [Polygon uploads](#bring-your-own-polygons).
-To make datasets available to everyone, an operator adds them to the
-deployment's configured, read-only data directory. Treat admitted datasets as
-immutable; publish changed data under a new identity. Temporal archives use the
-update-and-refresh workflow below.
-
-1. Prepare georeferenced GeoTIFFs and vector datasets before the session.
-2. Copy them into the deployment's mounted data directory.
-3. Open **Status**, find the Catalog section, and select **Scan directories**.
-4. Review any dataset-specific errors without interrupting successful files.
-5. Search for a representative raster and vector, add both to the map, and
-   verify their bounds and appearance.
-
-To prepare single-band rasters, run [prepare_rasters.py](scripts/prepare_rasters.py)
-with a Python environment containing GDAL's `osgeo` bindings (GDAL 3.10 or newer):
-
-```sh
-python scripts/prepare_rasters.py "input/*.tif" another.tif --destination prepared
-```
-
-It creates EPSG:3857 Cloud Optimized GeoTIFFs named `<name>_cog_epsg3857.tif`,
-with compression and overviews. Existing outputs are skipped. Quote glob patterns
-so the script expands them consistently across shells; multiple files and patterns
-can be combined. From the `scripts` directory, use `python prepare_rasters.py`.
-Nearest-neighbor resampling is the default; use `--resampling bilinear` for
-continuous data when appropriate. GDAL chooses the projected pixel size and
-retains the input data type. Failed conversions are reported and can be retried
-by rerunning the command. Distinct inputs must have distinct filename stems.
-The destination filesystem must support hard links (for example, NTFS or ext4)
-so completed files can be published without overwriting another batch's output.
-
-Scanning again updates files that are still present and removes Catalog items
-whose mounted source files have disappeared. The source mount remains
-read-only; EOLab stores Catalog metadata and generated GeoServer configuration
-elsewhere.
-
-Temporal archives contain prepared GeoTIFF observations and a read-only SQLite
-catalog exposing the `observations` view. Copy the complete archive into the
-mount with its [dataset.yaml descriptor](docs/dataset-examples/dataset.yaml),
-using `source.format: temporal_cog` and a unique dataset `id`, then scan.
-The archive appears as one temporal Catalog item; its folder contents are not
-indexed separately. Admission reads observation metadata without opening each
-GeoTIFF. Missing observations are valid.
-
-Observations share one north-up grid. Publish completed GeoTIFFs before
-exposing them in the archive's observation catalog. The
-[example temporal item](docs/dataset-examples/era5.item.json) and
-[source-access tests](tests/test_temporal_source_access.py) show the metadata
-and executable requests without duplicating them here.
-
-Update files only between calculations and rescan before using the updated
-data. A failed refresh reports an error and keeps the last valid metadata;
-correct the source and complete a successful scan before continuing.
-
-Rendering mounted rasters expects prepared, georeferenced, single-band GeoTIFFs.
-EOLab does not rewrite or optimize them during scanning. Temporal map views
-publish the selected original GeoTIFF through the same GeoServer pipeline. Mounted
-Shapefiles and spatial GeoPackage layers can be added to the map. Other
-recognized vector containers may be searchable in the Catalog even when they
-are not yet renderable.
+private, and model-result previews must be reopened from **Runs**. Maps use the
+site's current datasets; missing data can prevent full restoration.
 
 ## Running your own EOLab workspace
 
@@ -391,92 +315,6 @@ revision.
 Back up persistent volumes before upgrades. Run one `processing-worker`
 container and stop the previous one before replacing it: worker startup
 interrupts unfinished jobs. Deleting volumes deletes their stored data.
-
-### Upgrade an older published map
-
-Maps saved before removal of Catalog `sourceRevision` fields need a one-time
-conversion. The [migration command](src/eolab_app/saved_maps/migrate.py) previews
-one named map by default. It removes only those fields, preserves the map URL,
-layer order, styles and shared-polygon invitations, and never changes polygons
-or contributor ownership. Other incompatible formats cause an error with no
-changes; this command does not convert historical raster styles or URL-fragment
-links. Run it separately for each affected published map.
-
-For `/maps/nhi-site-condition-mapper`, use the following during a maintenance
-window. Have contributors finish saving first. Keep the same database volume,
-domain and browser cookies. Build the new application image containing this
-command, but stop the old app and worker before applying it: the old app still
-requires the removed fields.
-
-```sh
-docker compose stop app processing-worker
-docker compose exec -T database pg_dump -U eolab -d eolab --format=custom --file=/tmp/eolab-before-map-upgrade.dump
-docker compose cp database:/tmp/eolab-before-map-upgrade.dump ./eolab-before-map-upgrade.dump
-docker compose run --rm --no-deps --entrypoint python app -m eolab_app.saved_maps.migrate --slug nhi-site-condition-mapper
-```
-
-Keep the backup outside container storage and test restoring it to a separate
-database before proceeding. The preview reports `changed_layers`, `revision`
-and `applied: false`. Review the count, then replace `REVISION` below with that
-preview's revision. A conflicting edit requires a new preview. A successful
-change increments the map revision once; repeating it is a no-op.
-
-```sh
-docker compose run --rm --no-deps --entrypoint python app -m eolab_app.saved_maps.migrate --slug nhi-site-condition-mapper --apply --expected-revision REVISION
-```
-
-Complete the deployment using the new images, then open the original shared-map
-URL and check its layers, polygon counts and contributor editing access before
-reopening the workshop. In Coolify, use the equivalent commands in the existing
-deployment with its original persistent volumes; do not create a new deployment
-with an empty database. Keep the old image available for rollback.
-
-If verification fails while the maintenance window is still closed, stop the
-new app and worker, restore the database backup, and restart the old images.
-For example, after copying the backup back into the database container:
-
-```sh
-docker compose cp ./eolab-before-map-upgrade.dump database:/tmp/eolab-before-map-upgrade.dump
-docker compose exec -T database pg_restore -U eolab -d eolab --clean --if-exists --single-transaction --exit-on-error /tmp/eolab-before-map-upgrade.dump
-```
-
-A full restore replaces changes made since the backup, so do not use this
-rollback after contributors have resumed editing without reconciling that work.
-
-### Configure models
-
-The downstream model's DEM, watershed layer and topology fields are configured
-in its [bundled YAML recipe](src/eolab_app/processing/recipes/downstream-beneficiaries.yaml),
-under `steps[0].inputs.hydrology.value`. Set these Catalog references for your
-deployment before building it. The pit-filling search cutoff is in
-`steps[0].inputs.settings.value.pit_fill_search_limit` in the same recipe;
--1 and 0 allow unlimited searches.
-
-Habitat condition can fetch its original scientific inputs from Earth Engine
-inside a model run. Set `EOLAB_HABITAT_EARTH_ENGINE_PROJECT` and
-`EOLAB_HABITAT_EARTH_ENGINE_CREDENTIALS_FILE` in Compose. Place the service-account
-JSON key in the dedicated `habitat-credentials` volume, readable by the worker's
-`eolab` user. Compose mounts that volume read-only at `/run/habitat-credentials`
-in `processing-worker` only. For a file named `service-account-key.json`, set the
-credential path to `/run/habitat-credentials/service-account-key.json`. Use a
-separate `EOLAB_HABITAT_CREDENTIALS_VOLUME_NAME` for each deployment. Keep the key
-outside Catalog data and the repository; never put it in browser configuration.
-Leave the project and credential-path settings blank to use only manually
-selected rasters.
-
-For a first Habitat demonstration, use a representative Montana area and 2018,
-with enough reference coverage for the configured spatial validation. The
-[model integration tests](tests/test_habitat_earth_engine_model.py) provide an
-executable request and result example. Downloaded inputs use nearest-neighbor
-resampling; the preparation grid and selected masks' resampling methods remain
-explicit choices in the model setup.
-
-Habitat keeps completed input tiles under `PROCESSING_DATA_PATH/habitat-cache`,
-beside run files on the same filesystem for atomic publication. Tiles survive run
-expiry and restart; administrators may remove the cache only while no calculations
-use it. Concurrent cold requests may both download a tile; the first completed
-publication wins. Run cleanup removes temporary band views and aligned rasters,
-not cached tiles.
 
 EOLab is open-source software under the [Apache License 2.0](LICENSE). Bivariate
 palette definitions originate in the
