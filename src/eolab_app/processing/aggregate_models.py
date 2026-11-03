@@ -353,7 +353,10 @@ class AggregateExecutionPlan(BaseModel):
 
 
 class AggregateGrid(BaseModel):
-    """Native grid, value domain and execution batches for a raster summary."""
+    """Native grid, value domain and required execution batches for a raster summary.
+
+    The planner supplies execution sizes for every grid, including empty selections.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     crs: str
@@ -368,25 +371,23 @@ class AggregateGrid(BaseModel):
     offset: str
     storedUnit: str | None
     groundArea: GroundAreaPlan | None = None
-    execution: AggregateExecutionPlan | None = None
+    execution: AggregateExecutionPlan
 
     @model_serializer(mode="wrap")
     def serialize_grid(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, object]:
-        """Preserve the existing wire shape for numeric-only accepted jobs.
+        """Serialize the grid, omitting unused ground-area metadata.
 
         Args:
             handler: Pydantic's normal field serializer.
 
         Returns:
-            Grid fields, with area metadata only when that method is required.
+            Grid fields with execution sizes and area metadata when required.
         """
         result = handler(self)
         if self.groundArea is None:
             result.pop("groundArea", None)
-        if self.execution is None:
-            result.pop("execution", None)
         return result
 
 

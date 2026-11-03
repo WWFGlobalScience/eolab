@@ -214,15 +214,18 @@ def test_polygon_masks_weights_and_mixed_statistics_across_batch_sizes(
             )
 
 
+@pytest.mark.parametrize("target_chunk_pixels", [None, 65536])
 def test_metadata_planning_and_execution_without_grid_recheck(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_chunk_pixels: int | None,
 ) -> None:
-    """Planning reads metadata only; execution uses new and old saved plans.
+    """Planning reads metadata only; execution uses the persisted batch sizes.
 
     Args:
         tmp_path: Source fixture and output.
-        monkeypatch: Prevent band reads during planning and grid rebuilds
-            during execution.
+        monkeypatch: Prevent band reads during planning and replanning during execution.
+        target_chunk_pixels: Default one-block reads or a requested batch size.
     """
     path = write_source(tmp_path / "source.tif", np.ones((2048, 2048), dtype="uint8"))
 
@@ -238,32 +241,26 @@ def test_metadata_planning_and_execution_without_grid_recheck(
         patch.setattr(kernel, "read_native_raster_window", forbidden)
         patch.setattr(kernel, "read_native_raster_block", forbidden)
         make_spec(path, ["sum(a)"], target_chunk_pixels=4194304)
-        spec = make_spec(path, ["sum(a)"], target_chunk_pixels=65536)
-    assert prepare_aggregate_job(spec, LIMITS).specification == spec.model_dump(
-        mode="json", by_alias=True
-    )
-    original = make_spec(path, ["sum(a)"])
-    old_json = original.model_dump(mode="json", by_alias=True)
-    old_json["grid"].pop("execution")
-    old = AggregateSpec.model_validate(old_json)
-    assert old.model_dump(mode="json", by_alias=True) == old_json
-    assert prepare_aggregate_job(old, LIMITS).specification == old_json
+        spec = make_spec(path, ["sum(a)"], target_chunk_pixels=target_chunk_pixels)
+    prepared = prepare_aggregate_job(spec, LIMITS)
+    assert prepared.specification == spec.model_dump(mode="json", by_alias=True)
+    stored_plan = AggregateSpec.model_validate(prepared.specification)
 
-    def unexpected_grid_recheck(*args: Any, **kwargs: Any) -> None:
-        """Fail if execution rebuilds a previously planned grid.
+    def unexpected_replanning(*args: Any, **kwargs: Any) -> None:
+        """Fail if execution replans the saved grid or read windows.
 
         Args:
-            *args: Unexpected grid arguments.
-            **kwargs: Unexpected grid keyword arguments.
+            *args: Unexpected planning arguments.
+            **kwargs: Unexpected planning keyword arguments.
         """
-        pytest.fail("execution rebuilt the saved grid")
+        pytest.fail("execution replanned the saved grid or read windows")
 
-    monkeypatch.setattr(kernel, "plan_statistics_grid", unexpected_grid_recheck)
-    for plan in (spec, old):
-        result = kernel.calculate_raster_statistics_for_area(
-            path, plan, tmp_path, LIMITS
-        )
-        assert float(result.rows[0]["value"]) == 2048**2
+    monkeypatch.setattr(kernel, "plan_statistics_grid", unexpected_replanning)
+    monkeypatch.setattr(kernel, "plan_raster_read_windows", unexpected_replanning)
+    result = kernel.calculate_raster_statistics_for_area(
+        path, stored_plan, tmp_path, LIMITS
+    )
+    assert float(result.rows[0]["value"]) == 2048**2
 
 
 def test_large_polygon_boundary_counts_do_not_depend_on_tile_width(

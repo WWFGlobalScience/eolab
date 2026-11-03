@@ -52,11 +52,7 @@ def calculation_result_cache_keys(
             area = {"kind": "polygons", "geometryHash": calculation.area.geometryHash}
         if calculation.area.kind == "catalogSelection":
             area.pop("bounds", None)
-        target_chunk_pixels = (
-            calculation.grid.execution.targetChunkPixels
-            if calculation.grid.execution
-            else None
-        )
+        target_chunk_pixels = calculation.grid.execution.targetChunkPixels
     else:
         if source_signature is None and source_checksum is None:
             raise ValueError("Catalog identity or a published checksum is required")
