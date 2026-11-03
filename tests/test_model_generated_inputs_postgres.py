@@ -28,7 +28,7 @@ from test_model_runs_postgres import model_request, submit
 from test_processing_jobs import HEADERS, store
 from test_processing_private_inputs_postgres import input_counts, publish_input
 from test_processing_uploaded_vectors import UploadBoundary, upload_boundary
-from test_raster_clips import write_source
+from raster_fixture_support import write_source
 from test_vector_uploads import HEADERS as UPLOAD_HEADERS
 
 

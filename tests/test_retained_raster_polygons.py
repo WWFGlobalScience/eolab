@@ -18,8 +18,8 @@ from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregate
 from eolab_app.processing.models import ProcessingError
 from eolab_app.raster.read_cancellation import RasterReadCancelled
 from catalog_selection_support import write_selection
-from test_raster_aggregates import make_spec
-from test_raster_clips import write_source
+from raster_aggregate_support import make_spec
+from raster_fixture_support import write_source
 
 
 @pytest.mark.parametrize("chunk_pixels", [None, 4096])

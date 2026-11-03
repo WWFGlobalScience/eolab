@@ -24,8 +24,8 @@ from shapely.geometry import Polygon, mapping
 from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 from test_ground_area import reference_area
-from test_raster_aggregates import LIMITS, make_spec
-from test_raster_clips import write_source
+from raster_aggregate_support import LIMITS, make_spec
+from raster_fixture_support import write_source
 from catalog_selection_support import write_aggregate_area
 
 

@@ -16,7 +16,7 @@ from test_processing_calculations import (
     calculation_inputs,
     submit_calculation,
 )
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 
 
 def test_area_review_result_and_provenance(boundary: Any, store: Any) -> None:

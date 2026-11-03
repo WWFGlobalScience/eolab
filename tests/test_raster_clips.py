@@ -20,87 +20,12 @@ from eolab_app.execution.bounded_process import (
     run_bounded_process,
 )
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.clip_models import (
-    ClipArea,
-    ClipInputs,
-    ClipSpec,
-    RasterClipLimits,
-)
-from eolab_app.processing.raster_clip import create_clip, plan_clip
-from eolab_app.raster.models import CatalogRasterRequest
-from eolab_app.raster.source_identity import RasterSourceIdentity
+from eolab_app.processing.clip_models import ClipArea, ClipInputs, ClipSpec
+from eolab_app.processing.raster_clip import create_clip
 from catalog_selection_support import write_selection
-
-SOURCE = {
-    "collectionId": "eolab-mounted-geotiffs",
-    "itemId": "geotiff-0123456789abcdef01234567",
-}
-LIMITS = RasterClipLimits()
-
-
-def write_source(
-    path: Path,
-    values: numpy.ndarray,
-    nodata: float | None = None,
-    transform: Affine | None = None,
-    crs: str = "EPSG:4326",
-) -> Path:
-    """Write a signed-source-compatible real tiled numeric GeoTIFF fixture.
-
-    Args:
-        path: New fixture output.
-        values: Native band values.
-        nodata: Optional signed nodata sentinel.
-        transform: Optional rotated or projected affine.
-        crs: Declared source reference system.
-
-    Returns:
-        Closed one-band source path.
-    """
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        count=1,
-        width=values.shape[1],
-        height=values.shape[0],
-        dtype=values.dtype,
-        crs=crs,
-        transform=transform or from_origin(0, 10, 0.01, 0.01),
-        nodata=nodata,
-        tiled=True,
-        blockxsize=32,
-        blockysize=32,
-    ) as dataset:
-        dataset.write(values, 1)
-        dataset.scales = (2,)
-        dataset.offsets = (-1,)
-        dataset.units = ("m",)
-        dataset.set_band_description(1, "Risk value")
-        dataset.update_tags(1, STATISTICS_MINIMUM="99999", LONG_NAME="Risk value")
-    return path
-
-
-def make_spec(
-    path: Path, area: ClipArea, limits: RasterClipLimits = LIMITS
-) -> ClipSpec:
-    """Plan a real fixture without reading its data band.
-
-    Args:
-        path: Closed fixture source.
-        area: Explicit immutable bounds or polygon selection.
-        limits: Optional test admission policy.
-
-    Returns:
-        Immutable spec suitable for durable JSON round-trip and execution.
-    """
-    signature = tuple(RasterSourceIdentity.read(path).to_catalog())
-    return ClipSpec(
-        source=CatalogRasterRequest(**SOURCE),
-        sourceSignature=signature,
-        area=area,
-        grid=plan_clip(path, area, limits),
-    )
+from raster_clip_support import LIMITS, make_spec
+from raster_source_support import SOURCE
+from raster_fixture_support import write_source
 
 
 @pytest.mark.parametrize(

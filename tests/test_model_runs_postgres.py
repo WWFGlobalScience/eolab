@@ -31,7 +31,7 @@ from test_processing_jobs import (
     clip_inputs,
     _paused_clip,
 )
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 from test_processing_calculations import paused_calculation
 from test_polygon_summary_areas import rectangle
 from catalog_selection_support import register_selection, write_geopackage_layer

@@ -16,7 +16,7 @@ from eolab_app.processing.raster_preparation import (
     calculate_raster_grid,
     prepare_raster_stack,
 )
-from test_raster_clips import write_source
+from raster_fixture_support import write_source
 
 LIMITS = RasterAggregateLimits()
 PROJECTED = CRS.from_epsg(3857)

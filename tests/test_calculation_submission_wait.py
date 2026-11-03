@@ -11,7 +11,7 @@ from eolab_app.processing.aggregate_models import AggregateJobRequest
 from eolab_app.processing.job_events import PostgresJobEvents
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.service import ProcessingService
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 
 
 def queued_row(identifier: str) -> dict[str, Any]:

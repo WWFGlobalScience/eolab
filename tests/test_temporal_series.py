@@ -57,7 +57,7 @@ from eolab_app.raster.temporal import (
     TemporalRasterDataset,
 )
 from tests.test_temporal_reductions import _write_observation, interval
-from tests.test_raster_aggregates import make_spec
+from raster_aggregate_support import make_spec
 
 
 def calculate_series(

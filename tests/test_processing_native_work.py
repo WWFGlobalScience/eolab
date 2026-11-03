@@ -14,8 +14,9 @@ from eolab_app.processing.downstream_calculation import describe_values_grid
 from eolab_app.processing.raster_input import count_native_raster_blocks
 from eolab_app.processing.clip_models import ClipArea
 from eolab_app.processing.aggregate_models import AggregateArea
-from test_raster_clips import make_spec as clip_spec, write_source
-from test_raster_aggregates import make_spec as aggregate_spec
+from raster_clip_support import make_spec as clip_spec
+from raster_fixture_support import write_source
+from raster_aggregate_support import make_spec as aggregate_spec
 
 
 @pytest.mark.parametrize("operation", ["calculation", "clip"])

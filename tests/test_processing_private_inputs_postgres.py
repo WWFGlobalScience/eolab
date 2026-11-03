@@ -39,7 +39,7 @@ from eolab_app.raster.source_models import RasterSourceReference
 from test_model_runs_postgres import model_boundary, model_request, submit
 from test_model_artifacts_postgres import multiple_boundary
 from test_processing_jobs import boundary, store, HEADERS, AREA
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 from catalog_selection_support import write_geopackage_layer, register_selection
 
 
