@@ -17,12 +17,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Select checks for changed files
+        id: changes
+        shell: bash
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 scripts/select_ci_checks.py --event "$CI_EVENT" \
+            --base "$CI_BASE" --head "$CI_HEAD" | tee "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
+        if: steps.changes.outputs.catalog == 'true'
         with:
           python-version: '3.12'
       - name: Check regression formatting
+        if: steps.changes.outputs.catalog == 'true'
         run: |
           python -m pip install 'black==26.5.1'
           python -m black --check scripts/test_catalog_postgres.py tests/test_catalog_ingestion_postgres.py
       - name: Verify the migrated catalog with four writers
+        if: steps.changes.outputs.catalog == 'true'
         run: python scripts/test_catalog_postgres.py
+      - name: No catalog database tests needed for these changes
+        if: steps.changes.outputs.catalog == 'false'
+        run: echo 'No catalog database inputs changed.'
