@@ -425,8 +425,8 @@ export class ProcessingApiClient {
         return response.models.map(validateAvailableModel);
     }
 
-    /** Read Habitat's configured Earth Engine years and acquisition grid.
-     * @return {Promise<{defaultYear:number,minimumYear:number,maximumYear:number,grid:Object}>} Public scientific choices; no connection credentials.
+    /** Read Habitat's source years, acquisition grid and linked input datasets.
+     * @return {Promise<{defaultYear:number,minimumYear:number,maximumYear:number,grid:Object,datasets:Array<{label:string,url:string,roles:Array<"predictor"|"response">}>}>} Source choices without connection credentials.
      * @throws {Error} If the configuration request fails.
      */
     async getHabitatEarthEngineOptions() {

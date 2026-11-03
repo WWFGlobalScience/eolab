@@ -20,6 +20,10 @@
 .models-form legend { padding: 0; font-weight: 600; }
 .models-help { color: var(--text-2); font-size: 0.78rem; margin: 4px 0; overflow-wrap: anywhere; }
 .models-vector { display: grid; gap: 8px; }
+.models-habitat-datasets { display: grid; gap: 8px; font-size: 0.78rem; }
+.models-habitat-datasets h4 { margin: 0 0 4px; font-size: inherit; }
+.models-habitat-datasets ul { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; margin: 0; padding: 0; }
+.models-habitat-datasets a { overflow-wrap: anywhere; }
 .models-card, .models-result { padding: 12px; border: 1px solid var(--border-1); border-radius: var(--radius); margin: 10px 0; overflow-wrap: anywhere; }
 .models-card { position: relative; background: var(--surface-2); }
 .models-card:hover { background: var(--surface-hover); border-color: var(--brand); }
