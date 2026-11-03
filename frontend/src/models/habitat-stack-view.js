@@ -3,7 +3,7 @@ import { captureHabitatStack } from "./inputs.js";
 
 /** Edit Habitat's input source and keep manual predictor/response rows stable. */
 export class HabitatStackView {
-    /** Build stack controls using the Models form's existing raster chooser.
+    /** Group the configuration selector with its existing year and raster controls.
      * @param {Object} helpers Models presentation helpers.
      * @param {(tag:string,text?:string,className?:string)=>HTMLElement} helpers.element Create a text-only element.
      * @param {(id:string,caption:string,input:HTMLElement)=>HTMLLabelElement} helpers.field Create a labelled field.
@@ -31,10 +31,13 @@ export class HabitatStackView {
         modelLink.href = "https://github.com/springinnovate/nhi-terrestrial-integrity-modeling";
         modelLink.target = "_blank"; modelLink.rel = "noopener noreferrer";
         attribution.append(element("span", "Based on "), modelLink);
+        this.configurationGroup = element("fieldset", "", "models-input-configuration");
+        this.configurationGroup.setAttribute("aria-label", "Input configuration");
         this.year = element("select");
         this.year.addEventListener("change", () => handlers.onInput(name, {year: Number(this.year.value)}));
         this.automatic = element("fieldset", "", "models-vector");
-        this.automatic.append(element("legend", "Earth Engine inputs"), field(`models-${name}-year`, "Assessment year", this.year));
+        this.automatic.setAttribute("aria-label", "Earth Engine inputs");
+        this.automatic.append(field(`models-${name}-year`, "Assessment year", this.year));
         this.datasetSources = element("div", "", "models-habitat-datasets");
         this.datasetLists = {};
         for (const [role, title] of [["predictor", "Predictor datasets"], ["response", "Observed response datasets"]]) {
@@ -47,8 +50,9 @@ export class HabitatStackView {
         this.retry = button("Retry Earth Engine year choices", () => handlers.onRefreshHabitat(name), "models-action");
         this.automatic.append(this.acquisitionStatus, this.retry);
         this.manual = element("fieldset", "", "models-vector");
-        this.manual.append(element("legend", "Raster layers"));
-        this.root.append(attribution, field(`models-${name}-source`, "Input configuration", this.source), this.automatic, this.manual);
+        this.manual.setAttribute("aria-label", "Custom raster layers");
+        this.configurationGroup.append(field(`models-${name}-source`, "Input configuration", this.source), this.automatic, this.manual);
+        this.root.append(attribution, this.configurationGroup);
         this.help = element("p", "Predictors describe the environment; observed responses describe the habitat condition to model. Each selected raster uses its first band.", "models-help");
         this.help.id = `models-${name}-help`;
         this.manual.append(this.help);
@@ -75,7 +79,7 @@ export class HabitatStackView {
         this.categorical.setAttribute("aria-describedby", categoryHelp.id);
         this.status = element("p", "", "models-error"); this.status.setAttribute("role", "status");
         this.manual.append(field(`models-${name}-categorical`, "Categorical predictor", this.categorical), categoryHelp);
-        this.root.append(this.status);
+        this.configurationGroup.append(this.status);
     }
 
     /** Add one explicitly named row without changing the existing choices.
