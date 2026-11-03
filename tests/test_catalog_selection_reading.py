@@ -30,7 +30,7 @@ from eolab_app.processing.ground_area import PixelAreaCalculator
 from eolab_app.raster.bounded_window import selected_raster_area_for_wgs84_polygons
 from eolab_app.vector.filters import VectorFilter
 from catalog_selection_support import owned_polygon_area, write_selection
-from test_raster_clips import write_source
+from raster_fixture_support import write_source
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux address-space contract")
@@ -110,8 +110,8 @@ def _check_large_selection_numeric_consumers(tmp_path: Path) -> None:
     from eolab_app.raster.statistics import read_raster_statistics
     from eolab_app.raster.paired_statistics import read_raster_paired_statistics
     from eolab_app.sampling_area import CatalogSelectionSamplingArea
-    from test_raster_aggregates import make_spec
-    from test_raster_clips import SOURCE
+    from raster_aggregate_support import make_spec
+    from raster_source_support import SOURCE
 
     geometries = []
     for index in range(850):

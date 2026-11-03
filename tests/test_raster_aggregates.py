@@ -16,25 +16,17 @@ from rasterio.transform import from_origin, xy
 
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
-    AggregateSpec,
     NamedCalculation,
     PixelPoint,
-    RasterAggregateLimits,
 )
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.polygon_areas import PolygonSummaryInput
-from eolab_app.processing.raster_aggregate import (
-    calculate_raster_statistics_for_area,
-    plan_aggregate,
-)
+from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 import eolab_app.processing.raster_aggregate as kernel
 from eolab_app.bounded_vector import pixels_inside_area
-from eolab_app.raster.models import CatalogRasterRequest
-from eolab_app.raster.source_identity import RasterSourceIdentity
-from test_raster_clips import SOURCE, write_source
+from raster_fixture_support import write_source
 from catalog_selection_support import write_aggregate_area
-
-LIMITS = RasterAggregateLimits()
+from raster_aggregate_support import LIMITS, make_spec
 
 
 @pytest.mark.parametrize("block_side", [16, 32, 64])
@@ -145,49 +137,6 @@ def test_stdev_native_masks_selections_blocks_csv_and_provenance(
     assert provenance["rows"] == artifact.rows
     assert provenance["area"]["kind"] == area_kind
     assert provenance["functionInclusion"]["numeric"] == "cell_center"
-
-
-def make_spec(
-    path: Path,
-    expressions: list[str],
-    area: AggregateArea | None = None,
-    limits: RasterAggregateLimits = LIMITS,
-    target_chunk_pixels: int | None = None,
-    pixel_point: PixelPoint | None = None,
-) -> AggregateSpec:
-    """Build an immutable native plan from a real closed fixture.
-
-    Args:
-        path: Signed-compatible source fixture.
-        expressions: Ordered scalar expressions for alias a.
-        area: Explicit selection, defaulting to explicit whole-raster intent.
-        limits: Optional reduced admission budget.
-        target_chunk_pixels: Optional batch pixel budget.
-        pixel_point: Exact WGS84 map position for pixelValue formulas.
-
-    Returns:
-        JSON-round-tripped specification with its authorized catalog source restored.
-    """
-    signature = tuple(RasterSourceIdentity.read(path).to_catalog())
-    area = area or AggregateArea(kind="wholeRaster")
-    calculations = tuple(
-        NamedCalculation(label=f"Result {i}", expression=value)
-        for i, value in enumerate(expressions)
-    )
-    spec = AggregateSpec(
-        sources={"a": CatalogRasterRequest(**SOURCE)},
-        sourceSignature=signature,
-        area=area,
-        calculations=calculations,
-        pixelPoint=pixel_point,
-        grid=plan_aggregate(
-            path, area, calculations, "a", limits, target_chunk_pixels, pixel_point
-        ),
-    )
-    restored = AggregateSpec.model_validate_json(spec.model_dump_json(by_alias=True))
-    return restored.model_copy(
-        update={"area": restored.area.model_copy(update={"resolved": area.resolved})}
-    )
 
 
 @pytest.mark.parametrize(

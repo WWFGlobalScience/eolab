@@ -26,8 +26,9 @@ from eolab_app.processing.models import ProcessingError
 import eolab_app.processing.raster_aggregate as kernel
 from eolab_app.processing.job_preparation import prepare_aggregate_job
 from eolab_app.raster.source_contract import source_block_indexes_for_window
-from test_raster_aggregates import make_spec, LIMITS
-from test_raster_clips import write_source, SOURCE
+from raster_aggregate_support import make_spec, LIMITS
+from raster_fixture_support import write_source
+from raster_source_support import SOURCE
 from catalog_selection_support import write_aggregate_area
 
 

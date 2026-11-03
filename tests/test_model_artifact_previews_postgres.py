@@ -38,7 +38,7 @@ from eolab_app.raster.pixel_service import RasterPixelService
 from eolab_app.raster.statistics_service import RasterStatisticsService
 from test_model_runs_postgres import model_boundary, model_request, submit
 from test_processing_jobs import boundary, store, HEADERS, AREA
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 
 
 @pytest.fixture

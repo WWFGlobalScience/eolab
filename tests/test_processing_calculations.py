@@ -27,7 +27,7 @@ from test_processing_jobs import (
     write_geopackage_layer,
     register_selection,
 )
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 
 ENDPOINT = "/api/processing/raster-calculations"
 

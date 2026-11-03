@@ -10,7 +10,7 @@ from eolab_app.processing.aggregate_models import (
     AggregateValidationRequest,
 )
 from eolab_app.routes.processing import create_processing_router
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 from pathlib import Path
 from html import unescape
 import re
@@ -173,8 +173,8 @@ def test_pixel_location_is_required_and_strict_at_request_and_storage_boundaries
         point: Absent, nonfinite, out-of-range, coerced or unexpected point fields.
     """
     import numpy as np
-    from test_raster_aggregates import make_spec
-    from test_raster_clips import write_source
+    from raster_aggregate_support import make_spec
+    from raster_fixture_support import write_source
 
     inputs = {
         "sources": {"a": SOURCE},

@@ -23,7 +23,8 @@ from eolab_app.processing.native_processes import create_native_process
 from eolab_app.processing.service import serialize_processing_job
 from eolab_app.processing.worker import ProcessingWorker, serve
 from eolab_app.raster.source_identity import RasterSourceIdentity
-from test_raster_clips import SOURCE, write_source
+from raster_source_support import SOURCE
+from raster_fixture_support import write_source
 from test_processing_worker_results import configure_prepared_job_store
 
 
