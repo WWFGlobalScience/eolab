@@ -26,8 +26,10 @@ from rasterio.transform import from_origin
 from shapely.geometry import MultiPolygon, box
 
 from eolab_app.processing.habitat_earth_engine import (
+    HabitatCacheCoverage,
     HabitatEarthEngineSettings,
     get_habitat_tiles,
+    inspect_habitat_cache,
     load_habitat_stack,
 )
 from eolab_app.processing import habitat_earth_engine
@@ -215,6 +217,108 @@ def _tile_bytes(left: float, top: float, *, last_value: float = 3) -> bytes:
                 )
             )
         return memory.read()
+
+
+def test_inspect_missing_cache_counts_only_tiles_intersecting_the_aoi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stack: RasterStackConfiguration,
+) -> None:
+    """Inspect disconnected polygons without fetching or creating a cache.
+
+    Args:
+        tmp_path: Parent of a persistent cache that does not exist yet.
+        monkeypatch: Reject Earth Engine connections, requests and raster reads.
+        stack: Scientific configuration on the small acquisition grid.
+    """
+    for owner, name in (
+        (ee, "ServiceAccountCredentials"),
+        (ee, "Initialize"),
+        (ee.data, "computePixels"),
+        (rasterio, "open"),
+    ):
+        monkeypatch.setattr(owner, name, Mock(side_effect=AssertionError("inspection")))
+    cache = tmp_path / "cache"
+    area = MultiPolygon([box(7, 31, 27, 51), box(27, 11, 47, 31)])
+
+    coverage = inspect_habitat_cache(area, stack, cache)
+
+    assert coverage == HabitatCacheCoverage(
+        configuration_sha256=stack.raster_configuration_sha256,
+        year=2019,
+        required_tiles=2,
+        cached_tiles=0,
+        missing_tiles=2,
+    )
+    assert not cache.exists()
+
+
+def test_inspect_cache_matches_acquisition_coverage_and_stack_identity(
+    tmp_path: Path,
+    working_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stack: RasterStackConfiguration,
+) -> None:
+    """Count acquired overlapping tiles while separating years and stack definitions.
+
+    Args:
+        tmp_path: Parent of the persistent cache.
+        working_directory: Existing private acquisition attempt directory.
+        monkeypatch: Download through the offline transport, then reject pixel reads.
+        stack: Scientific configuration on the small acquisition grid.
+    """
+    cache = tmp_path / "cache"
+    cached_area = box(7, 31, 47, 51)
+    _use_offline_earth_engine(
+        monkeypatch,
+        [
+            ({"status": "200"}, _tile_bytes(7, 51)),
+            ({"status": "200"}, _tile_bytes(27, 51)),
+        ],
+    )
+    get_habitat_tiles(
+        cached_area,
+        stack,
+        HabitatEarthEngineSettings("habitat-test", tmp_path / "key.json"),
+        cache_directory=cache,
+        working_directory=working_directory,
+        progress=Mock(),
+        check_cancelled=Mock(),
+    )
+    for owner, name in (
+        (ee, "ServiceAccountCredentials"),
+        (ee, "Initialize"),
+        (ee.data, "computePixels"),
+        (rasterio, "open"),
+    ):
+        monkeypatch.setattr(owner, name, Mock(side_effect=AssertionError("inspection")))
+    area = MultiPolygon([box(7, 31, 27, 51), box(27, 11, 47, 31)])
+
+    assert inspect_habitat_cache(area, stack, cache) == HabitatCacheCoverage(
+        configuration_sha256=stack.raster_configuration_sha256,
+        year=2019,
+        required_tiles=2,
+        cached_tiles=1,
+        missing_tiles=1,
+    )
+    assert inspect_habitat_cache(cached_area, stack, cache) == HabitatCacheCoverage(
+        configuration_sha256=stack.raster_configuration_sha256,
+        year=2019,
+        required_tiles=2,
+        cached_tiles=2,
+        missing_tiles=0,
+    )
+    for other_stack in (
+        _load_test_stack(2018),
+        replace(stack, bands=tuple(reversed(stack.bands))),
+    ):
+        assert inspect_habitat_cache(area, other_stack, cache) == HabitatCacheCoverage(
+            configuration_sha256=other_stack.raster_configuration_sha256,
+            year=other_stack.year,
+            required_tiles=2,
+            cached_tiles=0,
+            missing_tiles=2,
+        )
 
 
 def test_download_preserves_pixels_and_reuses_completed_tiles(
