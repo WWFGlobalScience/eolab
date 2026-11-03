@@ -911,10 +911,11 @@ test("progress observation preserves setup and explicit cancellation targets jus
 test("Runs history controls load result inputs while preserving unfinished setup", async () => {
     const cursors = [], artifacts = fileManifest();
     const result = job({status: "ready", expiresAt: artifacts.expiresAt, artifacts});
+    const recent = job({jobId: "2".repeat(32)}), older = job({jobId: "3".repeat(32)});
     const view = new ModelsView(new SummaryControlDocument());
     const h = fixture({listModelRuns: async cursor => {
         cursors.push(cursor);
-        return {jobs: cursor ? [result] : [], nextCursor: cursor ? null : "older"};
+        return {jobs: cursor ? [older, result] : [recent], nextCursor: cursor ? null : "older"};
     }}, view);
     h.controller.chooseModel({...model, inputs: {...model.inputs, raster: {type: "raster", label: "Raster"}}});
     const draft = h.controller.state.draft;
@@ -924,6 +925,7 @@ test("Runs history controls load result inputs while preserving unfinished setup
     view.elements["refresh-runs"].dispatchEvent(new Event("click")); await new Promise(resolve => setImmediate(resolve));
     view.navigation.setup.dispatchEvent(new Event("click"));
     assert.deepEqual(cursors, [null, "older", null]);
+    assert.deepEqual([...h.jobs.tracked].sort(), [recent.jobId, older.jobId]);
     assert.equal(h.controller.state.draft, draft); assert.equal(h.controller.state.page, "setup");
     assert.equal(view.setup.label.value, "Unfinished summary");
     assert.equal(view.setup.parameters.summary.value, "mean(a)");
