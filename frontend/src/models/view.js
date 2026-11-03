@@ -139,7 +139,7 @@ export class ModelsView {
         select.value = selected;
     }
 
-    /** Build one named raster chooser and its result-history actions.
+    /** Build one named raster chooser with its optional resampling control.
      * @param {HTMLElement} fields Owning setup fieldset.
      * @param {string} name Recipe input name.
      * @param {{type:string,label:string}} input Declared raster input.
@@ -152,12 +152,6 @@ export class ModelsView {
         source.addEventListener("change", () => onChange(this.state.draft.sources.find(value => modelSourceKey(value) === source.value) ?? null));
         const reason = this.element("p", "", "models-help"); reason.id = `models-${name}-source-reason`;
         source.setAttribute("aria-describedby", reason.id);
-        const resultActions = this.element("div", "", "models-actions");
-        const refreshResults = this.button("Refresh results", this.handlers.onRefreshRuns, "models-action");
-        const olderResults = this.button("Load older results", this.handlers.onMore, "models-action");
-        refreshResults.setAttribute("aria-label", `Refresh results for ${input.label}`);
-        olderResults.setAttribute("aria-label", `Load older results for ${input.label}`);
-        resultActions.append(refreshResults, olderResults);
         fields.append(this.field(`models-${name}-raster`, input.label, source));
         let resampling = null, resamplingField = null;
         if (modelHasInput(this.state.draft.model, "raster_preparation")) {
@@ -166,8 +160,8 @@ export class ModelsView {
             resampling.addEventListener("change", () => onResampling(resampling.value));
             resamplingField = this.field(`models-${name}-resampling`, "Resampling", resampling); fields.append(resamplingField);
         }
-        fields.append(reason, resultActions);
-        return {source, reason, resultActions, refreshResults, olderResults, resampling, resamplingField};
+        fields.append(reason);
+        return {source, reason, resampling, resamplingField};
     }
 
     /** Build an area, starting-mask or reference-site chooser with its own vector editor host.
@@ -309,9 +303,6 @@ export class ModelsView {
             label: source.label + (source.available === false ? " (unavailable)" : source.visible === false ? " (hidden on map)" : "")}))], value.raster ? modelSourceKey(value.raster) : "");
         controls.reason.textContent = value.raster?.available === false ? "This raster is no longer available. Choose another input." :
             optional ? "Leave None selected to run without this optional input." : value.sourceReason;
-        controls.resultActions.hidden = !acceptsResults;
-        controls.refreshResults.disabled = Boolean(state.historyLoading); controls.refreshResults.textContent = state.historyLoading ? "Loading results…" : "Refresh results";
-        controls.olderResults.hidden = !state.nextCursor; controls.olderResults.disabled = Boolean(state.historyLoading);
         if (controls.resampling) {
             controls.resampling.value = value.resampling;
             controls.resamplingField.hidden = !value.raster;
