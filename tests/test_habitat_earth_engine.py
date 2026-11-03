@@ -310,7 +310,8 @@ def test_inspect_cache_matches_acquisition_coverage_and_stack_identity(
     )
     for other_stack in (
         _load_test_stack(2018),
-        replace(stack, bands=tuple(reversed(stack.bands))),
+        # The loader supplies identity; replacing other fields does not recompute it.
+        replace(stack, raster_configuration_sha256="b" * 64),
     ):
         assert inspect_habitat_cache(area, other_stack, cache) == HabitatCacheCoverage(
             configuration_sha256=other_stack.raster_configuration_sha256,
