@@ -105,12 +105,11 @@ def catalog_database() -> CatalogDatabase:
         )
         contracts = function_contracts(connection)
         assert len(contracts) == 3
-        if os.environ.get("EOLAB_CATALOG_TEST_BASELINE") != "1":
-            if not MIGRATION.is_file():
-                pytest.fail(f"Missing catalog migration: {MIGRATION.name}")
-            migration = MIGRATION.read_text(encoding="utf-8")
-            connection.execute(migration, prepare=False)
-            connection.execute(migration, prepare=False)
+        if not MIGRATION.is_file():
+            pytest.fail(f"Missing catalog migration: {MIGRATION.name}")
+        migration = MIGRATION.read_text(encoding="utf-8")
+        connection.execute(migration, prepare=False)
+        connection.execute(migration, prepare=False)
     return CatalogDatabase(dsn, contracts)
 
 
@@ -499,7 +498,7 @@ def test_parallel_cold_ingestion(catalog_database: CatalogDatabase) -> None:
     """Reproduce cold-partition stale bounds with four real 100-item writers.
 
     Args:
-        catalog_database: Guarded database with either baseline or patched pgSTAC.
+        catalog_database: Guarded disposable database containing the migration.
     """
     with collection(catalog_database) as identifier:
         prefix = uuid4().hex
@@ -544,17 +543,6 @@ def test_parallel_cold_ingestion(catalog_database: CatalogDatabase) -> None:
                     f"Cold ingestion schedule failed: {scheduling_failure}; "
                     f"database_deadlocks={observed_deadlocks}; "
                     f"writer_errors={[(result.application_name, result.error) for result in results]!r}",
-                    flush=True,
-                )
-            if observed_deadlocks > 0 or any(
-                (result.error is not None and result.error[0] == "40P01")
-                or any(notice[0] == "40P01" for notice in result.notices)
-                for result in results
-            ):
-                print(
-                    "CATALOG_BASELINE_DEADLOCK_REPRODUCED "
-                    f"database_deadlocks={observed_deadlocks} "
-                    f"writer_errors={[result.error for result in results]}",
                     flush=True,
                 )
             assert_complete(catalog_database, identifier, batches, results, initial)
