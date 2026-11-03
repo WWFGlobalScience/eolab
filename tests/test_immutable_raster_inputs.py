@@ -15,8 +15,9 @@ from eolab_app.processing.raster_aggregate import (
 )
 from eolab_app.processing.raster_clip import create_clip, plan_clip
 from eolab_app.raster.source_identity import RasterSourceIdentity
-from test_raster_aggregates import make_spec as aggregate_spec
-from test_raster_clips import LIMITS, make_spec as clip_spec, write_source
+from raster_aggregate_support import make_spec as aggregate_spec
+from raster_clip_support import LIMITS, make_spec as clip_spec
+from raster_fixture_support import write_source
 
 
 @pytest.mark.parametrize("operation", ["summary", "clip"])

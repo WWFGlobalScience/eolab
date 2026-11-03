@@ -43,7 +43,9 @@ from eolab_app.vector.sampling import VectorSamplingService
 from eolab_app.catalog_selection import CatalogSelection
 from eolab_app.bounded_vector import selection_summary
 from app_support import mounted_geotiff_item
-from test_raster_clips import SOURCE, make_spec, write_source
+from raster_source_support import SOURCE
+from raster_clip_support import make_spec
+from raster_fixture_support import write_source
 from catalog_selection_support import write_geopackage_layer, register_selection
 
 HEADERS = {"X-EOLab-Processing": "1"}

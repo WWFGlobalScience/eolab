@@ -20,9 +20,9 @@ from eolab_app.processing.raster_aggregate import (
     calculate_raster_statistics_for_area,
     write_statistics_result,
 )
-from test_raster_aggregates import make_spec, LIMITS
+from raster_aggregate_support import make_spec, LIMITS
 from eolab_app.processing.aggregate_models import RasterAggregateLimits
-from test_raster_clips import write_source
+from raster_fixture_support import write_source
 
 
 @pytest.fixture

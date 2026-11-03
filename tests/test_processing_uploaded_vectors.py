@@ -44,7 +44,8 @@ from eolab_app.vector_uploads import VectorUploadStore
 from app_support import mounted_geotiff_item
 from test_model_runs_postgres import downstream_boundary, model_request
 from test_processing_jobs import HEADERS, _paused_clip, store
-from test_raster_clips import SOURCE, write_source
+from raster_source_support import SOURCE
+from raster_fixture_support import write_source
 from test_vector_uploads import HEADERS as UPLOAD_HEADERS, write_layer
 
 UploadBoundary: TypeAlias = tuple[

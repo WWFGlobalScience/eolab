@@ -2,7 +2,7 @@ schema: eolab.model/v1
 id: habitat-condition
 version: "1.0.0"
 title: Habitat condition
-description: Fit expected habitat responses from reference sites inside the analysis area, then map how closely observed conditions resemble those references. Choose raster layers or download the original model inputs from Earth Engine for an assessment year. Inputs are prepared on one EPSG:6933 grid. The optional habitat mask limits assessment, not training. Scientific settings use the Montana Prairie configuration.
+description: Fit expected habitat responses from reference sites inside the analysis area, then map how closely observed conditions resemble those references.
 inputs:
   stack:
     type: habitat_stack

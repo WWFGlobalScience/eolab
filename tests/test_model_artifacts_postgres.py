@@ -25,7 +25,7 @@ from eolab_app.routes.processing import COOKIE
 from model_recipe_support import multiple_output_recipe
 from test_model_runs_postgres import model_boundary, model_request, submit
 from test_processing_jobs import boundary, store, HEADERS, AREA
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 from uuid import uuid4
 
 

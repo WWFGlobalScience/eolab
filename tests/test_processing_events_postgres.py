@@ -13,7 +13,9 @@ from eolab_app.processing.job_notifications import (
 from eolab_app.processing.clip_models import ClipArea
 from eolab_app.processing.job_preparation import prepare_clip_job
 from test_processing_jobs import store
-from test_raster_clips import SOURCE, make_spec, write_source
+from raster_source_support import SOURCE
+from raster_clip_support import make_spec
+from raster_fixture_support import write_source
 
 
 def test_job_changes_notify_only_commits_and_changed_public_state(

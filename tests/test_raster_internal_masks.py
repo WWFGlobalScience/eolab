@@ -33,8 +33,8 @@ from eolab_app.raster.statistics import (
 )
 from eolab_app.raster.paired_statistics import read_raster_paired_statistics
 from eolab_app.sampling_area import WholeRasterSamplingArea
-from test_raster_aggregates import make_spec as summary_spec
-from test_raster_clips import make_spec as clip_spec, LIMITS as CLIP_LIMITS
+from raster_aggregate_support import make_spec as summary_spec
+from raster_clip_support import make_spec as clip_spec, LIMITS as CLIP_LIMITS
 from catalog_selection_support import write_selection
 
 

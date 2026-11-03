@@ -21,8 +21,8 @@ from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.job_preparation import prepare_aggregate_job
 from eolab_app.processing.worker import ProcessingWorker
 from eolab_app.raster.read_cancellation import RasterReadCancelled
-from test_raster_aggregates import make_spec
-from test_raster_clips import write_source
+from raster_aggregate_support import make_spec
+from raster_fixture_support import write_source
 
 
 @pytest.mark.parametrize("rotated", [False, True])

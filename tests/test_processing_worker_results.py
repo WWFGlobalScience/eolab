@@ -25,7 +25,8 @@ from eolab_app.processing.service import serialize_processing_job
 from eolab_app.processing.worker import ProcessingWorker
 from eolab_app.processing.model_operations import get_model_operation
 from eolab_app.raster.source_identity import RasterSourceIdentity
-from test_raster_clips import SOURCE, write_source
+from raster_source_support import SOURCE
+from raster_fixture_support import write_source
 
 
 def test_real_plan_worker_and_public_result(

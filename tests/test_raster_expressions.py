@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from eolab_app.processing.aggregate_models import AggregatePlanRequest
 from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.raster_expression import Calculation, compile_expression
-from test_raster_clips import SOURCE
+from raster_source_support import SOURCE
 
 
 def calculate(expression: str, data: list, valid: list | None = None) -> dict:
