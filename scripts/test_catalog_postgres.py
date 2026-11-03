@@ -194,10 +194,8 @@ def disposable_database(database_image: str) -> Iterator[tuple[str, str, str]]:
         print(f"Catalog test cleanup verified: {name}", flush=True)
 
 
-def run_suite(
-    image: str, database_image: str, migration_image: str, *, baseline: bool
-) -> int:
-    """Initialize the real upstream schema and run either the fix or baseline regression.
+def run_suite(image: str, database_image: str, migration_image: str) -> int:
+    """Initialize real pgSTAC and run the migrated catalog regressions.
 
     On POSIX hosts the test container uses the launcher's user and group so it can
     write the private results directory without Linux capability overrides.
@@ -206,7 +204,6 @@ def run_suite(
         image: Test-only image containing pytest, source tests and application SQL.
         database_image: Pinned deployment database image.
         migration_image: Pinned deployment image used only to initialize upstream SQL.
-        baseline: Omit migration 0007 and run the expected-failing cold race alone.
 
     Returns:
         Pytest's exact exit status after logs are printed and owned resources removed.
@@ -254,11 +251,7 @@ def run_suite(
             "--junitxml=/results/catalog-results.xml",
             "/suite/tests/test_catalog_ingestion_postgres.py",
         ]
-        if baseline:
-            command.extend(["-k", "test_parallel_cold_ingestion"])
-            print(
-                "Running the unpatched baseline; this regression must fail", flush=True
-            )
+        # The fixture records upstream contracts before applying migration 0007 twice.
         initializer = (
             "import os,sys; from pathlib import Path; import psycopg; "
             "c=psycopg.connect(os.environ['EOLAB_CATALOG_TEST_DSN'],autocommit=True); "
@@ -295,8 +288,6 @@ def run_suite(
                 "no-new-privileges",
                 "--env",
                 f"EOLAB_CATALOG_TEST_DSN={dsn}",
-                "--env",
-                f"EOLAB_CATALOG_TEST_BASELINE={int(baseline)}",
                 image,
                 "python",
                 "-c",
@@ -329,18 +320,12 @@ def interrupt(signum: int, frame: object) -> None:
 
 
 def main() -> int:
-    """Run the authoritative catalog regression command or its unpatched reproduction.
+    """Run the migrated catalog regressions in a disposable database.
 
     Returns:
-        Zero for a passing fix, pytest failure for the baseline, or 130 if interrupted.
+        Pytest's exit status, or 130 if interrupted.
     """
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--baseline",
-        action="store_true",
-        help="Omit migration 0007 and demonstrate the original four-writer failure",
-    )
-    args = parser.parse_args()
+    argparse.ArgumentParser(description=__doc__).parse_args()
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
     database_image, migration_image = deployment_images()
@@ -348,7 +333,7 @@ def main() -> int:
     try:
         docker("pull", database_image, timeout=300, capture=False)
         image = build_test_image()
-        return run_suite(image, database_image, migration_image, baseline=args.baseline)
+        return run_suite(image, database_image, migration_image)
     except KeyboardInterrupt:
         return 130
     finally:

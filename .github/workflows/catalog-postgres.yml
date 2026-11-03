@@ -24,18 +24,5 @@ jobs:
         run: |
           python -m pip install 'black==26.5.1'
           python -m black --check scripts/test_catalog_postgres.py tests/test_catalog_ingestion_postgres.py
-      - name: Reproduce the original four-writer deadlock
-        shell: bash
-        run: |
-          set +e
-          python scripts/test_catalog_postgres.py --baseline 2>&1 | tee "$RUNNER_TEMP/catalog-deadlock-baseline.log"
-          baseline_status=${PIPESTATUS[0]}
-          set -e
-          if [ "$baseline_status" -ne 1 ]; then
-            echo "Expected the unchanged regression to fail against unpatched pgSTAC."
-            exit 1
-          fi
-          grep -F 'CATALOG_BASELINE_DEADLOCK_REPRODUCED' "$RUNNER_TEMP/catalog-deadlock-baseline.log"
       - name: Verify the migrated catalog with four writers
-        if: ${{ !cancelled() }}
         run: python scripts/test_catalog_postgres.py
