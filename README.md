@@ -15,39 +15,42 @@ the places you are studying.*
 
 ## What can you do with EOLab
 
-**Find data:** Find shared raster, vector and temporal datasets in a searchable
-Catalog built on the SpatioTemporal Asset Catalog (STAC) standard.
+**[Find data](#find-data):** Find shared raster, vector and temporal datasets in
+a searchable Catalog built on the SpatioTemporal Asset Catalog (STAC) standard.
 
-**Explore data:** Combine layers and change colors, ranges, transparency,
-categories and labels to make patterns easier to see. Click to inspect features
-and pixels, and compare distributions with histograms. Calculate values, areas
-and custom formulas for a box or selected polygons, compare rasters in charts,
-and download the results.
+**[Explore data](#explore-data):** Combine layers and change colors, ranges,
+transparency, categories and labels to make patterns easier to see. Click to
+inspect features and pixels, and compare distributions with histograms.
+Calculate values, areas and custom formulas for a box or selected polygons,
+compare rasters in charts, and download the results.
 
-**Slice through time:** Explore data time cubes by choosing individual
-observations or summarizing a period into a map. Calculate a time series of the
-mean, maximum or standard deviation within a custom area, such as a watershed
-defined by an uploaded polygon.
+**[Slice through time](#slice-through-time):** Explore data time cubes by choosing
+individual observations or summarizing a period into a map. Calculate a time
+series of the mean, maximum or standard deviation within a custom area, such as
+a watershed defined by an uploaded polygon.
 
-**Clip and download data:** Extract raster data for a sampling box or selected
-polygons and download a GeoTIFF that preserves the original resolution and
-values, ready for further analysis.
+**[Clip and download data](#clip-and-download-data):** Extract raster data for a
+sampling box or selected polygons and download a GeoTIFF that preserves the
+original resolution and values, ready for further analysis.
 
-**Estimate downstream beneficiaries:** Use a population dataset to estimate how
-many people live downstream of selected areas, such as proposed restoration
-sites. Map the downstream coverage and summarize the population within it.
+**[Estimate downstream beneficiaries](#estimate-downstream-beneficiaries):**
+Use a population dataset to estimate how many people live downstream of
+selected areas, such as proposed restoration sites. Map the downstream coverage
+and summarize the population within it.
 
-**Assess habitat condition:** Compare observed habitat conditions with those
-expected from selected reference sites. Map their similarity to identify places
-whose condition differs from comparable reference areas.
+**[Assess habitat condition](#assess-habitat-condition):** Compare observed habitat
+conditions with those expected from selected reference sites. Map their
+similarity to identify places whose condition differs from comparable reference
+areas.
 
-**Collaborate with others:** Upload and filter project boundaries, or draw
-polygons with names and notes. Publish a map link so others can explore your
-layers, and use shared polygon layers to collect everyone's contributions.
+**[Collaborate with others](#collaborate-with-others):** Publish a map link so
+others can explore your layers and see saved contributions in shared polygon
+layers. Draw polygons with names and notes, or upload and filter your own
+project boundaries.
 
 ## A quick tour
 
-### Find a dataset
+### Find data
 
 Use **Catalog search** to enter any part of a filename, path, description, or
 date. Ordinary words can be combined with these filters:
@@ -73,7 +76,9 @@ need:
 After an item is on the map, the same row also offers **Remove**, **Zoom to**,
 and **Style** without making you leave the search results.
 
-### Build the map
+### Explore data
+
+#### Build and style the map
 
 Open **Map layers** to see the current stack. The first layer in the list draws
 on top. Drag a row by its handle to reorder it, or use the keyboard controls on
@@ -100,7 +105,7 @@ Open **Style** to bring out the pattern you care about:
 *Choose class breaks and colors to reveal differences between polygons.
 Styling changes the appearance of your map, leaving the original values intact.*
 
-### Explore what is under the pointer
+#### Inspect features, pixels and distributions
 
 A normal click explores the visible data at that location. Dragging still pans
 the map.
@@ -115,16 +120,30 @@ resize the box to explore another area. Each visible raster has its own chart.
 
 Use **Axes & scale** to inspect a useful range or switch to logarithmic axes
 when values span several orders of magnitude. These controls change the chart
-display. They do not change the sampled data or the map's colors. Categorical
-rasters show named classes and their ground areas when a matching sample is
-available.
+display. They do not change the sampled data or the map's colors.
 
 ![A magenta drought-severity map over Asia with a blue sampling box and its one-dimensional histogram](docs/images/eolab-histograms.jpg)
 
 *Explore July 2022 drought-severity values across Asia. The box identifies the
 sampled area; the histogram shows which values are common there.*
 
-### Compare two rasters
+#### Compare category areas
+
+Categorical rasters represent named classes, such as biomes or land-cover types.
+Hover over the map to read a class name and code. With box sampling selected,
+click the map to compare how much of the sampling area each class covers.
+
+The chart shows estimated ground area in hectares and each class's percentage
+of valid area inside the sampling box. Missing-data pixels are excluded; valid
+values without a matching category are included as **Unmapped**. Move or resize
+the box to compare another place.
+
+![A categorical biome map around Sicily and southern Italy beside bars showing each class's percentage of valid area and estimated hectares within a blue sampling box](docs/images/eolab-categorical-areas.jpg)
+
+*Compare the relative areas of biome classes in a 200 km sampling box. The blue
+box marks the sampled area; the bars include both land and marine classes.*
+
+#### Compare two rasters
 
 Choose **2D** in Histograms to compare the top two visible continuous rasters.
 Map layers marks them **X** and **Y**. Reorder the rasters to choose the pair,
@@ -145,7 +164,7 @@ Adjust the palette and each raster's color range to explore the comparison.
 Returning to **1D** restores the individual raster styles. Use **Raster
 statistics** when you need calculated area totals or formulas.
 
-### Measure an area and compare rasters
+#### Measure an area and compare rasters
 
 Open **Raster statistics** from a layer or **Tools**. Choose the raster inputs,
 an area and the statistic you want. One result is shown as a value; several
@@ -172,35 +191,15 @@ area does not turn it into an average. Up to five formulas can be calculated
 together for each raster. The tool's formula reference explains the available
 functions.
 
-### Explore data through time
+The **Raster summary** model in **Tools → Models** also calculates a statistic
+or formula for a raster and area.
 
-A data time cube brings observations from different dates together as one
-dataset. Search with `type:temporal`, add a dataset, and choose its **Variable**,
-**Month** and **Date and time (UTC)** in Map layers. Only available observations
-are listed. **Add another view** lets you compare dates or variables with
-independent styles.
+![The top of the Raster summary setup card, with a run name, Aboveground biomass raster and Visible map area selected](docs/images/eolab-model-raster-summary.jpg)
 
-![Blue hourly precipitation over the Atlantic and Africa, with controls for the variable, month and UTC observation time](docs/images/eolab-temporal-map.jpg)
+*Choose the raster and analysis area before setting the summary formula further
+down the card.*
 
-*Follow changing weather by choosing another hour or variable from the same
-dataset. Here, blue shading shows rainfall at one available observation time.*
-
-To go beyond one observation, open **Tools → Models**:
-
-- **Map for a period** summarizes observations across your chosen dates into
-  a raster, with a second map showing how many observations contributed.
-- **Time series for an area** calculates a spatial statistic for each
-  observation and returns a CSV. For example, follow mean temperature within a
-  watershed over time.
-
-**Raster statistics** also compares observations as a plotted series. Select
-the dates for the calculation explicitly; they are independent of the single
-observation currently displayed on the map. Missing observations are not filled
-in, so check coverage before interpreting a trend or period summary. Ordinary
-period statistics weight available observations equally; use **Precipitation
-total** when offered to turn rainfall rates into an accumulated depth.
-
-### Make a series plot
+#### Make a series plot
 
 After selecting vector features, the inspector offers two complementary plots:
 
@@ -218,7 +217,184 @@ Selecting a chart point identifies its source layer and offers **Zoom to source
 layer**. EOLab remembers the plot rules while you inspect other features from
 the same layer, so the chart updates instead of making you configure it again.
 
-### Bring your own polygons
+### Slice through time
+
+A data time cube brings observations from different dates together as one
+dataset. Search with `type:temporal`, add a dataset, and choose its **Variable**,
+**Month** and **Date and time (UTC)** in Map layers. Only available observations
+are listed. **Add another view** lets you compare dates or variables with
+independent styles.
+
+![Blue hourly precipitation over the Atlantic and Africa, with controls for the variable, month and UTC observation time](docs/images/eolab-temporal-map.jpg)
+
+*Follow changing weather by choosing another hour or variable from the same
+dataset. Here, blue shading shows rainfall at one available observation time.*
+
+To go beyond one observation, open **Tools → Models**.
+
+#### Map for a period
+
+Summarize observations across your chosen dates into a raster, with a second
+map showing how many observations contributed.
+
+![The top of the Map for a period setup card, with ERA5 hourly weather, 2 metre temperature and Whole month selected](docs/images/eolab-model-period-map.jpg)
+
+*Start with a dataset and variable, then choose the dates and statistic further
+down the card.*
+
+#### Time series for an area
+
+Calculate a spatial statistic for each observation and download a CSV. For
+example, follow mean temperature within a watershed over time.
+
+![The top of the Time series for an area setup card, with a run name, weather dataset, temperature variable and time-range choice](docs/images/eolab-model-area-time-series.jpg)
+
+*Choose the observations to use before selecting the analysis area and its
+statistic further down the card.*
+
+**Raster statistics** also compares observations as a plotted series. Select
+the dates for the calculation explicitly; they are independent of the single
+observation currently displayed on the map. Missing observations are not filled
+in, so check coverage before interpreting a trend or period summary. Ordinary
+period statistics weight available observations equally; use **Precipitation
+total** when offered to turn rainfall rates into an accumulated depth.
+
+### Clip and download data
+
+Open **Tools → Models** and choose **Raster clip** to extract the part of a raster
+you need. Choose a raster and a sampling box or selected polygons, then download
+the result as a GeoTIFF. The clip preserves the original pixel resolution and
+values, ready for further analysis in GIS software. For example, extract biomass
+data within a project's boundary instead of downloading the whole regional
+dataset.
+
+#### How do I download a clip?
+
+1. Add a raster to **Map layers**, then pan and zoom to the area you need.
+2. Open **Tools → Models** and choose **Raster clip**.
+3. Give the run a name, choose **Raster**, and set **Analysis area** to
+   **Visible map area**. Choose **Sampling area** for a sampling box or
+   **Vector layer** for selected polygons instead.
+4. Select **Run model** and follow its progress in **Runs**.
+5. When the run is ready, select **Download** under **Clipped raster** to save
+   the GeoTIFF.
+
+![The top of the Raster clip setup card, named Biomass clip example, with Aboveground biomass and Visible map area selected](docs/images/eolab-model-raster-clip.jpg)
+
+*Name the clip and choose its raster and area. This example clips biomass data
+to the visible map area.*
+
+![A completed biomass clip beside the map of Sabah, showing the Clipped raster result and its Download link](docs/images/eolab-clip-download.jpg)
+
+*The completed run offers a GeoTIFF download. Save files you need before the
+expiry shown in the run.*
+
+### Estimate downstream beneficiaries
+
+Open **Tools → Models** and choose **Downstream ecosystem beneficiaries** to
+explore which places lie downstream of a starting area and summarize what is
+there. Choose polygons or a raster mask for **Starting mask**, then a raster for
+**Values to summarize**, such as a population dataset. The model follows water
+flow using elevation and watershed data. Adjust **Buffer radius** and the
+optional **Maximum straight-line distance** to choose the coverage used for the
+calculation. Values are resampled onto the model's calculation grid, and only
+positive values are included.
+
+![The top of the Downstream ecosystem beneficiaries setup card, with a vector starting mask and all nine Sabah corridor features selected](docs/images/eolab-model-downstream-beneficiaries.jpg)
+
+*Choose a starting mask. Selecting a polygon layer shows how many features will
+be included; the values layer and calculation settings follow below.*
+
+Results include a downstream coverage map, a map of the selected values within
+that coverage, and summary statistics. With population counts as the values and
+the default sum, you can estimate how many people live within the modeled
+coverage downstream of proposed restoration sites. This identifies potential
+beneficiaries; it does not measure how much benefit each person receives. You can
+also choose another values raster or summary formula to explore a different
+downstream question.
+
+### Assess habitat condition
+
+Open **Tools → Models** and choose **Habitat condition** to assess how closely a
+landscape resembles conditions expected from selected reference sites. Choose an
+analysis area, reference sites, environmental predictor rasters and observed
+habitat-response rasters. The model learns the relationship between the
+environment and habitat responses at the reference sites inside that area, then
+compares observed responses elsewhere with those expected under reference
+conditions.
+
+![The top of the Habitat condition setup card, showing Original model inputs from Earth Engine and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
+
+*The Habitat card starts with the input source. Earth Engine mode also offers
+an assessment year; area and reference-site choices follow below.*
+
+The **Reference similarity** map shows the result on a scale from 0 to 1: higher
+values indicate greater similarity to reference conditions. Downloadable
+diagnostics help you examine the expected responses and departures from them.
+For example, use the map to identify places whose observed condition differs
+from what comparable reference sites suggest. Interpretation depends on your
+reference sites and input data.
+
+Choose raster layers yourself, or use **Original model inputs from Earth Engine**
+and select an **Assessment year** when that option is configured on your site.
+The automatic option downloads the original model's inputs for your area; the
+first run can take longer, while later runs reuse matching downloaded tiles.
+The current scientific settings come from the Montana Prairie configuration,
+and the automatic inputs have not been validated for global coverage. An
+optional habitat assessment mask limits where results are calculated while
+keeping the reference sites used for training independent of that mask.
+
+### Collaborate with others
+
+#### Share your map
+
+Choose **Publish map** in the workspace header, enter a title and link name,
+then select **Create map link**. The resulting page opens your chosen layers,
+styles, order, visibility and starting view so others can explore the map
+without the Catalog panel.
+
+Include a shared polygon layer so people opening the map can see everyone's
+saved contributions immediately. Shared layers stay live as people save changes.
+
+![The PACHA workshop map showing shared site-condition polygons and notes, with Becky and Rafael Antelo listed as contributors](docs/images/eolab-shared-polygons.jpg)
+
+*A shared workshop map brings saved polygons, contributor names and notes into
+one view. Everyone can see the contributions; each person edits only their own.*
+
+Older **Copy map link** views may use a link that stores the view directly in
+the URL.
+
+The browser also remembers the last valid map on that deployment. **Reset
+view** returns to an empty map and the configured starting position. **Undo
+reset** restores the immediately previous map.
+
+Map links do not include private local polygons, editing access,
+histogram results, feature plots or processing jobs. Private uploads remain
+private, and model-result previews must be reopened from **Runs**. Maps use the
+site's current datasets; missing data can prevent full restoration.
+
+#### Draw and share polygons
+
+Use **Shared layers → Create layer** to start a shared polygon layer, or **Join
+layer** with a share code and your contributor name. Draw polygons, edit their
+boundaries, and add names and notes. Everyone sees the saved polygons; you can
+edit only your own. **Share layer** copies the code for someone else to join.
+
+If you arrived through a shared map link, choose **Draw polygon** on its shared
+layer and enter your contributor name when asked to add your own polygons.
+
+**Import GeoJSON** brings simple polygons into an editable local layer saved on
+your device. It accepts WGS84 longitude/latitude Polygon features without holes,
+including names and notes. Other file attributes and styles are not imported.
+Use **Polygon uploads…** for a GeoPackage whose attributes you want to retain.
+
+Drawn or imported polygons can define supported analysis areas. Save edits
+before calculating or exporting. **Export GeoJSON** downloads all saved
+polygons in the layer, including those hidden by its filter, so you can keep a
+copy outside EOLab. Private local polygons are not included in map links; share
+them in a shared layer when collaborators need to see them.
+
+#### Bring your own polygons
 
 Open **Map layers → Polygon uploads…** to add a GeoPackage (`.gpkg`) containing
 one polygon layer. Choose the file, give the layer a name, then select **Upload
@@ -240,96 +416,10 @@ features, then select that polygon layer when choosing your analysis area.
 This is useful for working with one country, watershed or project group without
 preparing another file.
 
-### Draw and share polygons
-
-Use **Shared layers → Create layer** to start a shared polygon layer, or **Join
-layer** with a share code and your contributor name. Draw polygons, edit their
-boundaries, and add names and notes. Everyone sees the saved polygons; you can
-edit only your own. **Share layer** copies the code for someone else to join.
-
-**Import GeoJSON** brings simple polygons into an editable local layer saved on
-your device. It accepts WGS84 longitude/latitude Polygon features without holes,
-including names and notes. Other file attributes and styles are not imported.
-Use **Polygon uploads…** for a GeoPackage whose attributes you want to retain.
-
-Drawn or imported polygons can define supported analysis areas. Save edits
-before calculating or exporting. **Export GeoJSON** downloads all saved
-polygons in the layer, including those hidden by its filter, so you can keep a
-copy outside EOLab. Private local polygons are not included in map links; share
-them in a shared layer when collaborators need to see them.
-
-### Run a model and explore its results
+## Run models and use their results
 
 Open **Tools → Models** to clip data, summarize observations or run environmental
 models. Choose a model to select its inputs and analysis area.
-
-#### Clip and download data
-
-Use **Raster clip** to extract the part of a raster you need. Choose a raster
-and a sampling box or selected polygons, then download the result as a GeoTIFF.
-The clip preserves the original pixel resolution and values, ready for further
-analysis in GIS software. For example, extract biomass data within a project's
-boundary instead of downloading the whole regional dataset.
-
-#### Estimate downstream beneficiaries
-
-Use **Downstream ecosystem beneficiaries** to explore which places lie downstream
-of a starting area and summarize what is there. Choose polygons or a raster mask
-for **Starting mask**, then a raster for **Values to summarize**, such as a
-population dataset. The model follows water flow using elevation and watershed
-data. Adjust **Buffer radius** and the optional **Maximum straight-line distance**
-to choose the coverage used for the calculation. Values are resampled onto the
-model's calculation grid, and only positive values are included.
-
-Results include a downstream coverage map, a map of the selected values within
-that coverage, and summary statistics. With population counts as the values and
-the default sum, you can estimate how many people live within the modeled
-coverage downstream of proposed restoration sites. This identifies potential
-beneficiaries; it does not measure how much benefit each person receives. You can
-also choose another values raster or summary formula to explore a different
-downstream question.
-
-#### Assess habitat condition against reference sites
-
-Use **Habitat condition** to assess how closely a landscape resembles conditions
-expected from selected reference sites. Choose an analysis area, reference sites,
-environmental predictor rasters and observed habitat-response rasters. The model
-learns the relationship between the environment and habitat responses at the
-reference sites inside that area, then compares observed responses elsewhere
-with those expected under reference conditions.
-
-The **Reference similarity** map shows the result on a scale from 0 to 1: higher
-values indicate greater similarity to reference conditions. Downloadable
-diagnostics help you examine the expected responses and departures from them.
-For example, use the map to identify places whose observed condition differs
-from what comparable reference sites suggest. Interpretation depends on your
-reference sites and input data.
-
-Choose raster layers yourself, or use **Original model inputs from Earth Engine**
-and select an **Assessment year** when that option is configured on your site.
-The automatic option downloads the original model's inputs for your area; the
-first run can take longer, while later runs reuse matching downloaded tiles.
-The current scientific settings come from the Montana Prairie configuration,
-and the automatic inputs have not been validated for global coverage. An
-optional habitat assessment mask limits where results are calculated while
-keeping the reference sites used for training independent of that mask.
-
-#### Summarize a raster or explore change through time
-
-The other models in **Tools → Models** cover common calculations:
-
-- **Raster summary** calculates a statistic or formula for a raster and area,
-  such as mean biomass or hectares above a threshold.
-- **Map for a period** summarizes observations over a date range into a map,
-  with a second map showing how many observations contributed at each pixel.
-- **Time series for an area** calculates a statistic for each available
-  observation in your chosen area and downloads a CSV, such as mean temperature
-  within a watershed over time.
-
-See [Explore data through time](#explore-data-through-time) for choosing dates
-and interpreting missing observations.
-
-#### Follow a run and use its outputs
 
 Select **Run model** (or **Run analysis** for the temporal tools). Follow progress
 in **Runs** while continuing to use the map. Closing the panel does not cancel
@@ -341,24 +431,6 @@ you repeat a run with different choices. Runs belong to your browser session
 and have expiry dates: **Keep for another 7 days** extends retention. Download
 files you want to keep, since a map link does not preserve the run or share its
 private outputs.
-
-### Share your map
-
-Choose **Publish map** in the workspace header, enter a title and link name,
-then select **Create map link**. The resulting page opens your chosen layers,
-styles, order, visibility and starting view so others can explore the map
-without the Catalog panel. Shared polygon layers remain live: collaborators
-see saved changes and can join with the layer's share code. Older **Copy map
-link** views may use a link that stores the view directly in the URL.
-
-The browser also remembers the last valid map on that deployment. **Reset
-view** returns to an empty map and the configured starting position. **Undo
-reset** restores the immediately previous map.
-
-Map links do not include private local polygons, editing access,
-histogram results, feature plots or processing jobs. Private uploads remain
-private, and model-result previews must be reopened from **Runs**. Maps use the
-site's current datasets; missing data can prevent full restoration.
 
 ## Running your own EOLab workspace
 
