@@ -39,6 +39,7 @@ fi
 # The Java agent exposes the allowlisted JVM metrics from jmx-exporter.yml on
 # port 9404. Compose keeps that HTTP endpoint internal for the EOLab app.
 export EXTRA_JAVA_OPTS="-Xms256m -Xmx${GEOSERVER_MAX_HEAP_SIZE} \
+-Duser.projections.override.file=/opt/eolab-geoserver/epsg_overrides.properties \
 -javaagent:/opt/eolab-jmx/jmx_prometheus_javaagent-1.6.0.jar=0.0.0.0:9404:/opt/eolab-jmx/jmx-exporter.yml"
 printf 'ows.gwc=%s\nows.wms.getmap=%s\ntimeout=%s\n' \
     "$GEOSERVER_GWC_REQUEST_COUNT" \

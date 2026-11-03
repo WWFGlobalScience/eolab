@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - Dockerfile.app
+      - Dockerfile.geoserver
       - pyproject.toml
       - deployment/application-*
+      - deployment/start-geoserver.sh
       - deployment/*beneficiaries*
       - services/jobs/**
       - src/eolab_app/vector/outline*
@@ -43,6 +45,7 @@ on:
       - tests/test_categorical_rendering.py
       - tests/test_raster_categorical_styles.py
       - geoserver/reader-assessment/**
+      - geoserver/epsg_overrides.properties
       - .github/workflows/application-build-inputs.yml
   workflow_dispatch:
 
