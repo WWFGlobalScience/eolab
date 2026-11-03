@@ -241,7 +241,7 @@ export class ModelsView {
             else if (input.type === "habitat_stack") {
                 inputs[name] = new HabitatStackView({element: this.element.bind(this), field: this.field.bind(this),
                     button: this.button.bind(this), options: this.options.bind(this), document: this.document,
-                    buildRasterInput: this.buildRasterInput.bind(this), renderRasterInput: this.renderRasterInput.bind(this)}, this.handlers, name, input, draft.model);
+                    buildRasterInput: this.buildRasterInput.bind(this), renderRasterInput: this.renderRasterInput.bind(this)}, this.handlers, name, input);
                 fields.append(inputs[name].root);
             } else if (input.type === "raster_preparation") {
                 inputs[name] = new RasterGridView({element: this.element.bind(this), field: this.field.bind(this),

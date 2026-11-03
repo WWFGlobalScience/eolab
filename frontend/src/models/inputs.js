@@ -204,6 +204,7 @@ export function modelSupportsArea(type, area) {
 /** Create independent setup state for each declared raster and spatial input.
  * The selectedArea input is the sampling area used by raster histograms.
  * Models with a starting mask require the user to choose that mask explicitly.
+ * Habitat starts with Earth Engine inputs and an explicit analysis area.
  * @param {Object} model Installed recipe.
  * @param {Object} context Catalog and map choices supplied by browser composition.
  * @param {string} id Local draft identity.
@@ -230,7 +231,7 @@ export function createModelDraft(model, context, id) {
                 sourceReason: input.type !== "catalog_raster" ? "Choose a raster from Map layers or a completed run. Results do not need to be shown on the map." : catalogRasters.length ? "Choose a raster from Map layers." : "Add a raster to Map layers to use this model.",
             };
         } else if (input.type === "habitat_stack") {
-            inputs[name] = {kind: "manual", year: null, configuration: null, loading: false, error: "",
+            inputs[name] = {kind: "earthEngine", year: null, configuration: null, loading: false, error: "",
                 predictors: [{name: "predictor_1", raster: null, ...preparation}], responses: [{name: "response_1", raster: null, ...preparation}], categoricalPredictor: ""};
         } else if (input.type === "raster_preparation") {
             const step = model.steps.find(value => value.inputs.preparation?.input === name);
@@ -242,7 +243,8 @@ export function createModelDraft(model, context, id) {
             let area = explicitSelection ? null : context.area ? modelAreaInput(context.area) : {kind: "wholeRaster"};
             let areaMode = explicitSelection ? "vector" : ({wholeRaster: "whole", selectedArea: "samplingArea", polygonArea: "mapPolygons"})[area.kind] ?? "captured";
             let selectionError = "";
-            if (!explicitSelection && (!modelSupportsArea(input.type, area) || usesTemporal && !context.area)) {
+            if (!explicitSelection && (!modelSupportsArea(input.type, area) || usesTemporal && !context.area ||
+                modelHasInput(model, "habitat_stack") && area.kind === "wholeRaster")) {
                 areaMode = "viewport"; area = null;
                 try { area = modelViewportArea(context.viewportBounds); }
                 catch (error) { selectionError = error.message; }

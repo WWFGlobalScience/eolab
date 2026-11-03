@@ -925,6 +925,7 @@ export class ModelsController {
                 const value = saved.inputs[name];
                 if (value.kind === "earthEngine") Object.assign(input, {kind: value.kind, year: value.year});
                 else {
+                    input.kind = "manual";
                     input.predictors = value.predictors.map(row => ({name: row.name, raster: structuredClone(row.source)}));
                     input.responses = value.responses.map(row => ({name: row.name, raster: structuredClone(row.source)}));
                     input.categoricalPredictor = value.categoricalPredictor;

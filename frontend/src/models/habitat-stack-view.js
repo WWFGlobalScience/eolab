@@ -15,9 +15,8 @@ export class HabitatStackView {
      * @param {{onInput:(name:string,change:Object)=>void,onRefreshHabitat:(name:string)=>void}} handlers Input edits and Earth Engine configuration retry.
      * @param {string} name Recipe input name for this stack.
      * @param {{label:string}} input Declared stack input.
-     * @param {Object} model Installed recipe supplying the fixed Habitat settings.
      */
-    constructor({element, field, button, options, document, buildRasterInput, renderRasterInput}, handlers, name, input, model) {
+    constructor({element, field, button, options, document, buildRasterInput, renderRasterInput}, handlers, name, input) {
         Object.assign(this, {element, field, button, options, document, buildRasterInput, renderRasterInput, handlers});
         this.inputName = name;
         this.predictors = []; this.responses = []; this.nextRowId = 0; this.categoricalRow = null;
@@ -25,20 +24,31 @@ export class HabitatStackView {
         this.root.setAttribute("aria-label", input.label);
         this.source = element("select");
         this.source.addEventListener("change", () => handlers.onInput(name, {kind: this.source.value}));
-        this.options(this.source, [{value: "manual", label: "Choose raster layers"},
-            {value: "earthEngine", label: "Original model inputs from Earth Engine"}], "manual");
+        this.options(this.source, [{value: "earthEngine", label: "Original model inputs (Google Earth Engine)"},
+            {value: "manual", label: "Choose raster layers"}], "earthEngine");
+        const attribution = element("p", "", "models-help");
+        const modelLink = element("a", "NHI Terrestrial Integrity Modeling");
+        modelLink.href = "https://github.com/springinnovate/nhi-terrestrial-integrity-modeling";
+        modelLink.target = "_blank"; modelLink.rel = "noopener noreferrer";
+        attribution.append(element("span", "Based on "), modelLink);
         this.year = element("select");
         this.year.addEventListener("change", () => handlers.onInput(name, {year: Number(this.year.value)}));
         this.automatic = element("fieldset", "", "models-vector");
-        this.automatic.append(element("legend", "Earth Engine inputs"), field(`models-${name}-year`, "Assessment year", this.year),
-            element("p", "Downloads the original model's predictors and observed responses for the Analysis area. The first run can take a while; later runs reuse matching downloaded tiles. Reference sites are still your choice below.", "models-help"),
-            element("p", "Use a Montana area for the first demo. These inputs have not been validated for global coverage.", "models-help"));
+        this.automatic.append(element("legend", "Earth Engine inputs"), field(`models-${name}-year`, "Assessment year", this.year));
+        this.datasetSources = element("div", "", "models-habitat-datasets");
+        this.datasetLists = {};
+        for (const [role, title] of [["predictor", "Predictor datasets"], ["response", "Observed response datasets"]]) {
+            const group = element("section"), list = element("ul");
+            group.append(element("h4", title), list); this.datasetSources.append(group);
+            this.datasetLists[role] = list;
+        }
+        this.automatic.append(this.datasetSources);
         this.acquisitionStatus = element("p", "", "models-help"); this.acquisitionStatus.setAttribute("role", "status");
         this.retry = button("Retry Earth Engine year choices", () => handlers.onRefreshHabitat(name), "models-action");
         this.automatic.append(this.acquisitionStatus, this.retry);
         this.manual = element("fieldset", "", "models-vector");
         this.manual.append(element("legend", "Raster layers"));
-        this.root.append(field(`models-${name}-source`, "Input source", this.source), this.automatic, this.manual);
+        this.root.append(attribution, field(`models-${name}-source`, "Input configuration", this.source), this.automatic, this.manual);
         this.help = element("p", "Predictors describe the environment; observed responses describe the habitat condition to model. Each selected raster uses its first band.", "models-help");
         this.help.id = `models-${name}-help`;
         this.manual.append(this.help);
@@ -65,35 +75,7 @@ export class HabitatStackView {
         this.categorical.setAttribute("aria-describedby", categoryHelp.id);
         this.status = element("p", "", "models-error"); this.status.setAttribute("role", "status");
         this.manual.append(field(`models-${name}-categorical`, "Categorical predictor", this.categorical), categoryHelp);
-        this.root.append(
-            element("p", "The optional habitat assessment mask uses cells equal to 1. It limits where results are calculated; it does not limit the reference sites used for training. Nearest neighbor preserves mask values; interpolation can change which cells equal 1.", "models-help"), this.status);
-
-        this.settings = element("details", "", "models-details");
-        this.settings.append(element("summary", "Scientific settings"),
-            element("p", "These settings come from the administrator's model recipe and are fixed for this run.", "models-help"));
-        const labels = {
-            required_crs: "Required projection",
-            fold_count: "Spatial validation folds",
-            sampling_block_size_meters: "Sampling block width (m)",
-            validation_block_size_meters: "Validation block width (m)",
-            minimum_predictor_coverage: "Minimum predictor coverage (fraction)",
-            maximum_row_missing_fraction: "Maximum missing predictors per sample (fraction)",
-            spline_knot_count: "Spline knots per continuous predictor",
-            minimum_response_coverage: "Minimum response coverage (fraction)",
-            ridge_alpha: "Ridge regularization strength",
-            samples_per_class_per_block: "Maximum samples per block, inside/outside reference sites",
-            random_seed: "Sampling seed",
-            tile_size_pixels: "Sampling tile width (pixels)",
-            tile_origin: "Sampling tile origin (m, EPSG:6933)",
-            window_size_pixels: "Prediction window width (pixels)",
-            covariance_shrinkage: "Covariance shrinkage (fraction)",
-        };
-        const settings = model.steps.find(step => step.operation === "habitat.condition.v1").inputs.settings.value;
-        const values = element("dl");
-        for (const [key, value] of Object.entries(settings)) {
-            values.append(element("dt", labels[key]), element("dd", Array.isArray(value) ? value.join(", ") : String(value)));
-        }
-        this.settings.append(values); this.root.append(this.settings);
+        this.root.append(this.status);
     }
 
     /** Add one explicitly named row without changing the existing choices.
@@ -169,11 +151,23 @@ export class HabitatStackView {
         this.source.value = this.value.kind;
         this.manual.hidden = this.manual.disabled = automatic;
         this.automatic.hidden = this.automatic.disabled = !automatic;
+        this.datasetSources.hidden = !configuration;
+        if (configuration && configuration !== this.displayedConfiguration) {
+            for (const [role, list] of Object.entries(this.datasetLists)) {
+                list.replaceChildren(...configuration.datasets.filter(dataset => dataset.roles.includes(role)).map(dataset => {
+                    const item = this.element("li"), link = this.element("a", dataset.label);
+                    link.href = dataset.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+                    item.append(link); return item;
+                }));
+            }
+            this.displayedConfiguration = configuration;
+        }
         this.year.required = automatic;
         this.options(this.year, configuration ? Array.from({length: configuration.maximumYear - configuration.minimumYear + 1},
             (_, index) => ({value: String(configuration.minimumYear + index), label: String(configuration.minimumYear + index)})) :
             [{value: "", label: "Loading years…"}], String(this.value.year ?? ""));
         this.acquisitionStatus.textContent = this.value.loading ? "Loading available years and pixel size…" : this.value.error;
+        this.acquisitionStatus.hidden = !this.acquisitionStatus.textContent;
         this.retry.hidden = !this.value.error; this.retry.disabled = this.value.loading;
         for (const role of ["predictors", "responses"]) {
             while (this[role].length < this.value[role].length) this[role].push(this.buildRow(role));

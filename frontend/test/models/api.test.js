@@ -27,7 +27,8 @@ test("discovery, pagination and saved inputs establish a same-origin session", a
 
 test("Habitat setup reads scientific options from its model-owned endpoint", async () => {
     const options = {defaultYear: 2018, minimumYear: 2015, maximumYear: 2019,
-        grid: {crs: "EPSG:6933", pixelSize: [500, 500], origin: [0, 0], unit: "metre", approximate: false}};
+        grid: {crs: "EPSG:6933", pixelSize: [500, 500], origin: [0, 0], unit: "metre", approximate: false},
+        datasets: [{label: "ERA5 daily aggregates", url: "https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_DAILY", roles: ["predictor"]}]};
     const h = fixture(() => options);
     assert.deepEqual(await h.api.getHabitatEarthEngineOptions(), options);
     assert.equal(h.calls[0].url, "/api/processing/models/habitat-condition/earth-engine-options");

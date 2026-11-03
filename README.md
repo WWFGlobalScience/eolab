@@ -323,9 +323,9 @@ environment and habitat responses at the reference sites inside that area, then
 compares observed responses elsewhere with those expected under reference
 conditions.
 
-![The top of the Habitat condition setup card, showing Original model inputs from Earth Engine and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
+![The top of the Habitat condition setup card, showing Earth Engine inputs and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
 
-*The Habitat card starts with the input source. Earth Engine mode also offers
+*The Habitat card starts with the input configuration. Earth Engine mode also offers
 an assessment year; area and reference-site choices follow below.*
 
 The **Reference similarity** map shows the result on a scale from 0 to 1: higher
@@ -335,14 +335,11 @@ For example, use the map to identify places whose observed condition differs
 from what comparable reference sites suggest. Interpretation depends on your
 reference sites and input data.
 
-Choose raster layers yourself, or use **Original model inputs from Earth Engine**
-and select an **Assessment year** when that option is configured on your site.
-The automatic option downloads the original model's inputs for your area; the
-first run can take longer, while later runs reuse matching downloaded tiles.
-The current scientific settings come from the Montana Prairie configuration,
-and the automatic inputs have not been validated for global coverage. An
-optional habitat assessment mask limits where results are calculated while
-keeping the reference sites used for training independent of that mask.
+The default **Original model inputs (Google Earth Engine)** configuration uses
+the [NHI Terrestrial Integrity Modeling](https://github.com/springinnovate/nhi-terrestrial-integrity-modeling)
+inputs for your selected **Assessment year**. Setup links to each dataset's
+catalog page. The first run downloads inputs for your area; later runs reuse
+matching cached tiles. Choose **Choose raster layers** to supply your own stack.
 
 ### Collaborate with others
 

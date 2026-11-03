@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ModelsController } from "../../src/models/controller.js";
 import { ModelsView } from "../../src/models/view.js";
-import { captureModelSubmission, modelSourceKey } from "../../src/models/inputs.js";
+import { captureModelSubmission, createModelDraft, modelSourceKey } from "../../src/models/inputs.js";
 import { SummaryControlDocument } from "../../test-support/processing/summary-document.js";
 import { model, selection, job, fileManifest, clipResult } from "../../test-support/models/fixtures.js";
 
@@ -31,7 +31,11 @@ const habitat = {...model, id: "habitat-condition", title: "Habitat condition",
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 const earthEngineOptions = {defaultYear: 2018, minimumYear: 2015, maximumYear: 2019,
-    grid: {crs: "EPSG:6933", pixelSize: [500, 500], origin: [0, 0], unit: "metre", approximate: false}};
+    grid: {crs: "EPSG:6933", pixelSize: [500, 500], origin: [0, 0], unit: "metre", approximate: false}, datasets: [
+        {label: "ERA5 daily aggregates", url: "https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_DAILY", roles: ["predictor"]},
+        {label: "MODIS phenology", url: "https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MCD12Q2", roles: ["predictor", "response"]},
+        {label: "Landsat NDVI", url: "https://developers.google.com/earth-engine/datasets/catalog/LANDSAT_COMPOSITES_C02_T1_L2_8DAY_NDVI", roles: ["response"]},
+    ]};
 
 /** Change a rendered form field through its actual event handler.
  * @param {HTMLElement} control Rendered input or select.
@@ -44,9 +48,10 @@ function edit(control, value, event = "change") {
 }
 
 /** Open Habitat setup with real Models components and explicit API boundaries.
+ * @param {Object} [contextOverrides={}] Map choices to replace in the starting context.
  * @return {Promise<Object>} Controller, view, source choices and captured API requests.
  */
-async function fixture() {
+async function fixture(contextOverrides = {}) {
     const requests = [], filters = [], values = new Map();
     const context = {
         rasters: ["Environment", "Habitat class", "Productivity", "Reference mask", "Assessment mask"].map((label, index) =>
@@ -55,6 +60,7 @@ async function fixture() {
             {key: "view:sites", uploadId: "75bdc2b7-dcc1-420a-b9b1-ed9db35e789d", layerName: "reference_sites", label: "Uploaded sites",
                 filter: structuredClone(selection.filter), fields: [{name: "BASIN", type: "str"}]}],
         area: {kind: "selectedArea", selectedBounds: {west: 0, south: 0, east: 1, north: 1}},
+        ...contextOverrides,
     };
     const api = {discoverModels: async () => [model, habitat], listModelRuns: async () => ({jobs: [], nextCursor: null}),
         getHabitatEarthEngineOptions: async () => structuredClone(earthEngineOptions),
@@ -106,6 +112,7 @@ async function chooseVector(harness, name, source, basin) {
  */
 function chooseStack(harness) {
     const controls = harness.view.setup.inputs.stack;
+    edit(controls.source, "manual");
     edit(controls.predictors[0].name, "environment", "input");
     edit(controls.predictors[0].source, modelSourceKey(harness.context.rasters[0]));
     controls.addPredictor.dispatchEvent(new Event("click"));
@@ -115,6 +122,42 @@ function chooseStack(harness) {
     edit(controls.responses[0].source, modelSourceKey(harness.context.rasters[2]));
     edit(controls.categorical, "habitat_type");
 }
+
+test("Habitat starts with the original GEE configuration and linked datasets grouped by their roles", async () => {
+    const h = await fixture(), stack = h.view.setup.inputs.stack;
+    assert.equal(stack.source.value, "earthEngine");
+    assert.equal(stack.source.parentElement.textContent, "Input configuration");
+    assert.equal(stack.source.children[0].textContent, "Original model inputs (Google Earth Engine)");
+    assert.equal(stack.manual.hidden, true); assert.equal(stack.manual.disabled, true);
+    assert.equal(stack.year.value, "2018");
+    const links = stack.root.querySelectorAll("a");
+    assert.equal(links[0].textContent, "NHI Terrestrial Integrity Modeling");
+    assert.equal(links[0].href, "https://github.com/springinnovate/nhi-terrestrial-integrity-modeling");
+    for (const [role, list] of Object.entries(stack.datasetLists)) {
+        assert.deepEqual(list.children.map(item => ({label: item.children[0].textContent, url: item.children[0].href})),
+            earthEngineOptions.datasets.filter(dataset => dataset.roles.includes(role)).map(({label, url}) => ({label, url})));
+    }
+    assert.deepEqual(h.controller.state.draft.inputs.area.area.selectedBounds, h.context.area.selectedBounds);
+    assert.equal(h.requests.length, 0, "Opening the default configuration does not submit a calculation");
+    h.controller.destroy();
+});
+
+for (const area of [undefined, {kind: "wholeRaster"}]) test(`Default GEE setup uses the visible area instead of ${area ? "a whole raster" : "an absent area"}`, () => {
+    const viewportBounds = {west: -109, south: 46, east: -107, north: 48};
+    const draft = createModelDraft(habitat, {area, viewportBounds}, "default-area");
+    assert.equal(draft.inputs.stack.kind, "earthEngine");
+    assert.equal(draft.inputs.area.areaMode, "viewport");
+    assert.deepEqual(draft.inputs.area.area, {kind: "selectedArea", selectedBounds: viewportBounds});
+});
+
+test("Default GEE setup requires an explicit area when the map cannot supply one", async () => {
+    const h = await fixture({area: undefined});
+    await chooseVector(h, "references", h.context.vectors[0], "North");
+    assert.equal(h.controller.state.draft.inputs.area.area, null);
+    assert.equal(h.view.setup.run.disabled, true);
+    assert.throws(() => captureModelSubmission(h.controller.state.draft, "no-area"), /visible map extent/i);
+    h.controller.destroy();
+});
 
 for (const [label, areaIndex, referenceIndex, withMask] of [
     ["Catalog area and uploaded reference sites", 0, 1, false],
@@ -159,11 +202,6 @@ for (const [label, areaIndex, referenceIndex, withMask] of [
 
 test("Habitat stack edits preserve other rows and require unambiguous roles before Run", async () => {
     const h = await fixture(), controls = h.view.setup.inputs.stack;
-    const settings = controls.settings.children.at(-1).children.map(node => node.textContent);
-    const folds = settings.indexOf("Spatial validation folds"), width = settings.indexOf("Sampling block width (m)");
-    assert.equal(settings[settings.indexOf("Required projection") + 1], "EPSG:6933");
-    assert.equal(settings[folds + 1], String(habitat.steps[0].inputs.settings.value.fold_count));
-    assert.equal(settings[width + 1], String(habitat.steps[0].inputs.settings.value.sampling_block_size_meters));
     assert.equal(h.view.setup.run.disabled, true);
     chooseStack(h);
     edit(h.view.setup.inputs.references.areaMode, "raster");
@@ -225,6 +263,7 @@ test("Habitat duplicates a large mixed stack and preserves unavailable private s
     assert.deepEqual(expected.stack.responses[0].source, {kind: "runArtifact", jobId: parentId, artifactId: source.artifactId});
     assert.equal(new Set(expected.stack.responses.map(value => modelSourceKey(value.source))).size, 18);
     await h.controller.duplicateRun();
+    assert.equal(h.controller.state.draft.inputs.stack.kind, "manual");
     const references = h.view.setup.inputs.references;
     assert.equal(references.areaMode.value, "captured");
     assert.equal(references.areaMode.children.find(option => option.value === "captured").textContent, "Area from original run");
@@ -397,14 +436,14 @@ test("Earth Engine runs need no map rasters and duplicate the year, explicit are
     const h = await fixture();
     h.context.rasters = []; h.controller.refreshMapLayers();
     h.context.viewportBounds = {west: -109, south: 46, east: -107, north: 48};
-    edit(h.view.setup.inputs.area.areaMode, "whole");
     const stack = h.view.setup.inputs.stack;
+    edit(stack.source, "manual");
+    edit(h.view.setup.inputs.area.areaMode, "whole");
     edit(stack.source, "earthEngine");
     assert.equal(stack.manual.hidden, true); assert.equal(stack.manual.disabled, true);
     assert.equal(stack.automatic.disabled, false); assert.equal(stack.year.value, "2018");
     assert.equal(h.view.setup.inputs.area.areaMode.value, "viewport");
     assert.equal(h.view.setup.inputs.area.areaMode.children.some(option => option.value === "whole"), false);
-    assert.match(stack.automatic.children.map(child => child.textContent).join(" "), /first run can take a while/);
     await chooseVector(h, "references", h.context.vectors[1], "South");
     edit(stack.year, "2017");
     assert.equal(h.view.setup.run.disabled, false);
@@ -427,7 +466,6 @@ test("Earth Engine runs need no map rasters and duplicate the year, explicit are
 
 test("Earth Engine grid stays first with raster masks and preserves custom choices through duplication", async () => {
     const h = await fixture(), inputs = h.view.setup.inputs;
-    edit(inputs.stack.source, "earthEngine");
     edit(inputs.references.areaMode, "raster");
     edit(inputs.references.maskRaster, modelSourceKey(h.context.rasters[3]));
     edit(inputs.habitat_mask.source, modelSourceKey(h.context.rasters[4]));
@@ -486,5 +524,27 @@ test("Earth Engine configuration errors can be retried without blocking manual s
     h.api.getHabitatEarthEngineOptions = async () => structuredClone(earthEngineOptions);
     stack.retry.dispatchEvent(new Event("click")); await settle();
     assert.equal(stack.year.value, "2018"); assert.equal(h.view.setup.run.disabled, false);
+    h.controller.destroy();
+});
+
+test("Late Habitat options preserve a chosen custom stack and cannot replace another model draft", async () => {
+    const h = await fixture();
+    let complete;
+    h.api.getHabitatEarthEngineOptions = () => new Promise(resolve => { complete = resolve; });
+    h.controller.chooseModel(habitat);
+    chooseStack(h);
+    const predictors = structuredClone(h.controller.state.draft.inputs.stack.predictors);
+    complete(structuredClone(earthEngineOptions)); await settle();
+    assert.equal(h.controller.state.draft.inputs.stack.kind, "manual");
+    assert.deepEqual(h.controller.state.draft.inputs.stack.predictors, predictors);
+    assert.equal(h.view.setup.inputs.stack.manual.hidden, false);
+    h.controller.chooseModel(habitat);
+    const abandoned = h.controller.state.draft;
+    h.controller.chooseModel(model);
+    const current = h.controller.state.draft;
+    complete(structuredClone(earthEngineOptions)); await settle();
+    assert.equal(h.controller.state.draft, current);
+    assert.equal(abandoned.inputs.stack.configuration, null);
+    assert.equal(h.requests.length, 0);
     h.controller.destroy();
 });
