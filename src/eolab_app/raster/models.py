@@ -211,17 +211,20 @@ class CatalogRasterStatisticsRequest(CatalogRasterRequest, RasterStatisticsArea)
 
 
 class CatalogRasterPairRequest(BaseModel):
-    """Identify two ordered catalog rasters and optional selected bounds.
+    """Identify ordered X and Y catalog rasters and their sampling area.
 
     The X and Y identities are intentionally nested catalog requests so the
     public contract cannot accept paths, publication names, or renderer state.
+    Both axes may identify the same source.
 
     Attributes:
         x_raster: Catalog identity assigned to the reference X grid.
-        y_raster: Distinct catalog identity aligned to X with nearest-neighbor
+        y_raster: Catalog identity aligned to X with nearest-neighbor
             resampling.
         selected_bounds: Optional canonical WGS 84 rectangle intersected with
             the rasters' geographic overlap.
+        catalog_selection: Optional Catalog or uploaded-vector selection used
+            instead of rectangular bounds.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -238,21 +241,19 @@ class CatalogRasterPairRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_distinct_rasters(self) -> "CatalogRasterPairRequest":
-        """Require two different source identities for bivariate analysis.
+    def reject_ambiguous_sampling_area(self) -> "CatalogRasterPairRequest":
+        """Reject requests that specify both bounds and a vector selection.
 
         Returns:
             Validated ordered pair request.
 
         Raises:
-            ValueError: If X and Y identify the same source or specify two areas.
+            ValueError: If selected bounds and a vector selection coexist.
         """
         if self.selected_bounds is not None and self.catalog_selection is not None:
             raise ValueError(
                 "selectedBounds and catalogSelection are mutually exclusive"
             )
-        if self.x_raster == self.y_raster:
-            raise ValueError("xRaster and yRaster must identify different sources")
         return self
 
 

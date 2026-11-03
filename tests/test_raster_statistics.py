@@ -766,30 +766,28 @@ def test_paired_statistics_bound_large_grids_and_reject_empty_pairs(
         read_raster_paired_statistics(x_path, empty_path, None)
 
 
-def test_paired_request_forbids_paths_and_duplicate_identities() -> None:
-    """Keep the public paired contract limited to two catalog identities.
+def test_paired_request_rejects_arbitrary_paths() -> None:
+    """Keep filesystem paths outside the public paired-raster contract.
 
     Returns:
-        None after rejecting duplicate identities and arbitrary paths.
+        None after rejecting an arbitrary path inside a source identity.
     """
+
     identity = {
         "collectionId": "eolab-mounted-geotiffs",
         "itemId": ITEM_ID,
     }
     with pytest.raises(ValidationError):
-        CatalogRasterPairRequest.model_validate({
-            "xRaster": identity,
-            "yRaster": identity,
-        })
-    with pytest.raises(ValidationError):
-        CatalogRasterPairRequest.model_validate({
-            "xRaster": identity,
-            "yRaster": {
-                **identity,
-                "itemId": "geotiff-abcdef0123456789abcdef01",
-                "path": "file:///untrusted.tif",
-            },
-        })
+        CatalogRasterPairRequest.model_validate(
+            {
+                "xRaster": identity,
+                "yRaster": {
+                    **identity,
+                    "itemId": "geotiff-abcdef0123456789abcdef01",
+                    "path": "file:///untrusted.tif",
+                },
+            }
+        )
 
 
 def test_pixel_reader_requests_only_band_one_and_its_source_cell(
