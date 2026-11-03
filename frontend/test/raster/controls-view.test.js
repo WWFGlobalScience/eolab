@@ -3,167 +3,17 @@ import test from "node:test";
 
 import { RasterControlsView } from "../../src/raster/controls-view.js";
 import { DEFAULT_RASTER_STYLE } from "../../src/raster/style.js";
-import { FakeRasterControlDocument } from "../../test-support/raster/fake-controls-document.js";
+import {
+    FakeRasterControlDocument,
+    FakeRasterControlElement,
+} from "../../test-support/raster/fake-controls-document.js";
 import {
     EXACT_RASTER_STATISTICS,
     RASTER_STATISTICS,
 } from "../../test-support/raster/fixtures.js";
 
-/** Minimal DOM element used by the raster controls adapter tests. */
-class FakeControlElement extends EventTarget {
-    /**
-     * Create an element with mutable DOM-like presentation state.
-     *
-     * @param {string} [type] Input type exposed to event handlers.
-     */
-    constructor(type = "", ownerDocument = null) {
-        super();
-        this.ownerDocument = ownerDocument;
-        this.type = type;
-        this.value = "";
-        this.textContent = "";
-        this.hidden = false;
-        this.disabled = false;
-        this.title = "";
-        this.style = {};
-        this.children = [];
-        this.attributes = new Map();
-        this.classNames = [];
-        this.classList = {
-            add: (className) => {
-                if (!this.classNames.includes(className)) {
-                    this.classNames.push(className);
-                }
-            },
-            contains: (className) => this.classNames.includes(className),
-            remove: (className) => {
-                this.classNames = this.classNames.filter(
-                    (candidate) => candidate !== className
-                );
-            },
-        };
-    }
-
-    /**
-     * Append child elements.
-     *
-     * @param {...FakeControlElement} children Elements to append.
-     * @return {void}
-     */
-    append(...children) {
-        this.children.push(...children);
-    }
-
-    /**
-     * Replace all child elements.
-     *
-     * @param {...FakeControlElement} children Replacement elements.
-     * @return {void}
-     */
-    replaceChildren(...children) {
-        this.children = children;
-    }
-
-    /**
-     * Store one element attribute.
-     *
-     * @param {string} name Attribute name.
-     * @param {string} value Attribute value.
-     * @return {void}
-     */
-    setAttribute(name, value) {
-        this.attributes.set(name, value);
-    }
-
-    /**
-     * Remove one element attribute.
-     *
-     * @param {string} name Attribute name.
-     * @return {void}
-     */
-    removeAttribute(name) {
-        this.attributes.delete(name);
-    }
-
-    /**
-     * Return one element attribute.
-     *
-     * @param {string} name Attribute name.
-     * @return {string|null} Attribute value or null when absent.
-     */
-    getAttribute(name) {
-        return this.attributes.get(name) ?? null;
-    }
-
-    /**
-     * Return deterministic control dimensions.
-     *
-     * @return {{width: number, height: number}} Element dimensions.
-     */
-    getBoundingClientRect() {
-        return { width: 120, height: 48 };
-    }
-
-    /** Give this control focus in its fake document. @return {void} */
-    focus() {
-        if (this.ownerDocument !== null) {
-            this.ownerDocument.activeElement = this;
-        }
-    }
-}
-
-/** Minimal selector and element factory contract used by the controls view. */
-class FakeRasterDocument {
-    /** Create an empty document-backed selector registry. */
-    constructor() {
-        this.activeElement = null;
-        this.elements = new Map();
-    }
-
-    /**
-     * Resolve or create one fake element for a raster selector.
-     *
-     * @param {string} selector CSS selector.
-     * @return {FakeControlElement} Stable fake element.
-     */
-    querySelector(selector) {
-        if (!this.elements.has(selector)) {
-            const type = selector.endsWith("-color")
-                ? "color"
-                : selector.includes("percentile") || selector.endsWith("-range")
-                    ? "range"
-                    : selector.includes("minimum") ||
-                        selector.includes("midpoint") ||
-                        selector.includes("maximum") ||
-                        selector.endsWith("-number")
-                        ? "number"
-                        : "";
-            this.elements.set(selector, new FakeControlElement(type, this));
-        }
-        return this.elements.get(selector);
-    }
-
-    /**
-     * Create one fake HTML element.
-     *
-     * @return {FakeControlElement} New fake element.
-     */
-    createElement() {
-        return new FakeControlElement("", this);
-    }
-
-    /**
-     * Create one fake SVG element.
-     *
-     * @return {FakeControlElement} New fake SVG element.
-     */
-    createElementNS() {
-        return new FakeControlElement("", this);
-    }
-}
-
 test("RasterControlsView owns style values and semantic control events", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     view.populatePalettes({
         viridis: {
@@ -238,7 +88,7 @@ test("RasterControlsView owns style values and semantic control events", () => {
 });
 
 test("RasterControlsView exposes accessible explicit histogram-area choices", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     const received = [];
     view.bind({
@@ -305,7 +155,7 @@ test("RasterControlsView exposes accessible explicit histogram-area choices", ()
 });
 
 test("composed controls present one catalog selection consistently", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     for (const mode of ["vector", "catalogSelection"]) {
         view.setSamplingAreaMode(mode, "Vector selection · Peru");
@@ -315,10 +165,10 @@ test("composed controls present one catalog selection consistently", () => {
 });
 
 test("RasterControlsView clears histogram visibility through its DOM contract", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     const chart = documentContext.querySelector("#raster-histogram-chart");
-    chart.append(new FakeControlElement());
+    chart.append(new FakeRasterControlElement());
 
     view.clearStatistics();
 
@@ -359,7 +209,7 @@ test("RasterControlsView delegates retained histogram summaries", () => {
 });
 
 test("RasterControlsView updates histogram availability without hiding vector-area editing", () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     const box = documentContext.querySelector("#use-map-window-for-raster");
     const vector = documentContext.querySelector("#use-vector-for-raster");
@@ -447,7 +297,7 @@ test("RasterControlsView rejects an incomplete application document", () => {
 });
 
 test("RasterControlsView exposes the current raster viewer controls", () => {
-    const view = new RasterControlsView(new FakeRasterDocument());
+    const view = new RasterControlsView(new FakeRasterControlDocument());
     const expectedMethods = [
         "populatePalettes",
         "setActiveLayer",
@@ -483,7 +333,7 @@ test("RasterControlsView exposes the current raster viewer controls", () => {
 });
 
 test("RasterControlsView forwards import cancellation without committing category drafts", async () => {
-    const documentContext = new FakeRasterDocument();
+    const documentContext = new FakeRasterControlDocument();
     const view = new RasterControlsView(documentContext);
     view.bind({ onCategoricalStyleChange: () => assert.fail("Cancellation cannot commit") });
     let resolveRead;
