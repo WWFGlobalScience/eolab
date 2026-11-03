@@ -3,7 +3,7 @@
 from dataclasses import asdict
 import json
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, Literal, cast
 
 import rasterio
 from rasterio.crs import CRS
@@ -13,7 +13,6 @@ from shapely.ops import unary_union
 from eolab_app.catalog_selection import (
     CatalogSelection,
     SelectionUnavailableError,
-    VectorSelection,
 )
 from eolab_app.execution.bounded_process import ProcessResultWriter
 from eolab_app.processing.aggregate_models import AggregateArea
@@ -70,34 +69,6 @@ def bind_habitat_input_preparation(
         selection=CatalogSelection.model_validate(area["selection"]),
         year=parameters["year"],
     )
-
-
-def get_habitat_input_preparation_polygon(
-    request: HabitatInputPreparationRequest,
-) -> None:
-    """Declare that preparation reads Catalog polygons rather than copied uploads.
-
-    Args:
-        request: Validated Catalog-only preparation request.
-
-    Returns:
-        None; this operation does not admit a separate polygon-area upload.
-    """
-    return None
-
-
-def get_habitat_input_preparation_selections(
-    request: HabitatInputPreparationRequest,
-) -> dict[str, VectorSelection]:
-    """Declare the original Catalog selection used by the preparation attempt.
-
-    Args:
-        request: Validated named area and assessment year.
-
-    Returns:
-        The area selection keyed by its native input role.
-    """
-    return {"area": request.selection}
 
 
 def build_habitat_input_preparation_submission(
@@ -192,21 +163,6 @@ async def prepare_habitat_input_preparation_execution(
         )
     resolved = await context.areas.resolve_for_sampling(spec.inputs.selection)
     return HabitatSources({}, {"area": resolved}, runtime), spec
-
-
-def select_habitat_input_preparation_execution(
-    spec: HabitatInputPreparationSpec, context: OperationContext
-) -> tuple[Callable[..., None], Literal["acquire"], None]:
-    """Select acquisition in the existing supervised native worker lane.
-
-    Args:
-        spec: Prepared Catalog selection, year and scientific configuration identity.
-        context: Existing Processing execution capabilities.
-
-    Returns:
-        Native target, acquisition action and no additional resource-limit settings.
-    """
-    return habitat_input_preparation_process_target, "acquire", None
 
 
 def prepare_habitat_input_cache(
@@ -336,38 +292,6 @@ def habitat_input_preparation_process_target(
                 ),
             )
         )
-
-
-def describe_habitat_input_preparation_policy(
-    spec: HabitatInputPreparationSpec,
-) -> HabitatInputPreparationInputs:
-    """Return the captured source and scientific identity used by acquisition.
-
-    Args:
-        spec: Prepared inputs for the acquisition attempt.
-
-    Returns:
-        Immutable named selection, year and configuration identity.
-    """
-    return spec.inputs
-
-
-def describe_habitat_input_preparation_result(
-    summary: dict[str, Any],
-    artifact: dict[str, Any],
-    policy: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Describe completed acquisition facts without raster or statistics fields.
-
-    Args:
-        summary: Captured public preparation inputs.
-        artifact: Published JSON report metadata supplied by this operation.
-        policy: Optional retained inputs; the immutable receipt supplies the result.
-
-    Returns:
-        Prepared assessment year, scientific identity and complete tile count.
-    """
-    return describe_habitat_input_preparation_outcome(artifact)
 
 
 def describe_habitat_input_preparation_outcome(
