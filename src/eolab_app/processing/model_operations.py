@@ -63,6 +63,14 @@ from eolab_app.processing.downstream_models import (
 )
 from eolab_app.processing.prepared_hydrology import HydrologySources
 from eolab_app.processing import habitat_operation as habitat
+from eolab_app.processing import habitat_preparation as habitat_inputs
+from eolab_app.processing.habitat_preparation_models import (
+    OPERATION as HABITAT_INPUT_PREPARATION_OPERATION,
+    HabitatInputPreparationInputs,
+    HabitatInputPreparationRequest,
+    HabitatInputPreparationSpec,
+    QueuedHabitatInputPreparation,
+)
 from eolab_app.processing.habitat_models import (
     HabitatRequest,
     QueuedHabitat,
@@ -84,7 +92,7 @@ class OperationOutput:
 
     Attributes:
         name: Operation output referenced by a recipe's step.output binding.
-        kind: Shared scientific result contract.
+        kind: Shared result contract, including acquisition completion reports.
         presentation: Supported display mode for that type.
         media_type: Format written by the operation.
         label: Default display label, overridable by the recipe.
@@ -95,7 +103,7 @@ class OperationOutput:
     """
 
     name: str
-    kind: Literal["statistics", "raster", "vector", "timeSeries"]
+    kind: Literal["statistics", "raster", "vector", "timeSeries", "report"]
     presentation: Literal["table", "map", "download"]
     media_type: str
     label: str
@@ -234,6 +242,41 @@ OPERATIONS = MappingProxyType(
     {
         operation.id: operation
         for operation in (
+            ModelOperation[
+                HabitatInputPreparationRequest,
+                QueuedHabitatInputPreparation,
+                HabitatInputPreparationSpec,
+            ](
+                id=HABITAT_INPUT_PREPARATION_OPERATION,
+                inputs=(("area", "summary_area"),),
+                parameters=(("year", "number"),),
+                output=OperationOutput(
+                    "report",
+                    "report",
+                    "download",
+                    "application/json",
+                    "Habitat input preparation report",
+                ),
+                execution_profile="habitat-condition",
+                queued_type=QueuedHabitatInputPreparation,
+                prepared_type=HabitatInputPreparationSpec,
+                policy_type=HabitatInputPreparationInputs,
+                bind=habitat_inputs.bind_habitat_input_preparation,
+                source=None,
+                polygon=habitat_inputs.get_habitat_input_preparation_polygon,
+                vector_selections=habitat_inputs.get_habitat_input_preparation_selections,
+                queue=habitat_inputs.build_habitat_input_preparation_submission,
+                prepare=habitat_inputs.prepare_habitat_input_preparation,
+                execution=habitat_inputs.select_habitat_input_preparation_execution,
+                policy=habitat_inputs.describe_habitat_input_preparation_policy,
+                result=habitat_inputs.describe_habitat_input_preparation_result,
+                outcome=habitat_inputs.describe_habitat_input_preparation_outcome,
+                primary_input=None,
+                execution_inputs=habitat_inputs.prepare_habitat_input_preparation_execution,
+                progress_descriptions=(
+                    ("fetching_habitat_tiles", "Preparing Habitat input tiles"),
+                ),
+            ),
             ModelOperation[HabitatRequest, QueuedHabitat, HabitatCalculationInputs](
                 id="habitat.condition.v1",
                 inputs=(

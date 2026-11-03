@@ -65,6 +65,10 @@ from eolab_app.routes.catalog import create_catalog_router
 from eolab_app.routes.composite_map import create_composite_map_router
 from eolab_app.routes.diagnostics import create_diagnostics_router
 from eolab_app.routes.habitat import create_habitat_router
+from eolab_app.routes.habitat_preparation import create_habitat_preparation_router
+from eolab_app.processing.habitat_preparation_models import (
+    OPERATION as HABITAT_INPUT_PREPARATION_OPERATION,
+)
 from eolab_app.routes.raster_analysis import create_raster_analysis_router
 from eolab_app.routes.raster_http import raster_http_exception
 from eolab_app.routes.rasters import create_raster_feature
@@ -525,6 +529,11 @@ def create_app(
     application.include_router(create_vector_sampling_router(vector_selection_reader))
     application.include_router(create_habitat_router())
     application.include_router(
+        create_habitat_preparation_router(
+            processing_service, app_global_configuration.admin_password
+        )
+    )
+    application.include_router(
         create_processing_router(
             processing_service,
             preview_artifact=ArtifactPreviewService(source_files).read,
@@ -731,7 +740,8 @@ async def run_processing_worker() -> None:
                     areas=areas,
                     uploads=uploads,
                     operation_settings={
-                        "habitat.condition.v1": settings.habitat_earth_engine
+                        "habitat.condition.v1": settings.habitat_earth_engine,
+                        HABITAT_INPUT_PREPARATION_OPERATION: settings.habitat_earth_engine,
                     },
                 )
                 workers.create_task(
