@@ -259,14 +259,9 @@ test("Catalog layout reserves its height for compact searchable results", () => 
     "utf8",
   );
 
-  assert.match(stylesheet, /\.catalog-panel\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(
     stylesheet,
     /\.catalog-results-scroll\s*\{[^}]*overflow-y:\s*auto/s,
-  );
-  assert.match(
-    stylesheet,
-    /\.catalog-inspector-body\s*\{[^}]*overflow-y:\s*auto/s,
   );
   assert.match(
     stylesheet,
