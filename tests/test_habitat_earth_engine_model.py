@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock
 from zipfile import ZipFile
 
 import numpy as np
+from numpy.typing import NDArray
 import pytest
 import rasterio
 from rasterio.io import MemoryFile
@@ -51,13 +52,13 @@ from test_processing_worker_results import configure_prepared_job_store
 
 
 def _fixture_configuration(year: int) -> RasterStackConfiguration:
-    """Use four original variables on six small acquisition tiles.
+    """Use six original variables, including drought, on six acquisition tiles.
 
     Args:
         year: Supported source year passed by the production operation.
 
     Returns:
-        Scientific definitions with a tiny grid and two predictors/responses.
+        Scientific definitions with a tiny grid, four predictors and two responses.
     """
     original = load_habitat_stack(year)
     return replace(
@@ -65,17 +66,19 @@ def _fixture_configuration(year: int) -> RasterStackConfiguration:
         bands=tuple(
             band
             for band in original.bands
-            if band.identifier in {"d02", "d03", "d20", "d35"}
+            if band.identifier in {"d02", "d03", "d20", "d28", "d29", "d35"}
         ),
         grid=replace(original.grid, pixel_size_meters=1000, tile_size_pixels=8),
     )
 
 
-def _fixture_values() -> dict[str, np.ndarray]:
-    """Return independent expected input pixels, including zero and seam NoData.
+def _fixture_values() -> dict[str, NDArray[np.float32]]:
+    """Return input pixels with entirely missing drought predictors.
 
     Returns:
-        Scientific variable arrays and a separately selected reference mask.
+        Float32 scientific variables and a separate reference mask. Drought
+        predictors d28 and d29 contain only NaN; other variables retain valid
+        values, including zero, and isolated NoData across tile boundaries.
     """
     rows, columns = np.indices((16, 24))
     environment = rows * 0.3 + columns * 0.07
@@ -93,6 +96,8 @@ def _fixture_values() -> dict[str, np.ndarray]:
         + 0.03 * np.cos(rows * 2 + columns)
         + 0.1 * (rows % 3) * ~references,
         "d20": environment,
+        "d28": np.full_like(environment, np.nan),
+        "d29": np.full_like(environment, np.nan),
         "d35": category,
         "references": references,
     }
@@ -186,7 +191,7 @@ def test_earth_engine_run_uses_cache_and_normal_worker_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     cancel: bool,
 ) -> None:
-    """Match the direct runner on downloaded pixels or cancel during acquisition.
+    """Match upstream after screening missing drought bands, or cancel acquisition.
 
     Args:
         tmp_path: Separate cache, reference polygons and ordinary worker storage.
@@ -367,6 +372,24 @@ def test_earth_engine_run_uses_cache_and_normal_worker_lifecycle(
     assert provenance["inputs"]["settings"] == calculation.settings.model_dump(
         mode="json"
     )
+    named = list(zip(configuration.band_names(), configuration.bands))
+    coverage = {
+        item["predictor"]: item for item in provenance["fit"]["predictorCoverage"]
+    }
+    for name, band in named:
+        if band.role != "predictor":
+            continue
+        predictor = coverage[name]
+        if band.identifier in {"d28", "d29"}:
+            assert predictor["defined_rows"] == 0
+            assert predictor["area_coverage"] == 0
+            assert predictor["retained"] is False
+        else:
+            assert (
+                predictor["area_coverage"]
+                >= calculation.settings.minimum_predictor_coverage
+            )
+            assert predictor["retained"] is True
     values = _fixture_values()
     paths = {}
     for name, pixels in values.items():
@@ -386,7 +409,6 @@ def test_earth_engine_run_uses_cache_and_normal_worker_lifecycle(
             destination.write(pixels.astype("float64"), 1)
         paths[name] = path
     settings = calculation.settings
-    named = list(zip(configuration.band_names(), configuration.bands))
     expected = run_habitat_condition(
         [
             RasterBand(name, paths[band.identifier])

@@ -44,6 +44,7 @@ on:
       - src/eolab_app/routes/wms_proxy.py
       - tests/test_categorical_rendering.py
       - tests/test_raster_categorical_styles.py
+      - tests/test_habitat_earth_engine_model.py
       - geoserver/reader-assessment/**
       - geoserver/epsg_overrides.properties
       - .github/workflows/application-build-inputs.yml
