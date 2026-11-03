@@ -61,6 +61,26 @@ class HabitatTiles:
 
 
 @dataclass(frozen=True)
+class HabitatCacheCoverage:
+    """Count cached input tiles required by one Habitat AOI and source year.
+
+    Attributes:
+        configuration_sha256: Scientific stack identity, including year, grid,
+            datasets, bands and stack version.
+        year: Assessment year selected by the scientific configuration.
+        required_tiles: Number of complete acquisition tiles intersecting the AOI.
+        cached_tiles: Required tiles observed as published cache entries.
+        missing_tiles: Required tiles without a published cache entry.
+    """
+
+    configuration_sha256: str
+    year: int
+    required_tiles: int
+    cached_tiles: int
+    missing_tiles: int
+
+
+@dataclass(frozen=True)
 class HabitatEarthEngineRuntime:
     """Server-only connection and persistent storage for Habitat input acquisition.
 
@@ -179,6 +199,67 @@ def _select_tile_grids(
                     )
                 )
     return tuple(selected)
+
+
+def _get_tile_cache_directory(
+    tile: RasterGrid, cache_grid: RasterCacheGrid, stack_directory: Path
+) -> Path:
+    """Return the deterministic cache directory for one acquisition tile.
+
+    Args:
+        tile: Complete tile selected on the scientific acquisition grid.
+        cache_grid: Globally anchored tile and pixel grid from the configuration.
+        stack_directory: Cache directory for this scientific stack identity.
+
+    Returns:
+        Tile directory named by its grid column and row, without creating it.
+    """
+    span = cache_grid.pixel_size_meters * cache_grid.tile_size_pixels
+    column = round((tile.transform.c - cache_grid.origin_x) / span)
+    row = round((cache_grid.origin_y - tile.transform.f) / span)
+    return stack_directory / f"{column}_{row}"
+
+
+def inspect_habitat_cache(
+    area: BaseGeometry,
+    configuration: RasterStackConfiguration,
+    cache_directory: Path,
+) -> HabitatCacheCoverage:
+    """Count published Habitat input tiles for a projected AOI without fetching.
+
+    Use this to inspect preparation needs before submitting acquisition work.
+    It uses the acquisition tile planner and trusts completed, immutable cache
+    entries without opening raster files or contacting Earth Engine. It does
+    not create cache directories or reserve tiles; acquisition checks the cache
+    again when it runs.
+
+    Args:
+        area: Valid, nonempty AOI projected to configuration.grid.crs.
+        configuration: Scientific settings from load_habitat_stack.
+        cache_directory: Private persistent Habitat cache, which may not exist yet.
+
+    Returns:
+        Stack identity, assessment year and required, cached and missing tile
+        counts observed during this call. Concurrent publication may increase
+        coverage after an entry is checked.
+
+    Raises:
+        OSError: If the filesystem cannot inspect a cache entry.
+    """
+    grids = _select_tile_grids(area, configuration.grid)
+    identity = configuration.raster_configuration_sha256
+    stack_directory = cache_directory / identity
+    cached = sum(
+        _get_tile_cache_directory(grid, configuration.grid, stack_directory).exists()
+        for grid in grids
+    )
+    return HabitatCacheCoverage(
+        configuration_sha256=identity,
+        year=configuration.year,
+        required_tiles=len(grids),
+        cached_tiles=cached,
+        missing_tiles=len(grids) - cached,
+    )
 
 
 def _name_downloaded_bands(
@@ -326,14 +407,11 @@ def get_habitat_tiles(
     progress(0, len(grids))
     stack_directory = cache_directory / configuration.raster_configuration_sha256
     stack_directory.mkdir(parents=True, exist_ok=True)
-    span = configuration.grid.pixel_size_meters * configuration.grid.tile_size_pixels
     image = None
     paths = []
     for index, grid in enumerate(grids):
         check_cancelled()
-        column = round((grid.transform.c - configuration.grid.origin_x) / span)
-        row = round((configuration.grid.origin_y - grid.transform.f) / span)
-        entry = stack_directory / f"{column}_{row}"
+        entry = _get_tile_cache_directory(grid, configuration.grid, stack_directory)
         if not entry.exists():
             if image is None:
                 image = _build_habitat_image(configuration, settings)

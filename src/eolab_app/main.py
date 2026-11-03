@@ -69,6 +69,7 @@ from eolab_app.routes.habitat_preparation import create_habitat_preparation_rout
 from eolab_app.processing.habitat_preparation_models import (
     OPERATION as HABITAT_INPUT_PREPARATION_OPERATION,
 )
+from eolab_app.routes.habitat_admin import create_habitat_admin_router
 from eolab_app.routes.raster_analysis import create_raster_analysis_router
 from eolab_app.routes.raster_http import raster_http_exception
 from eolab_app.routes.rasters import create_raster_feature
@@ -531,6 +532,13 @@ def create_app(
     application.include_router(
         create_habitat_preparation_router(
             processing_service, app_global_configuration.admin_password
+        )
+    )
+    application.include_router(
+        create_habitat_admin_router(
+            vector_selection_reader,
+            app_global_configuration.processing_data_path / "habitat-cache",
+            app_global_configuration.admin_password,
         )
     )
     application.include_router(
