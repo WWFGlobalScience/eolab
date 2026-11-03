@@ -23,8 +23,11 @@ the places you are studying.*
   compare rasters in a chart, and download the results.
 - Explore data time cubes: choose observations, summarize a period into a map,
   or calculate a time series for an area.
-- Run models, including downstream ecosystem beneficiaries and Habitat
-  condition, and inspect or download their results.
+- Clip raster data to an area and download it for further analysis.
+- Estimate the number of people downstream of selected areas, such as proposed
+  restoration sites, using a population dataset.
+- Assess habitat condition by comparing observed conditions with those expected
+  from reference sites.
 - Upload polygon GeoPackages, filter features, or draw and share polygons with
   names and notes.
 - Publish a map link so other people can explore your layers and join shared
@@ -250,21 +253,80 @@ them in a shared layer when collaborators need to see them.
 
 ### Run a model and explore its results
 
-Open **Tools → Models** to choose from the available models:
+Open **Tools → Models** to clip data, summarize observations or run environmental
+models. Choose a model to select its inputs and analysis area.
 
-- **Raster summary** — calculate a statistic or formula for a raster and area.
-- **Raster clip** — download the part of a raster you need as a GeoTIFF.
-- **Map for a period** — summarize observations over a date range into a map.
-- **Time series for an area** — download a statistic for each observation in
-  your chosen area.
-- **Downstream ecosystem beneficiaries** — map downstream coverage from
-  selected starting areas and summarize a layer such as population within it.
-- **Habitat condition** — compare observed conditions with those expected from
-  selected reference sites, using the Montana Prairie model.
+#### Clip and download data
 
-Choose the inputs and area, then select **Run model** (or **Run analysis** for
-the temporal tools). Follow progress in **Runs** while continuing to use the
-map. Closing the panel does not cancel work; use **Cancel run** to stop it.
+Use **Raster clip** to extract the part of a raster you need. Choose a raster
+and a sampling box or selected polygons, then download the result as a GeoTIFF.
+The clip preserves the original pixel resolution and values, ready for further
+analysis in GIS software. For example, extract biomass data within a project's
+boundary instead of downloading the whole regional dataset.
+
+#### Estimate downstream beneficiaries
+
+Use **Downstream ecosystem beneficiaries** to explore which places lie downstream
+of a starting area and summarize what is there. Choose polygons or a raster mask
+for **Starting mask**, then a raster for **Values to summarize**, such as a
+population dataset. The model follows water flow using elevation and watershed
+data. Adjust **Buffer radius** and the optional **Maximum straight-line distance**
+to choose the coverage used for the calculation. Values are resampled onto the
+model's calculation grid, and only positive values are included.
+
+Results include a downstream coverage map, a map of the selected values within
+that coverage, and summary statistics. With population counts as the values and
+the default sum, you can estimate how many people live within the modeled
+coverage downstream of proposed restoration sites. This identifies potential
+beneficiaries; it does not measure how much benefit each person receives. You can
+also choose another values raster or summary formula to explore a different
+downstream question.
+
+#### Assess habitat condition against reference sites
+
+Use **Habitat condition** to assess how closely a landscape resembles conditions
+expected from selected reference sites. Choose an analysis area, reference sites,
+environmental predictor rasters and observed habitat-response rasters. The model
+learns the relationship between the environment and habitat responses at the
+reference sites inside that area, then compares observed responses elsewhere
+with those expected under reference conditions.
+
+The **Reference similarity** map shows the result on a scale from 0 to 1: higher
+values indicate greater similarity to reference conditions. Downloadable
+diagnostics help you examine the expected responses and departures from them.
+For example, use the map to identify places whose observed condition differs
+from what comparable reference sites suggest. Interpretation depends on your
+reference sites and input data.
+
+Choose raster layers yourself, or use **Original model inputs from Earth Engine**
+and select an **Assessment year** when that option is configured on your site.
+The automatic option downloads the original model's inputs for your area; the
+first run can take longer, while later runs reuse matching downloaded tiles.
+The current scientific settings come from the Montana Prairie configuration,
+and the automatic inputs have not been validated for global coverage. An
+optional habitat assessment mask limits where results are calculated while
+keeping the reference sites used for training independent of that mask.
+
+#### Summarize a raster or explore change through time
+
+The other models in **Tools → Models** cover common calculations:
+
+- **Raster summary** calculates a statistic or formula for a raster and area,
+  such as mean biomass or hectares above a threshold.
+- **Map for a period** summarizes observations over a date range into a map,
+  with a second map showing how many observations contributed at each pixel.
+- **Time series for an area** calculates a statistic for each available
+  observation in your chosen area and downloads a CSV, such as mean temperature
+  within a watershed over time.
+
+See [Explore data through time](#explore-data-through-time) for choosing dates
+and interpreting missing observations.
+
+#### Follow a run and use its outputs
+
+Select **Run model** (or **Run analysis** for the temporal tools). Follow progress
+in **Runs** while continuing to use the map. Closing the panel does not cancel
+work; use **Cancel run** to stop it.
 
 Download completed results or choose **Show on map** where offered. Some raster
 inputs also accept results from earlier runs. **Duplicate with changes** lets
