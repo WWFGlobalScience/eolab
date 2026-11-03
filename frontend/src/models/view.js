@@ -139,7 +139,7 @@ export class ModelsView {
         select.value = selected;
     }
 
-    /** Build one named raster chooser and its result-history actions.
+    /** Build one named raster chooser with its optional resampling control.
      * @param {HTMLElement} fields Owning setup fieldset.
      * @param {string} name Recipe input name.
      * @param {{type:string,label:string}} input Declared raster input.
