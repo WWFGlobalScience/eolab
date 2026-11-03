@@ -1,7 +1,6 @@
-"""Verify concurrent real suites plus failed and interrupted Docker cleanup."""
+"""Run the real database suite alongside failure and interruption cleanup checks."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 import signal
@@ -13,18 +12,26 @@ import time
 from test_processing_postgres import LABEL, ROOT, docker
 
 
-def verify_run(arguments: list[str], *, interrupt: bool = False) -> tuple[int, str]:
+def verify_run(
+    arguments: list[str],
+    *,
+    interrupt: bool = False,
+    check_failure_isolation: bool = False,
+) -> tuple[int, str]:
     """Execute a launcher and independently check that its resources disappear.
 
     Args:
         arguments: Launcher options, including optional failure injection.
         interrupt: Send SIGTERM after its real test container starts.
+        check_failure_isolation: Run the existing injected failure after this
+            runner starts and require its cleanup to leave this runner alive.
 
     Returns:
         Launcher exit status and unique run name after verified cleanup.
 
     Raises:
         RuntimeError: If startup, process completion or cleanup violates the contract.
+        subprocess.TimeoutExpired: If a launcher or Docker command exceeds its deadline.
     """
     with tempfile.TemporaryDirectory(
         prefix="eolab-processing-verification-"
@@ -41,18 +48,52 @@ def verify_run(arguments: list[str], *, interrupt: bool = False) -> tuple[int, s
             stderr=subprocess.STDOUT,
         )
         try:
-            if interrupt:
+            if interrupt or check_failure_isolation:
                 deadline = time.monotonic() + 1200
                 while process.poll() is None and time.monotonic() < deadline:
-                    if "Processing test runner started:" in log_path.read_text(
-                        encoding="utf-8"
-                    ):
-                        process.send_signal(signal.SIGTERM)
+                    started = re.search(
+                        r"Processing test runner started: "
+                        r"(eolab_processing_test_[0-9a-f]{32})",
+                        log_path.read_text(encoding="utf-8"),
+                    )
+                    if started:
+                        if interrupt:
+                            process.send_signal(signal.SIGTERM)
                         break
                     time.sleep(0.2)
                 else:
                     raise RuntimeError(
-                        "Interrupted test runner did not reach its startup checkpoint"
+                        "Test runner did not reach its startup checkpoint"
+                    )
+                if check_failure_isolation:
+                    failure_status, failure_name = verify_run(
+                        [*arguments, "--inject-failure"]
+                    )
+                    if failure_status != 1:
+                        raise RuntimeError(
+                            "Injected pytest failure did not propagate exit status 1"
+                        )
+                    name = started[1]
+                    if failure_name == name:
+                        raise RuntimeError(
+                            "Concurrent runs did not use distinct database identities"
+                        )
+                    if (
+                        process.poll() is not None
+                        or docker(
+                            "inspect",
+                            "--format",
+                            "{{.State.Running}}",
+                            name + "_runner",
+                        )
+                        != "true"
+                    ):
+                        raise RuntimeError(
+                            "Failure cleanup did not leave the full test runner active"
+                        )
+                    print(
+                        f"Verified concurrent failure cleanup preserved active suite: {name}",
+                        flush=True,
                     )
             status = process.wait(timeout=1800)
         finally:
@@ -83,7 +124,7 @@ def main() -> int:
     """Exercise the real lifecycle acceptance checks on a Linux Docker host.
 
     Returns:
-        Zero after two successful suites and verified failure/interruption cleanup.
+        Zero after the complete suite, concurrent failure and SIGTERM checks pass.
 
     Raises:
         RuntimeError: If any lifecycle acceptance check fails.
@@ -100,17 +141,12 @@ def main() -> int:
         if args.application_image
         else []
     )
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(verify_run, [options, options]))
-    if [status for status, _ in results] != [0, 0]:
-        raise RuntimeError(f"Concurrent real PostgreSQL suites failed: {results}")
-    if len({name for _, name in results}) != 2:
-        raise RuntimeError("Concurrent runs did not use distinct database identities")
-    if verify_run([*options, "--inject-failure"])[0] != 1:
-        raise RuntimeError("Injected pytest failure did not propagate exit status 1")
+    result = verify_run(options, check_failure_isolation=True)
+    if result[0] != 0:
+        raise RuntimeError(f"Complete PostgreSQL suite failed: {result}")
     if verify_run(options, interrupt=True)[0] != 130:
         raise RuntimeError("Interrupted launcher did not report exit status 130")
-    print("Verified concurrent suites, injected pytest failure and SIGTERM cleanup")
+    print("Verified complete suite, concurrent failure isolation and SIGTERM cleanup")
     return 0
 
 
