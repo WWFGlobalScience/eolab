@@ -573,6 +573,83 @@
             popovertarget="workspace-tool-actions" aria-controls="workspace-tool-actions"
             aria-label="Map and analysis tools">Tools <span aria-hidden="true">▾</span></button>
         </div>
+        <section id="raster-sampling-tool" aria-label="Sample area controls">
+            <details class="raster-sampling-disclosure" id="raster-sampling-disclosure">
+              <summary aria-controls="raster-sampling-disclosure-body">
+                <span id="raster-sampling-area-summary">No raster selected</span>
+                <span class="raster-disclosure-chevron" aria-hidden="true"></span>
+              </summary>
+              <div class="raster-sampling-disclosure-body"
+                id="raster-sampling-disclosure-body">
+                <div id="raster-series-area-controls" class="raster-sampling-area-options" role="radiogroup" aria-label="Sample area" hidden>
+                  <label class="raster-sampling-area-option"><input id="raster-series-area-selection" type="radio" name="raster-series-area" value="selection" /><span>Sampling box</span></label>
+                  <div id="raster-series-box-controls"></div>
+                  <label class="raster-sampling-area-option"><input id="raster-series-area-whole" type="radio" name="raster-series-area" value="whole" /><span>Whole raster</span></label>
+                  <label class="raster-sampling-area-option"><input id="raster-series-area-vector" type="radio" name="raster-series-area" value="vector" /><span>Polygon layer</span></label>
+            <section id="raster-series-vector-area" class="vector-selection-card summary-vector-area" aria-label="Polygon sample area for raster statistics" hidden>
+              <label>Polygon layer <select data-vector-sampling="layer" aria-label="Sample polygon layer"></select></label>
+              <small data-vector-sampling="predicate"></small>
+              <div class="downloads-actions">
+                <button type="button" class="secondary-button" data-vector-sampling="filter">Edit filter</button>
+                <button type="button" class="secondary-button" data-vector-sampling="retry" hidden>Retry</button>
+                <button type="button" class="secondary-button" data-vector-sampling="remove" hidden>Clear selection</button>
+              </div>
+              <p data-vector-sampling="status" role="status"></p>
+            </section>
+                </div>
+                <div class="raster-sampling-area-options" id="raster-sampling-area-controls"
+                  role="radiogroup" aria-label="Sample area">
+                  <label class="raster-sampling-area-option" for="use-map-window-for-raster">
+                    <input id="use-map-window-for-raster" type="radio"
+                      name="raster-sampling-area" value="selectedArea" disabled />
+                    <span>Sampling box</span>
+                  </label>
+                  <div id="raster-histogram-box-controls"><div class="raster-map-box-controls" id="raster-map-box-controls" hidden>
+                    <output id="raster-sample-window-dimensions" for="raster-sample-window-range raster-sample-window-number">600 × 600 km</output>
+                    <div class="raster-sample-window-size">
+                      <label for="raster-sample-window-range">
+                        <span class="visually-hidden">Box size in kilometers</span>
+                        <input id="raster-sample-window-range" type="range"
+                          min="0" max="1000" step="any"
+                          aria-describedby="raster-sample-window-status" />
+                      </label>
+                      <label for="raster-sample-window-number">
+                        <span class="visually-hidden">Box size in kilometers</span>
+                        <input id="raster-sample-window-number" type="number"
+                          min="1" step="1" value="600" inputmode="numeric"
+                          aria-describedby="raster-sample-window-status" />
+                      </label>
+                    </div>
+                  </div>
+                  </div>
+                  <label class="raster-sampling-area-option" for="clear-raster-sample-window">
+                    <input id="clear-raster-sample-window" type="radio"
+                      name="raster-sampling-area" value="wholeRaster" disabled />
+                    <span id="raster-sampling-area-whole-label">Whole raster</span>
+                  </label>
+                  <label class="raster-sampling-area-option" for="use-vector-for-raster">
+                    <input id="use-vector-for-raster" type="radio" name="raster-sampling-area" value="vector" />
+                    <span>Polygon layer</span>
+                  </label>
+                  <section class="vector-selection-card" id="vector-sampling" aria-label="Polygon sample area" hidden>
+                    <label>Polygon layer <select data-vector-sampling="layer" aria-label="Sample polygon layer"></select></label>
+                    <small data-vector-sampling="predicate"></small>
+                    <div class="downloads-actions">
+                      <button type="button" class="secondary-button" data-vector-sampling="filter">Edit filter</button>
+                      <button type="button" class="secondary-button" data-vector-sampling="retry" hidden>Retry</button>
+                      <button type="button" class="secondary-button" data-vector-sampling="remove" hidden>Clear selection</button>
+                    </div>
+                    <p data-vector-sampling="status" role="status"></p>
+                  </section>
+                </div>
+              </div>
+            </details>
+                    <p class="raster-sample-window-status visually-hidden"
+                      id="raster-sample-window-status" role="status"
+                      aria-live="polite" aria-atomic="true">
+                      Select a raster to choose its sample area.
+                    </p>
+        </section>
         <div class="map-filter-summary-group" role="group" aria-labelledby="map-filter-summary-heading">
           <strong id="map-filter-summary-heading" class="map-filter-summary-heading">Currently filtered vector layers</strong>
           <div id="map-filter-indicators" class="map-filter-indicators" hidden></div>
@@ -1539,83 +1616,6 @@
       </div>
     </section>
         </div>
-        <section id="raster-sampling-tool" aria-label="Sample area controls" hidden>
-            <details class="raster-sampling-disclosure" id="raster-sampling-disclosure">
-              <summary aria-controls="raster-sampling-disclosure-body">
-                <span id="raster-sampling-area-summary">No raster selected</span>
-                <span class="raster-disclosure-chevron" aria-hidden="true"></span>
-              </summary>
-              <div class="raster-sampling-disclosure-body"
-                id="raster-sampling-disclosure-body">
-                <div id="raster-series-area-controls" class="raster-sampling-area-options" role="radiogroup" aria-label="Sample area" hidden>
-                  <label class="raster-sampling-area-option"><input id="raster-series-area-selection" type="radio" name="raster-series-area" value="selection" /><span>Sampling box</span></label>
-                  <div id="raster-series-box-controls"></div>
-                  <label class="raster-sampling-area-option"><input id="raster-series-area-whole" type="radio" name="raster-series-area" value="whole" /><span>Whole raster</span></label>
-                  <label class="raster-sampling-area-option"><input id="raster-series-area-vector" type="radio" name="raster-series-area" value="vector" /><span>Polygon layer</span></label>
-            <section id="raster-series-vector-area" class="vector-selection-card summary-vector-area" aria-label="Polygon sample area for raster statistics" hidden>
-              <label>Polygon layer <select data-vector-sampling="layer" aria-label="Sample polygon layer"></select></label>
-              <small data-vector-sampling="predicate"></small>
-              <div class="downloads-actions">
-                <button type="button" class="secondary-button" data-vector-sampling="filter">Edit filter</button>
-                <button type="button" class="secondary-button" data-vector-sampling="retry" hidden>Retry</button>
-                <button type="button" class="secondary-button" data-vector-sampling="remove" hidden>Clear selection</button>
-              </div>
-              <p data-vector-sampling="status" role="status"></p>
-            </section>
-                </div>
-                <div class="raster-sampling-area-options" id="raster-sampling-area-controls"
-                  role="radiogroup" aria-label="Sample area">
-                  <label class="raster-sampling-area-option" for="use-map-window-for-raster">
-                    <input id="use-map-window-for-raster" type="radio"
-                      name="raster-sampling-area" value="selectedArea" disabled />
-                    <span>Sampling box</span>
-                  </label>
-                  <div id="raster-histogram-box-controls"><div class="raster-map-box-controls" id="raster-map-box-controls" hidden>
-                    <output id="raster-sample-window-dimensions" for="raster-sample-window-range raster-sample-window-number">600 × 600 km</output>
-                    <div class="raster-sample-window-size">
-                      <label for="raster-sample-window-range">
-                        <span class="visually-hidden">Box size in kilometers</span>
-                        <input id="raster-sample-window-range" type="range"
-                          min="0" max="1000" step="any"
-                          aria-describedby="raster-sample-window-status" />
-                      </label>
-                      <label for="raster-sample-window-number">
-                        <span class="visually-hidden">Box size in kilometers</span>
-                        <input id="raster-sample-window-number" type="number"
-                          min="1" step="1" value="600" inputmode="numeric"
-                          aria-describedby="raster-sample-window-status" />
-                      </label>
-                    </div>
-                  </div>
-                  </div>
-                  <label class="raster-sampling-area-option" for="clear-raster-sample-window">
-                    <input id="clear-raster-sample-window" type="radio"
-                      name="raster-sampling-area" value="wholeRaster" disabled />
-                    <span id="raster-sampling-area-whole-label">Whole raster</span>
-                  </label>
-                  <label class="raster-sampling-area-option" for="use-vector-for-raster">
-                    <input id="use-vector-for-raster" type="radio" name="raster-sampling-area" value="vector" />
-                    <span>Polygon layer</span>
-                  </label>
-                  <section class="vector-selection-card" id="vector-sampling" aria-label="Polygon sample area" hidden>
-                    <label>Polygon layer <select data-vector-sampling="layer" aria-label="Sample polygon layer"></select></label>
-                    <small data-vector-sampling="predicate"></small>
-                    <div class="downloads-actions">
-                      <button type="button" class="secondary-button" data-vector-sampling="filter">Edit filter</button>
-                      <button type="button" class="secondary-button" data-vector-sampling="retry" hidden>Retry</button>
-                      <button type="button" class="secondary-button" data-vector-sampling="remove" hidden>Clear selection</button>
-                    </div>
-                    <p data-vector-sampling="status" role="status"></p>
-                  </section>
-                </div>
-              </div>
-            </details>
-                    <p class="raster-sample-window-status visually-hidden"
-                      id="raster-sample-window-status" role="status"
-                      aria-live="polite" aria-atomic="true">
-                      Select a raster to choose its sample area.
-                    </p>
-        </section>
       </aside>
     </main>
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { MapInspectionController } from "../src/map-inspection-controller.js";
+import { RasterSamplingAreaControlsView } from "../src/raster/sampling-area-controls-view.js";
 import { FakeRasterControlDocument } from "../test-support/raster/fake-controls-document.js";
 
 /**
@@ -1081,6 +1083,47 @@ test("annotation click details remain active while independent raster and vector
     h.controller.destroy();
 });
 
+test("sampling widget retains disclosure and area through Models, tool switches and minimization", () => {
+    const h = fixture();
+    const view = new RasterSamplingAreaControlsView(h.doc);
+    const widget = h.doc.querySelector("#raster-sampling-tool");
+    const box = h.doc.querySelector("#raster-map-box-controls");
+    h.doc.querySelector("#raster-histogram-box-controls").append(box);
+    view.bind({});
+    view.setSampleWindowSize(200, 14000);
+    view.setSamplingAreaMode("selectedArea", "Sampling box");
+    const main = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+    const composition = main.slice(main.indexOf("    let activeSamplingTool ="),
+        main.indexOf("    /** Focus shared area choices"));
+    const presentContext = new Function("document", "rasterControls", "mapInspection",
+        `${composition}\nreturn presentSamplingContext;`)(h.doc,
+        {setSamplingAreaContext: context => view.setAreaContext(context)}, h.controller);
+    view.openAreaEditor();
+    for (const open of [() => h.controller.showHistogram(1), () => h.controller.showModels(),
+        () => h.controller.showStyle("Temperature"), () => h.controller.showFilter("Countries"),
+        () => h.controller.showAnnotations(), () => h.controller.showRasterClips()]) {
+        open();
+        assert.equal(widget.hidden, false);
+        assert.equal(view.disclosure.open, true, "a different panel cannot collapse sampling controls");
+        assert.equal(view.sampleWindowNumber.value, "200");
+        assert.equal(view.useMapWindowButton.checked, true);
+    }
+    presentContext("raster-series", {source: "Temperature", scope: "Reference polygons", usesSamplingBox: false});
+    h.controller.showRasterSeries();
+    assert.equal(box.parentElement, h.doc.querySelector("#raster-series-box-controls"));
+    assert.equal(box.hidden, true, "statistics keep their own captured polygon-area context");
+    h.controller.showModels();
+    assert.equal(box.parentElement, h.doc.querySelector("#raster-histogram-box-controls"));
+    assert.equal(box.hidden, false, "Models retain the ordinary map sampling area");
+    h.doc.querySelector("#toggle-map-inspection-dock").dispatchEvent(new Event("click"));
+    assert.equal(view.disclosure.open, true);
+    assert.equal(widget.hidden, false);
+    view.disclosure.open = false;
+    h.controller.hideModels();
+    h.controller.showHistogram(1);
+    assert.equal(view.disclosure.open, false, "a user's collapsed state also survives panel changes");
+    assert.equal(widget.hidden, false);
+    view.unbind();
 
 test("Models keeps its tool entry while its own compact header provides the title", () => {
     const h = fixture(), models = h.doc.querySelector("#models-panel"), tab = h.doc.querySelector("#map-inspection-tab-models");

@@ -3725,7 +3725,7 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Discard an unfinished resize when leaving a sampling workflow.
+     * Discard an unfinished resize after changing box mode or entering an invalid size.
      * Restore the committed box and its controls without requesting results.
      * @return {void}
      */
@@ -5031,7 +5031,6 @@ export function initializeRasterViewer(
         selectSamplingBox: () => rasterSampleWindowController.selectAt(leafletMap.getCenter()) === null
             ? null : rasterSampleWindowController.selectedArea,
         selectWholeRaster: handleClearSampleWindow,
-        cancelSampleWindowResize,
         setSamplingActivity: area => rasterSampleWindowController.setActivityArea(area),
         destroy,
         /**

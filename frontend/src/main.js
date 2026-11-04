@@ -872,14 +872,10 @@ async function initializeCatalog(
         pixelPoint,
     });
     const rasterControls = new RasterControlsView(document);
-    const samplingTools = new Map([
-        ["histogram", true], ["raster-series", false], ["raster-clips", false],
-    ]);
     let activeSamplingTool = null;
     let statisticsSamplingContext = null;
-    /** Present sampling controls for the active workflow without changing its area. @return {void} */
+    /** Present the appropriate area choices without changing widget visibility or the selected area. @return {void} */
     const updateSamplingControls = () => {
-        const active = samplingTools.has(activeSamplingTool);
         const statistics = activeSamplingTool === "raster-series";
         document.querySelector("#raster-sampling-area-controls").hidden = statistics;
         document.querySelector("#raster-series-area-controls").hidden = !statistics;
@@ -887,8 +883,6 @@ async function initializeCatalog(
         const boxControls = document.querySelector("#raster-map-box-controls");
         if (boxControls.parentElement !== slot) slot.append(boxControls);
         rasterControls.setSamplingAreaContext(statistics ? statisticsSamplingContext : null);
-        rasterControls.setSamplingControlsActive(active, samplingTools.get(activeSamplingTool) ?? false);
-        if (!active) rasterVisualization?.cancelSampleWindowResize();
     };
     /** Reflect tool-owned scope in the shared controls without changing calculation inputs.
      * @param {string} tool Sampling workflow name.
@@ -897,7 +891,6 @@ async function initializeCatalog(
      */
     const presentSamplingContext = (tool, context) => {
         mapInspection.setToolContext(tool, context);
-        samplingTools.set(tool, context.usesSamplingBox);
         if (tool === "raster-series") statisticsSamplingContext = context;
         if (activeSamplingTool === tool) updateSamplingControls();
     };
@@ -1302,11 +1295,6 @@ async function initializeCatalog(
         mapLayers: mapLayerController, rasterViewer: rasterVisualization,
         inspection: mapInspection,
         vectorStyleControls,
-        onTargetChange: kind => {
-            if (kind === "raster") samplingTools.set("style", true);
-            else samplingTools.delete("style");
-            if (activeSamplingTool === "style") updateSamplingControls();
-        },
         onFilterRequested: (key) => vectorFilterControls.open(key),
         getVectorStyleTarget: (key) => {
             const preview = outputLayers.layers.get(key);

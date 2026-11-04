@@ -421,15 +421,6 @@ export class RasterControlsView {
         return this.#samplingAreaView.isSamplingBoxSelected();
     }
 
-    /** Present shared sampling controls for the foreground workflow.
-     * @param {boolean} active Whether a sampling workflow is visible.
-     * @param {boolean} usesBox Whether it uses the shared map box.
-     * @return {void}
-     */
-    setSamplingControlsActive(active, usesBox) {
-        this.#samplingAreaView.setActive(active, usesBox);
-    }
-
     /** Show composed area context without replacing the map sampler's retained selection.
      * @param {{scope:string,usesSamplingBox:boolean}|null} context Foreground workflow area, or ordinary map sampling.
      * @return {void}
