@@ -49,9 +49,10 @@ def run_native_job(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     """
     command = (
         "from pathlib import Path; "
-        "from eolab_app.vector import selection_operation, outline_operation; "
+        "from eolab_app.vector import selection_operation, outline_operation, extent_operation; "
         f"selection_operation.UPLOAD_MOUNT=Path({str(root)!r}); "
         f"outline_operation.UPLOAD_MOUNT=Path({str(root)!r}); "
+        f"extent_operation.UPLOAD_MOUNT=Path({str(root)!r}); "
         "from job_service.runner import main; main()"
     )
     result = subprocess.run(
@@ -339,3 +340,46 @@ def test_uploaded_area_statistics_authorize_before_warm_cache(
     deleted = owner.post(endpoint, headers=HEADERS, json=body)
     assert deleted.status_code == 404, deleted.text
     assert deleted.headers["Cache-Control"] == "private, no-store"
+
+
+def test_uploaded_extent_reauthorizes_owner_and_reads_original_filter(
+    uploaded_selection: SelectionFixture,
+) -> None:
+    """Measure private original-source coordinates without map publication.
+
+    Args:
+        uploaded_selection: Actual admitted upload, unrelated browser and native Jobs.
+    """
+    owner, other, upload, _, submissions = uploaded_selection
+    request = {"uploadId": upload["id"], "filter": FILTER}
+    response = owner.post("/api/vector-sampling/extent", headers=HEADERS, json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["matched"] == 1
+    assert response.json()["bbox"] is not None
+    assert set(response.json()) == {"matched", "bbox"}
+    assert response.headers["Cache-Control"] == "private, no-store"
+    payload = submissions[-1]
+    assert payload["operation"] == "vector.selection-extent.v1"
+    assert payload["inputs"]["selection"] == {**request, "layerName": "areas"}
+    assert (
+        payload["inputs"]["uploadOwner"]
+        == hashlib.sha256(owner.cookies[COOKIE].encode()).hexdigest()
+    )
+    admitted = len(submissions)
+    assert (
+        other.post(
+            "/api/vector-sampling/extent", headers=HEADERS, json=request
+        ).status_code
+        == 404
+    )
+    assert len(submissions) == admitted
+    assert owner.post("/api/vector-sampling/extent", json=request).status_code == 403
+    assert (
+        owner.post(
+            "/api/vector-sampling/extent",
+            headers=HEADERS,
+            json={**request, "path": "/private"},
+        ).status_code
+        == 422
+    )
+    assert len(submissions) == admitted

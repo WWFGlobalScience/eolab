@@ -1090,6 +1090,8 @@ async function initializeCatalog(
     let modelFilterControls = null;
     vectorFilterControls = new VectorFilterControls({
         inspection: mapInspection,
+        onZoom: ([west, south, east, north]) => leafletMap.fitBounds(
+            L.latLngBounds([[south, west], [north, east]]).pad(0.15), {padding: [24, 24], maxZoom: 14}),
         getTarget: (key) => {
             const annotation = annotations?.filterTarget(key);
             if (annotation) return annotation;
@@ -1105,6 +1107,7 @@ async function initializeCatalog(
             };
         },
     });
+    leafletMap.on("movestart", () => vectorFilterControls.cancelZoom("Map moved. Zoom again to find filtered features."));
     mapLayerController.onFilter = key => vectorFilterControls.open(key);
     const vectorSamplingOverlay = new VectorSelectionOverlay(leafletMap, L);
     /** Read polygon choices for Models, histogram and summary controls.

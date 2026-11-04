@@ -1,4 +1,4 @@
-"""HTTP routes for filtered vector analysis areas and optional display outlines."""
+"""HTTP routes for original-source vector selections, bounds and display outlines."""
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from typing import Any
@@ -15,6 +15,7 @@ from eolab_app.catalog_selection import (
     VectorSelection,
 )
 from eolab_app.vector.errors import VectorFeatureError
+from eolab_app.vector.extent_operation import FeatureExtent
 from eolab_app.vector.filters import CatalogVectorFilterRequest
 from eolab_app.vector.sampling import VectorSamplingService
 
@@ -65,6 +66,41 @@ def create_vector_sampling_router(service: VectorSamplingService) -> APIRouter:
             )
         except HttpClientDisconnectedError as error:
             raise HTTPException(499, "Selection canceled") from error
+        except VectorFeatureError as error:
+            raise vector_http_exception(error) from error
+        except SelectionUnavailableError as error:
+            raise HTTPException(409, error.detail) from error
+
+    @router.post("/extent", response_model=FeatureExtent)
+    async def extent(
+        payload: CatalogVectorFilterRequest | UploadedVectorFilterRequest,
+        request: Request,
+        response: Response,
+    ) -> dict[str, Any]:
+        """Return matching original-source bounds without changing an analysis area.
+
+        Args:
+            payload: Catalog or upload identity and complete accepted filter.
+            request: HTTP disconnect observer and private upload ownership.
+            response: Renews the browser cookie when reading an uploaded layer.
+
+        Returns:
+            Exact matching count and WGS84 bounds; null bounds when none exist.
+
+        Raises:
+            HTTPException: For cancellation, invalid source or bounded-read failure.
+        """
+        upload_owner = (
+            get_browser_owner_hash(request, response, mutation_header="X-EOLab-Uploads")
+            if isinstance(payload, UploadedVectorFilterRequest)
+            else None
+        )
+        try:
+            return await run_until_http_disconnect(
+                request, service.extent(payload, upload_owner)
+            )
+        except HttpClientDisconnectedError as error:
+            raise HTTPException(499, "Vector zoom cancelled") from error
         except VectorFeatureError as error:
             raise vector_http_exception(error) from error
         except SelectionUnavailableError as error:

@@ -37,8 +37,8 @@ async def resolve_selection(
 ) -> ResolvedCatalogSelection:
     """Locate an authorized vector dataset and prepare its attribute filter.
 
-    No polygons are loaded or filtered here. The returned OGR WHERE expression
-    narrows candidates during reading; polygon_features also applies the exact
+    No geometries are loaded or filtered here. The returned OGR WHERE expression
+    narrows candidates during reading; original-source readers also apply the exact
     attribute rules so driver-specific string comparisons cannot change results.
 
     Args:
@@ -85,7 +85,7 @@ async def resolve_selection(
     ):
         raise VectorConflictError(
             f"The selected source is {source.source_kind} {source.source_format}; "
-            "sampling requires a mounted Shapefile or GeoPackage polygon layer."
+            "reading original features requires a mounted Shapefile or GeoPackage layer."
         )
     validated_filter = validate_filter(request.filter, catalog_vector_fields(item))
     selection = CatalogSelection(
