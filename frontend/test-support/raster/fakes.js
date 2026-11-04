@@ -62,16 +62,18 @@ export function createFakeLeafletMap(center = { lng: 0, lat: 0 }) {
  * @return {Function} Leaflet-compatible rectangle factory.
  */
 export function createFakeSampleLayerFactory(createdLayers) {
-  return (bounds, kind) => {
+  return (bounds, kind, samplingBox) => {
     const layer = {
       kind,
       boundsHistory: [bounds],
+      samplingBoxHistory: [samplingBox],
       addTo(map) {
         map.layers.push(this);
         return this;
       },
-      setBounds(nextBounds) {
+      setSampleWindow(nextBounds,nextBox) {
         this.boundsHistory.push(nextBounds);
+        this.samplingBoxHistory.push(nextBox);
       },
     };
     createdLayers.push(layer);

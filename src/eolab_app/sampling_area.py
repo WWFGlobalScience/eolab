@@ -1,10 +1,12 @@
 """Reusable bounded sampling-area contracts for raster analysis."""
 
+from eolab_app.sampling_box import Wgs84SamplingBox
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 from eolab_app.raster.models import CanonicalWgs84Bounds
 from eolab_app.catalog_selection import ResolvedCatalogSelection
+
 
 @dataclass(frozen=True)
 class WholeRasterSamplingArea:
@@ -43,6 +45,32 @@ class SelectedBoundsSamplingArea:
 
 
 @dataclass(frozen=True)
+class SamplingBoxArea:
+    """Select the geodesic quadrilateral retained by its center and kilometer size.
+
+    Attributes:
+        box: Validated nonwrapping WGS84 descriptor; polygon rings remain read-local.
+        kind: Public sampling-box discriminator.
+    """
+
+    box: Wgs84SamplingBox
+    kind: Literal["samplingBox"] = "samplingBox"
+
+    def cache_identity(self) -> tuple[str, float, float, int]:
+        """Return the exact center and size used to coalesce identical box reads.
+
+        Returns:
+            Scope, longitude, latitude and side length in kilometers.
+        """
+        return (
+            self.kind,
+            self.box.center.longitude,
+            self.box.center.latitude,
+            self.box.sideLengthKm,
+        )
+
+
+@dataclass(frozen=True)
 class CatalogSelectionSamplingArea:
     """Select exact polygons read from an immutable catalog descriptor.
 
@@ -64,5 +92,8 @@ class CatalogSelectionSamplingArea:
 
 
 RasterSamplingArea: TypeAlias = (
-    WholeRasterSamplingArea | SelectedBoundsSamplingArea | CatalogSelectionSamplingArea
+    WholeRasterSamplingArea
+    | SelectedBoundsSamplingArea
+    | SamplingBoxArea
+    | CatalogSelectionSamplingArea
 )

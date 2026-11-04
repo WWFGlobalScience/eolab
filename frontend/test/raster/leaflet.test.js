@@ -57,7 +57,7 @@ test("Leaflet adapters own WMS and sample-window presentation options", () => {
         return wmsLayer;
       },
     },
-    rectangle(bounds, options) {
+    polygon(bounds, options) {
       capturedRectangle = { bounds, options };
       return rectangleLayer;
     },
@@ -104,13 +104,14 @@ test("Leaflet adapters own WMS and sample-window presentation options", () => {
     rectangleLayer,
   );
   assert.deepEqual(capturedRectangle, {
-    bounds: [[48, -123], [50, -121]],
+    bounds: [[48,-123],[50,-123],[50,-121],[48,-121]],
     options: {
       pane: RASTER_SAMPLE_WINDOW_PANE,
       color: "#f97316",
       weight: 2,
       fill: false,
       interactive: false,
+      smoothFactor: 0,
     },
   });
 
@@ -120,7 +121,7 @@ test("Leaflet adapters own WMS and sample-window presentation options", () => {
     "selection",
   );
   assert.deepEqual(capturedRectangle, {
-    bounds: [[10, 20], [11, 21]],
+    bounds: [[10,20],[11,20],[11,21],[10,21]],
     options: {
       pane: RASTER_SAMPLE_WINDOW_PANE,
       color: "#2563eb",
@@ -128,6 +129,7 @@ test("Leaflet adapters own WMS and sample-window presentation options", () => {
       fillColor: "#3b82f6",
       fillOpacity: 0.12,
       interactive: false,
+      smoothFactor: 0,
     },
   });
 });
@@ -163,4 +165,26 @@ test("switching WMS styles removes the previous mutually exclusive parameter bef
   assert.equal(Object.hasOwn(snapshots[1], "raster_style"), false);
   assert.equal(snapshots[1].env, "restored-ramp");
   assert.equal(snapshots[1].transparent, true);
+});
+
+
+test("box outline uses geodesic edges and refines at the actual Leaflet zoom", () => {
+  const box = {center: {longitude: 0, latitude: 60}, sideLengthKm: 2000};
+  const history = [];
+  let scale = 1;
+  const layer = {setLatLngs: points => history.push(points)};
+  const map = {project: ([latitude, longitude]) => ({x: longitude * scale,
+    y: Math.log(Math.tan(Math.PI / 4 + latitude * Math.PI / 360)) * 180 / Math.PI * scale})};
+  const leaflet = {polygon: (points, options) => { history.push(points); assert.equal(options.smoothFactor, 0); return layer; }};
+  const value = createRasterSampleWindowLayer(leaflet, [[0, 0], [1, 1]], "selection", box, map);
+  assert.equal(value, layer);
+  const original = history[0];
+  assert.ok(original.length > 5);
+  assert.ok(original[0][1] < 0 && original[0][0] > 60);
+  assert.ok(Math.abs(original[0][1]) > Math.abs(original.find(point => point[0] < 60)[1]));
+  scale = 64;
+  layer.setSampleWindow([[0, 0], [1, 1]], box);
+  assert.ok(history[1].length > original.length);
+  assert.deepEqual(history[1][0], original[0]);
+  assert.deepEqual(history[1].at(-1), original.at(-1));
 });

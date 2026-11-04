@@ -1454,3 +1454,18 @@ test("clip run duplication preserves its exact area and has no summary parameter
     await h.controller.submit(); assert.deepEqual(h.submitted[0].inputs, saved.inputs);
     assert.equal(h.submitted[0].model.id, "raster-clip");
 });
+
+
+test("summary and clip models capture the geodesic box independently of later map edits", () => {
+    for (const definition of [model, clipModel]) {
+        const box = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+        const draft = createModelDraft(definition, {rasters: [raster], area: box}, "box-draft");
+        assert.equal(draft.inputs.area.areaMode, "samplingArea");
+        box.samplingBox.center.latitude = 0;
+        const request = captureModelSubmission(draft, "a".repeat(32), 0);
+        assert.deepEqual(request.inputs.area, {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}});
+        draft.inputs.area.area.samplingBox.sideLengthKm = 100;
+        assert.equal(request.inputs.area.samplingBox.sideLengthKm, 600);
+        assert.equal(Object.hasOwn(request.inputs.area, "selectedBounds"), false);
+    }
+});

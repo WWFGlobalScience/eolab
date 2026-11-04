@@ -15,7 +15,7 @@ export function validatePolygonAreaReference(reference) {
 }
 
 /** Copy a calculation area without allowing geometry into browser recovery records.
- * @param {Object} area Rectangle, catalog selection, polygon reference or whole raster.
+ * @param {Object} area Rectangle, geodesic sampling box, vector selection, polygon reference or whole raster.
  * @return {Readonly<Object>} Validated area.
  * @throws {TypeError|Error} If the area does not match a supported contract.
  */

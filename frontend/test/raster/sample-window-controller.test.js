@@ -1,3 +1,4 @@
+import { rasterSamplingAreaBounds } from "../../src/selected-area.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -18,10 +19,11 @@ test("processing activity follows only its exact committed rectangle and clears 
     return layer;
   }, () => {}, () => {});
   const bounds = controller.selectAt({lng:78,lat:22});
-  controller.setActivityBounds(bounds); assert.equal(flags.at(-1),true);
+  const area = controller.selectedArea;
+  controller.setActivityArea(controller.selectedArea); assert.equal(flags.at(-1),true);
   controller.selectAt({lng:79,lat:22}); assert.equal(flags.at(-1),false);
-  controller.restoreSelection(bounds); assert.equal(flags.at(-1),true);
-  controller.setActivityBounds(null); assert.equal(flags.at(-1),false);
+  controller.restoreSelection(bounds,area.samplingBox); assert.equal(flags.at(-1),true);
+  controller.setActivityArea(null); assert.equal(flags.at(-1),false);
 });
 
 test("sample window previews and commits composition-owned positions", () => {
@@ -56,7 +58,7 @@ test("sample window previews and commits composition-owned positions", () => {
   assert.ok(bounds.east > -122);
   assert.equal(layers.at(-1).kind, "selection");
   assert.equal(map.layers.length, 2);
-  assert.deepEqual(controller.selectedBounds, bounds);
+  assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), bounds);
   assert.equal(guidance.at(-1), "");
   for (const eventName of ["mousemove", "mouseout", "mouseover", "click"]) {
     assert.equal(map.listenerCount(eventName), 0);
@@ -79,7 +81,7 @@ test("sample window restores a retained selection in the canonical world", () =>
 
   controller.restoreSelection(bounds);
 
-  assert.deepEqual(controller.selectedBounds, bounds);
+  assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), bounds);
   assert.deepEqual(layers[0].boundsHistory[0], [
     [47, -123],
     [49, -121],
@@ -100,8 +102,9 @@ test("resizing reuses the displayed rectangle without committing another selecti
   assert.equal(controller.resizeSelectionAt(center), null);
   assert.equal(layers.length, 0);
   const committed = controller.selectAt(center);
+  const committedArea = controller.selectedArea;
   const rectangle = layers[0];
-  controller.setActivityBounds(committed);
+  controller.setActivityArea(committedArea);
   assert.equal(activity.at(-1), true);
   controller.previewAt({lng: 79, lat: 23});
   controller.setWindowSize(90);
@@ -112,13 +115,13 @@ test("resizing reuses the displayed rectangle without committing another selecti
   assert.deepEqual(rectangle.boundsHistory.at(-1), [
     [resized.south, resized.west], [resized.north, resized.east],
   ]);
-  assert.equal(controller.selectedBounds, resized);
+  assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), resized);
   assert.deepEqual(selections, [committed]);
   assert.equal(activity.at(-1), false);
 
-  controller.restoreSelection(committed);
+  controller.restoreSelection(committed,committedArea.samplingBox);
   assert.deepEqual(map.layers, [rectangle]);
-  assert.equal(controller.selectedBounds, committed);
+  assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), committed);
   assert.deepEqual(selections, [committed]);
   assert.equal(activity.at(-1), true);
 });
@@ -131,10 +134,11 @@ test("resizing across a pole or date line preserves the displayed rectangle", ()
       bounds => selections.push(bounds), message => guidance.push(message));
     controller.setWindowSize(10);
     const committed = controller.selectAt(center);
+  const committedArea = controller.selectedArea;
     controller.setWindowSize(500);
 
     assert.equal(controller.resizeSelectionAt(center), null);
-    assert.equal(controller.selectedBounds, committed);
+    assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), committed);
     assert.equal(layers[0].boundsHistory.length, 1);
     assert.deepEqual(selections, [committed]);
     assert.match(guidance.at(-1), /previous selection is unchanged/);
@@ -162,7 +166,7 @@ test("sample window replaces its rectangle and supports complete teardown", () =
   assert.match(guidance.at(-1), /pole or date line/);
 
   controller.clear();
-  assert.equal(controller.selectedBounds, null);
+  assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), null);
   assert.equal(map.layers.length, 0);
   assert.equal(guidance.at(-1), "");
 });
@@ -177,7 +181,7 @@ test("large invalid previews and clicks retain the previous selected bounds", ()
   assert.ok(selected.east - selected.west > 40);
   assert.equal(controller.previewAt({lng: 170, lat: 0}), false);
   assert.equal(controller.selectAt({lng: 0, lat: 70}), null);
-  assert.equal(controller.selectedBounds, selected);
+  assert.deepEqual(rasterSamplingAreaBounds(controller.selectedArea), selected);
   assert.deepEqual(selections, [selected]);
   assert.match(guidance.at(-1), /previous selection is unchanged/);
   assert.match(guidance.at(-1), /Whole overlap/);
@@ -191,7 +195,7 @@ test("continental selections report immutable clicked centers independently of t
   controller.setWindowSize(10000);
   const continental = controller.selectAt({lng: 78, lat: 22});
   assert.ok(continental.east - continental.west > 100);
-  assert.ok(Math.abs((continental.south + continental.north) / 2 - 22) > 1);
+  assert.deepEqual(controller.selectedArea.samplingBox.center, {longitude:78,latitude:22});
   assert.deepEqual(selections[0].center, {longitude: 78, latitude: 22});
   assert.ok(Object.isFrozen(selections[0].center));
 });

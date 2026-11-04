@@ -24,6 +24,7 @@ from eolab_app.processing.models import (
     ProcessingError,
 )
 from eolab_app.processing.raster_expression import FUNCTIONS, compile_expression, walk
+from eolab_app.sampling_box import Wgs84SamplingBox, sampling_box_bounds
 from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
 from eolab_app.raster.source_models import (
     RasterAnalysisSourceReference,
@@ -106,7 +107,9 @@ class PixelPoint(BaseModel):
 class AggregatePlanRequest(BaseModel):
     """One raster or exact observation, formulas, and an explicit sampling area.
 
-    Vector selections may reference catalog layers or private uploaded GeoPackages.
+    Areas may be geographic rectangles, geodesic sampling boxes, selected vector
+    features, uploaded polygons or the whole raster. Vector selections may
+    reference Catalog layers or private uploaded GeoPackages.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -117,6 +120,7 @@ class AggregatePlanRequest(BaseModel):
         tuple[NamedCalculation, ...], Field(min_length=1, max_length=5)
     ]
     selectedBounds: Wgs84Bounds | None = None
+    samplingBox: Wgs84SamplingBox | None = None
     catalogSelection: VectorSelection | None = None
     polygonArea: PolygonAreaReference | None = None
     wholeRaster: Literal[True] | None = None
@@ -153,6 +157,7 @@ class AggregatePlanRequest(BaseModel):
                 value is not None
                 for value in (
                     request.selectedBounds,
+                    request.samplingBox,
                     request.catalogSelection,
                     request.wholeRaster,
                     request.polygonArea,
@@ -201,11 +206,19 @@ class AggregateBatchRequest(BaseModel):
 
 
 class AggregateArea(BaseModel):
-    """Exact calculation area: a box, vector selection, polygons or whole raster."""
+    """Retain exact area intent and its geographic envelope for calculation workers.
+
+    Sampling boxes store only center and size; workers derive geodesic boundaries
+    for their grid. Existing bounds remain geographic rectangles. Vector selections
+    retain source predicates and owned polygon inputs retain their geometry.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    kind: Literal["bounds", "catalogSelection", "polygons", "wholeRaster"]
+    kind: Literal[
+        "bounds", "samplingBox", "catalogSelection", "polygons", "wholeRaster"
+    ]
     bounds: tuple[float, float, float, float] | None = None
+    samplingBox: Wgs84SamplingBox | None = None
     geometryHash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     geometries: tuple[dict[str, object], ...] = ()
     catalogSelection: VectorSelection | None = None
@@ -221,6 +234,21 @@ class AggregateArea(BaseModel):
         Raises:
             ValueError: If fields disagree with the selection discriminator.
         """
+        if self.kind == "samplingBox":
+            if (
+                self.samplingBox is None
+                or self.bounds != sampling_box_bounds(self.samplingBox)
+                or self.geometries
+                or self.geometryHash is not None
+                or self.catalogSelection is not None
+                or self.resolved is not None
+            ):
+                raise ValueError(
+                    "Sampling boxes require only their descriptor and geographic envelope"
+                )
+            return self
+        if self.samplingBox is not None:
+            raise ValueError("Only sampling boxes may carry a samplingBox descriptor")
         if self.kind == "polygons":
             polygons = PolygonSummaryInput(polygons=self.geometries)
             if (
@@ -280,6 +308,8 @@ class AggregateArea(BaseModel):
             The discriminator's path-free durable area representation.
         """
         data = handler(self)
+        if self.kind != "samplingBox":
+            data.pop("samplingBox", None)
         if self.kind != "polygons":
             data.pop("geometryHash", None)
         data.pop(

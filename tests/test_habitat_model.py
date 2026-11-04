@@ -97,6 +97,7 @@ def test_whole_raster_aoi_preserves_curved_projected_edges(tmp_path: Path) -> No
         AggregateArea(kind="wholeRaster"),
         HabitatSources(rasters={"predictor_0": path}, vectors={}),
         rasterio.crs.CRS.from_epsg(6933),
+        (25000, 25000),
     )
     x, y = transform("EPSG:32613", "EPSG:6933", [500000, 500000], [5499900, 5500000])
     assert aoi.contains(Point(x[0], y[0]))

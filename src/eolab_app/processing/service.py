@@ -235,7 +235,15 @@ def serialize_processing_job(row: dict[str, Any]) -> dict[str, Any]:
         ),
         "grid": spec.get("grid"),
         "area": (
-            {"kind": spec["area"]["kind"], "bounds": spec["area"]["bounds"]}
+            {
+                "kind": spec["area"]["kind"],
+                "bounds": spec["area"]["bounds"],
+                **(
+                    {"samplingBox": spec["area"]["samplingBox"]}
+                    if spec["area"]["kind"] == "samplingBox"
+                    else {}
+                ),
+            }
             if spec
             else None
         ),

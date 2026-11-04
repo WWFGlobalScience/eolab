@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict
 
 from eolab_app.bounded_vector import summary_process
+from eolab_app.sampling_box import sampling_box_bounds
 from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregateLimits
 from eolab_app.processing.models import PreparedJobPlan, ProcessingError
 from eolab_app.processing.operation_context import OperationContext
@@ -218,6 +219,12 @@ async def prepare_series_area(
         area = polygons
     elif request.wholeRaster:
         area = AggregateArea(kind="wholeRaster")
+    elif request.samplingBox is not None:
+        area = AggregateArea(
+            kind="samplingBox",
+            bounds=sampling_box_bounds(request.samplingBox),
+            samplingBox=request.samplingBox,
+        )
     elif request.selectedBounds is not None:
         area = AggregateArea(
             kind="bounds", bounds=request.selectedBounds.canonical_tuple()

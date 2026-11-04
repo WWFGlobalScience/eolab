@@ -141,7 +141,7 @@ export class RasterSeriesController {
                 [formula.id, {plotId: 1, visible: true, styleIndex: index}]));
             this.selectedArea = area.area;
             this.selectedAreaLabel = area.areaLabel;
-            this.areaChoice = {wholeRaster: "whole", selectedArea: "selection", catalogSelection: "vector", polygonArea: "vector"}[area.area.kind];
+            this.areaChoice = {wholeRaster: "whole", selectedArea: "selection", samplingBox: "selection", catalogSelection: "vector", polygonArea: "vector"}[area.area.kind];
             if (this.areaChoice === "vector") {
                 this.vectorArea = area.area; this.vectorAreaLabel = area.areaLabel;
             }
@@ -561,7 +561,7 @@ export class RasterSeriesController {
         this.pendingVectorArea = null;
         this.areaChoice = choice;
         if (choice === "vector") this.vectorArea = null;
-        if (choice === "selection" && this.selectedArea?.kind !== "selectedArea") {
+        if (choice === "selection" && !["selectedArea", "samplingBox"].includes(this.selectedArea?.kind)) {
             this.selectedArea = null; this.selectedAreaLabel = "";
         }
         // Present the new sampling intent before composition selects a map box.

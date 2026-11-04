@@ -23,7 +23,7 @@ export class PendingSubmissionStorage {
                 !/^[A-Za-z0-9_-]{16,80}$/.test(value.requestId) ||
                 typeof value.label !== "string" || value.label.length > 512) return null;
             const area = normalizeRasterSamplingArea(value.area);
-            if (!["selectedArea", "catalogSelection"].includes(area.kind)) return null;
+            if (!["selectedArea", "samplingBox", "catalogSelection"].includes(area.kind)) return null;
             return { source, area, requestId: value.requestId, label: value.label };
         } catch { return null; }
     }

@@ -1,4 +1,5 @@
 /** Validate and copy geographic areas used by raster sampling and downloads. */
+import { normalizeSamplingBox, samplingBoxBounds } from "./sampling-box.js";
 /**
  * Build the stable validation error used for malformed selected bounds.
  *
@@ -43,13 +44,13 @@ export const WHOLE_RASTER_SAMPLING_AREA = Object.freeze({
 });
 
 /**
- * Validate and freeze a whole-raster, rectangular or filtered-vector sampling area.
+ * Validate and freeze a whole-raster, rectangular, geodesic-box or filtered-vector area.
  *
  * @param {Object} [samplingArea=WHOLE_RASTER_SAMPLING_AREA] Candidate whole,
- * selected-bounds, or catalog-selection area.
+ * selected-bounds, center/size sampling-box or catalog-selection area.
  * @return {Readonly<Object>} Validated immutable sampling area.
- * @throws {TypeError} If the discriminator, owned field, or object shape is
- * invalid.
+ * @throws {TypeError|RangeError} If the shape is invalid or a sampling box
+ * crosses its supported pole/date-line boundary.
  */
 export function normalizeRasterSamplingArea(
     samplingArea = WHOLE_RASTER_SAMPLING_AREA
@@ -75,6 +76,12 @@ export function normalizeRasterSamplingArea(
             selectedBounds: Object.freeze({
                 ...validateRasterSelectedBounds(samplingArea.selectedBounds)
             })
+        });
+    }
+    if (samplingArea.kind === "samplingBox" && keys.join() === "kind,samplingBox") {
+        return Object.freeze({
+            kind: "samplingBox",
+            samplingBox: normalizeSamplingBox(samplingArea.samplingBox)
         });
     }
     if (samplingArea.kind === "catalogSelection" && keys.length === 2 &&
@@ -126,4 +133,13 @@ export function validateVectorSelection(value) {
 export function vectorSelectionsEqual(left, right) {
     if (left == null || right == null) return false;
     return JSON.stringify(validateVectorSelection(left)) === JSON.stringify(validateVectorSelection(right));
+}
+
+/** Return the geographic envelope used only to screen raster source candidates.
+ * @param {Object|null} area Validated rectangle, sampling box or another area kind.
+ * @return {Object|null} Read-window envelope, or null for a nonrectangular source selection.
+ */
+export function rasterSamplingAreaBounds(area) {
+    return area?.kind === "samplingBox" ? samplingBoxBounds(area.samplingBox)
+        : area?.kind === "selectedArea" ? area.selectedBounds : null;
 }

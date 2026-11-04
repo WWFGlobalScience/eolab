@@ -299,11 +299,12 @@ export class ProcessingApiClient {
     async submitClip(submission) {
         const {source, requestId} = submission;
         const selected = normalizeRasterSamplingArea(submission.area);
-        if (!["selectedArea", "catalogSelection"].includes(selected.kind)) throw new Error("Select a box or vector layer first.");
+        if (!["selectedArea", "samplingBox", "catalogSelection"].includes(selected.kind)) throw new Error("Select a box or vector layer first.");
         await this.ensureSession();
         return validateJob(await this.request("/raster-clips", "POST", {
             ...(source.kind === "runArtifact" ? {source: processingRasterReference(source)} : processingRasterReference(source)), requestId,
             ...(selected.kind === "selectedArea" ? {selectedBounds: selected.selectedBounds}
+                : selected.kind === "samplingBox" ? {samplingBox: selected.samplingBox}
                 : {catalogSelection: selected.catalogSelection}),
         }));
     }
@@ -364,6 +365,7 @@ export class ProcessingApiClient {
             ...(pixelPoint ? { pixelPoint } : {}),
             ...(chunkPixels(submission.targetChunkPixels) == null ? {} : {targetChunkPixels: submission.targetChunkPixels}),
             ...(area.kind === "selectedArea" ? {selectedBounds: area.selectedBounds}
+                : area.kind === "samplingBox" ? {samplingBox: area.samplingBox}
                 : area.kind === "catalogSelection" ? {catalogSelection: area.catalogSelection}
                 : area.kind === "polygonArea" ? {polygonArea: area.polygonArea} : {wholeRaster: true}),
         };

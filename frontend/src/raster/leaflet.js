@@ -6,12 +6,13 @@
  * and drawing order. It does not fetch publication or statistics data.
  */
 import { validateRasterSelectedBounds } from "./geometry.js";
+import { tessellateSamplingBox } from "../sampling-box.js";
 
 export const RASTER_SAMPLE_WINDOW_PANE = "rasterSampleWindowPane";
 const RASTER_SAMPLE_WINDOW_PANE_Z_INDEX = "450";
 
 /**
- * Ensure histogram preview/selection rectangles sit above raster imagery.
+ * Ensure sampling preview and selection outlines sit above raster imagery.
  *
  * @param {Object} leafletMap Leaflet-compatible map with pane factories.
  * @return {Object} Existing or created noninteractive sample-window pane.
@@ -117,28 +118,39 @@ export function setRasterLayerAdditiveBlend(rasterLayer, isAdditive) {
 }
 
 /**
- * Create one Leaflet rectangle for sample preview or committed selection.
+ * Draw a captured sampling-box polygon or an explicit geographic rectangle.
  *
- * @param {Object} leaflet Leaflet namespace with a rectangle factory.
+ * @param {Object} leaflet Leaflet namespace with a polygon factory.
  * @param {Array<Array<number>>} bounds Visible-world Leaflet corners.
- * @param {"preview"|"selection"} layerKind Rectangle presentation kind.
- * @return {Object} Leaflet-compatible rectangle layer.
+ * @param {"preview"|"selection"} layerKind Preview or committed-selection presentation.
+ * @param {import("../sampling-box.js").SamplingBox|null} [samplingBox=null] Geodesic descriptor.
+ * @param {Object|null} [leafletMap=null] Map supplying actual display-pixel projection for a box.
+ * @return {Object} Leaflet polygon with setSampleWindow() for presentation-only redraws.
  */
-export function createRasterSampleWindowLayer(leaflet, bounds, layerKind) {
-    return leaflet.rectangle(bounds, layerKind === "preview"
-        ? {
-            pane: RASTER_SAMPLE_WINDOW_PANE,
-            color: "#f97316",
-            weight: 2,
-            fill: false,
-            interactive: false
+export function createRasterSampleWindowLayer(leaflet, bounds, layerKind, samplingBox = null, leafletMap = null) {
+    /** Construct Leaflet positions from the captured area on this map's pixel grid.
+     * @param {number[][]} envelope Southwest/northeast bounds for rectangular inputs.
+     * @param {import("../sampling-box.js").SamplingBox|null} box Optional geodesic descriptor.
+     * @return {number[][]} Polygon positions in latitude/longitude order.
+     */
+    function positions(envelope, box) {
+        if (!box) {
+            return [envelope[0], [envelope[1][0], envelope[0][1]],
+                envelope[1], [envelope[0][0], envelope[1][1]]];
         }
-        : {
-            pane: RASTER_SAMPLE_WINDOW_PANE,
-            color: "#2563eb",
-            weight: 2,
-            fillColor: "#3b82f6",
-            fillOpacity: 0.12,
-            interactive: false
-        });
+        return tessellateSamplingBox(box, points => points.map(([longitude, latitude]) => {
+            const point = leafletMap.project([latitude, longitude]);
+            return [point.x, point.y];
+        })).map(([longitude, latitude]) => [latitude, longitude]);
+    }
+    const layer = leaflet.polygon(positions(bounds, samplingBox), layerKind === "preview"
+        ? {pane: RASTER_SAMPLE_WINDOW_PANE, color: "#f97316", weight: 2, fill: false, interactive: false, smoothFactor: 0}
+        : {pane: RASTER_SAMPLE_WINDOW_PANE, color: "#2563eb", weight: 2, fillColor: "#3b82f6", fillOpacity: 0.12, interactive: false, smoothFactor: 0});
+    /** Redraw the captured geometry at the current zoom without changing its area.
+     * @param {number[][]} envelope Southwest/northeast read-window envelope.
+     * @param {import("../sampling-box.js").SamplingBox|null} box Optional geodesic descriptor.
+     * @return {void}
+     */
+    layer.setSampleWindow = (envelope, box) => { layer.setLatLngs(positions(envelope, box)); };
+    return layer;
 }

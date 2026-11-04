@@ -36,6 +36,7 @@ from eolab_app.processing.models import (
     OpaqueId,
 )
 from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
 from eolab_app.raster.source_models import RasterSourceReference
 from eolab_app.processing.model_yaml import encode_canonical_json
@@ -126,6 +127,13 @@ class BoundsArea(ModelSchema):
     selectedBounds: Wgs84Bounds
 
 
+class SamplingBoxArea(ModelSchema):
+    """Capture the map's geodesic sampling box without a reusable geometry copy."""
+
+    kind: Literal["samplingBox"]
+    samplingBox: Wgs84SamplingBox
+
+
 class SelectionArea(ModelSchema):
     """An analysis area selected from a catalog vector or private uploaded layer.
 
@@ -151,13 +159,15 @@ class WholeRasterArea(ModelSchema):
 
 
 SummaryArea = Annotated[
-    BoundsArea | SelectionArea | PolygonArea | WholeRasterArea,
+    BoundsArea | SamplingBoxArea | SelectionArea | PolygonArea | WholeRasterArea,
     Field(discriminator="kind"),
 ]
 
 
 # Raster clips require an explicit box or vector predicate.
-ClipModelArea = Annotated[BoundsArea | SelectionArea, Field(discriminator="kind")]
+ClipModelArea = Annotated[
+    BoundsArea | SamplingBoxArea | SelectionArea, Field(discriminator="kind")
+]
 
 
 class CapturedModel(ModelReference):

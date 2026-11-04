@@ -11,6 +11,7 @@ from rasterio.windows import Window, transform as window_transform
 
 from eolab_app.raster.bounded_window import (
     selected_raster_area_for_wgs84_polygons,
+    selected_raster_area_for_sampling_box,
     BOUNDED_SOURCE_WINDOW_PADDING_PIXELS as RASTER_STATISTICS_SOURCE_WINDOW_PADDING_PIXELS,
     BOUNDED_WGS84_DENSIFY_POINTS as RASTER_STATISTICS_BOUNDS_DENSIFY_POINTS,
     NoRasterBoundsOverlapError,
@@ -51,6 +52,7 @@ from eolab_app.raster.source_contract import (
 from eolab_app.sampling_area import (
     RasterSamplingArea,
     SelectedBoundsSamplingArea,
+    SamplingBoxArea,
     CatalogSelectionSamplingArea,
     WholeRasterSamplingArea,
 )
@@ -262,7 +264,7 @@ def read_raster_statistics(
 
     Args:
         source: Authorized raster file or selected temporal observation.
-        sampling_area: Explicit whole, selected-bounds, or resolved catalog selection.
+        sampling_area: Whole-raster, rectangle, geodesic-box or resolved vector selection.
         cancellation_requested: Optional thread-safe check that returns true when the read is cancelled.
 
     Returns:
@@ -288,6 +290,12 @@ def read_raster_statistics(
             selected_area = selected_raster_area_for_wgs84_bounds(
                 dataset,
                 sampling_area.bounds,
+            )
+        elif isinstance(sampling_area, SamplingBoxArea):
+            selected_area = selected_raster_area_for_sampling_box(
+                dataset,
+                sampling_area.box,
+                RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
             )
         elif isinstance(sampling_area, CatalogSelectionSamplingArea):
             selected_area = selected_raster_area_for_catalog_selection(
@@ -427,6 +435,9 @@ def summarize_raster_sample(
         scope=sampling_area.kind,
         selectedBounds=selected_bounds_model,
         catalogSelection=catalog_selection,
+        samplingBox=(
+            sampling_area.box if isinstance(sampling_area, SamplingBoxArea) else None
+        ),
         sourceWidth=source_width,
         sourceHeight=source_height,
         sourcePixelCount=source_pixel_count,

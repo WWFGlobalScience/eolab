@@ -475,5 +475,52 @@ test("Downloads and sampling share only neutral selection values; peers never im
         assert.doesNotMatch(source,/from\s+["'][^"']*(?:raster\/|map-layers\/|vector\/|map-inspection)/);
         assert.doesNotMatch(source,/\.blob\(|createObjectURL/);
     }
-    assert.doesNotMatch(readFileSync(new URL("selected-area.js",root),"utf8"),/\bimport\b|\bfetch\b|\bdocument\b/);
+    const selectedArea=readFileSync(new URL("selected-area.js",root),"utf8");
+    assert.deepEqual([...selectedArea.matchAll(/from\s+["']([^"']+)["']/g)].map(match=>match[1]),["./sampling-box.js"]);
+    assert.doesNotMatch(selectedArea,/\bfetch\b|\bdocument\b/);
+    assert.doesNotMatch(readFileSync(new URL("sampling-box.js",root),"utf8"),/\bimport\b|\bfetch\b|\bdocument\b/);
+});
+
+
+test("clip capture, recovery and HTTP submission retain the geodesic descriptor", async () => {
+    const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+    const h = fixture();
+    h.setContext({sources: [source], area});
+    h.controller.open();
+    area.samplingBox.center.latitude = 0;
+    await h.controller.submit();
+    const captured = h.requests[0];
+    assert.equal(captured.area.samplingBox.center.latitude, 60);
+    assert.ok(Object.isFrozen(captured.area.samplingBox.center));
+    h.storage.write(captured);
+    assert.deepEqual(h.storage.read().area, captured.area);
+    let body;
+    const api = new ProcessingApiClient(async (url, options) => {
+        if (url.endsWith("/jobs")) return new Response(JSON.stringify({jobs: []}));
+        body = JSON.parse(options.body);
+        return new Response(JSON.stringify({...job, area: {kind: "samplingBox", samplingBox: captured.area.samplingBox}}));
+    });
+    await api.submitClip(captured);
+    assert.deepEqual(body.samplingBox, captured.area.samplingBox);
+    assert.equal(Object.hasOwn(body, "selectedBounds"), false);
+    assert.equal(JSON.stringify(body).includes("polygon"), false);
+});
+
+
+test("ordinary and temporal calculations submit the captured geodesic box", async () => {
+    const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+    let body;
+    const api = new ProcessingApiClient(async (url, options) => {
+        if (url.endsWith("/jobs")) return new Response(JSON.stringify({jobs: []}));
+        body = JSON.parse(options.body);
+        return new Response(JSON.stringify({items: [{index: 0, job: {...job, operation: "raster.aggregate.v1"}}]}));
+    });
+    await api.submitCalculation({source, area, requestId: "box-calculation-123", calculations: [{label: "Mean", expression: "mean(a)"}]});
+    assert.deepEqual(body.items[0].samplingBox, area.samplingBox);
+    assert.equal(Object.hasOwn(body.items[0], "selectedBounds"), false);
+    let modelSubmission;
+    api.submitModelRun = async value => { modelSubmission = value; return job; };
+    await api.submitCalculation({kind: "temporal", source, area, model: {id: "temporal", version: "1", definitionSha256: "a".repeat(64)},
+        requestId: "temporal-box-123456", calculations: [{label: "Mean", expression: "mean(a)"}]});
+    assert.deepEqual(modelSubmission.inputs.area, area);
 });

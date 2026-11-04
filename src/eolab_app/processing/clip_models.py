@@ -21,6 +21,7 @@ from eolab_app.processing.models import (
     JobResultResponse,
     ProcessingLimits,
 )
+from eolab_app.sampling_box import Wgs84SamplingBox, sampling_box_bounds
 from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
 from eolab_app.raster.source_models import RasterSourceReference, RunArtifactReference
 
@@ -32,7 +33,8 @@ class ClipInputs(BaseModel):
 
     Catalog requests use collectionId/itemId or a nested ``source`` reference.
     Private run-file requests use ``source`` with the owned artifact identity.
-    The clip area may select features from a catalog vector or private upload.
+    The clip area may be a geodesic sampling box, geographic rectangle, or
+    features selected from a Catalog vector or private upload.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -47,6 +49,7 @@ class ClipInputs(BaseModel):
     )
 
     selectedBounds: Wgs84Bounds | None = None
+    samplingBox: Wgs84SamplingBox | None = None
     catalogSelection: VectorSelection | None = None
 
     @model_validator(mode="after")
@@ -63,7 +66,17 @@ class ClipInputs(BaseModel):
             CatalogRasterRequest(collectionId=self.collection_id, itemId=self.item_id)
         elif self.collection_id is not None or self.item_id is not None:
             raise ValueError("Choose one raster source")
-        if (self.selectedBounds is None) == (self.catalogSelection is None):
+        if (
+            sum(
+                value is not None
+                for value in (
+                    self.selectedBounds,
+                    self.samplingBox,
+                    self.catalogSelection,
+                )
+            )
+            != 1
+        ):
             raise ValueError("Choose exactly one map area or vector selection")
         return self
 
@@ -85,11 +98,15 @@ class UnpreparedClip(BaseModel):
 
 
 class ClipArea(BaseModel):
-    """Durable box or vector selection describing the area to clip."""
+    """Retain a rectangle, geodesic box or vector predicate for a native clip.
+
+    Geodesic boxes keep their center and kilometer side length; their bounds are
+    only the geographic envelope. Workers derive polygon rings for their own grid."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    kind: Literal["bounds", "catalogSelection"]
+    kind: Literal["bounds", "samplingBox", "catalogSelection"]
     bounds: tuple[float, float, float, float]
+    samplingBox: Wgs84SamplingBox | None = None
     catalogSelection: VectorSelection | None = None
     resolved: ResolvedCatalogSelection | None = Field(default=None, exclude=True)
 
@@ -109,6 +126,19 @@ class ClipArea(BaseModel):
             east=self.bounds[2],
             north=self.bounds[3],
         )
+        if self.kind == "samplingBox":
+            if (
+                self.samplingBox is None
+                or self.bounds != sampling_box_bounds(self.samplingBox)
+                or self.catalogSelection is not None
+                or self.resolved is not None
+            ):
+                raise ValueError(
+                    "Sampling boxes require only their descriptor and geographic envelope"
+                )
+            return self
+        if self.samplingBox is not None:
+            raise ValueError("Only sampling boxes may carry a samplingBox descriptor")
         if self.kind == "catalogSelection":
             if self.catalogSelection is None:
                 raise ValueError(
@@ -136,7 +166,9 @@ class ClipArea(BaseModel):
             Path-free area matching its versioned discriminator.
         """
         data = handler(self)
-        if self.kind == "bounds":
+        if self.kind != "samplingBox":
+            data.pop("samplingBox", None)
+        if self.kind != "catalogSelection":
             data.pop("catalogSelection", None)
         return data
 
@@ -192,8 +224,11 @@ class ClipSpec(BaseModel):
 class ClipAreaSummary(BaseModel):
     """Browser-safe area description without copying geometry into every poll."""
 
-    kind: Literal["bounds", "catalogSelection"]
+    kind: Literal["bounds", "samplingBox", "catalogSelection"]
     bounds: tuple[float, float, float, float] | None
+    samplingBox: Wgs84SamplingBox | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class ClipResultResponse(JobResultResponse):

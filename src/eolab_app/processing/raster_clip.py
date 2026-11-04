@@ -58,6 +58,7 @@ def _select_clip_area(
         geometries=(),
         max_coordinates=None,
         resolved=area.resolved,
+        sampling_box=area.samplingBox,
     )
 
 

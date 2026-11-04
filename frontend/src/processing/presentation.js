@@ -23,6 +23,7 @@ export function formatDownloadBytes(bytes) {
 export function describeClipArea(area) {
     if (!area) return "No sampling area selected. Choose a box or vector layer.";
     if (area.kind === "wholeRaster") return "Whole raster";
+    if (area.kind === "samplingBox") return `Sampling box · ${area.samplingBox.sideLengthKm} × ${area.samplingBox.sideLengthKm} km · center ${area.samplingBox.center.latitude.toFixed(4)}°, ${area.samplingBox.center.longitude.toFixed(4)}°`;
     if (area.kind === "polygonArea") return "Shared layer polygons";
     if (area.kind === "catalogSelection" && !Array.isArray(area.bounds)) return "Selected vector features; geographic bounds appear after preparation.";
     const values = area.selectedBounds

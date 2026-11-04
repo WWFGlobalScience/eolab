@@ -1,3 +1,4 @@
+import { rasterSamplingAreaBounds } from "./selected-area.js";
 import { MapFeatureHover } from "./map-feature-hover.js";
 import { findVectorLayerAtPointer } from "./vector/feature-hover.js";
 import { getFeatureInfoViewport } from "./vector/feature-info-viewport.js";
@@ -843,7 +844,7 @@ async function initializeCatalog(
      * @return {Object[]} Top-first labeled original-source identities.
      */
     function enabledRasterSources(area) {
-        const bounds = area?.kind === "selectedArea" ? area.selectedBounds : null;
+        const bounds = rasterSamplingAreaBounds(area);
         return mapLayerController.snapshots().filter(
             /** @param {Object} layer Composed raster map choice. @return {boolean} Enabled candidate. */
             layer => {
@@ -968,7 +969,7 @@ async function initializeCatalog(
         },
         onSamplingAreaChange: area => {
             rasterClips.setSelection(area);
-            updateRasterSeriesArea(area, area?.kind === "catalogSelection" ? "Selected polygons" : area?.kind === "selectedArea" ? "Sampling box" : "Sample area");
+            updateRasterSeriesArea(area, area?.kind === "catalogSelection" ? "Selected polygons" : ["selectedArea", "samplingBox"].includes(area?.kind) ? "Sampling box" : "Sample area");
         },
         onSamplingMethodChange: method => {
             if (method === "vector") void vectorSampling.use();
@@ -1555,7 +1556,7 @@ async function initializeCatalog(
         try {
             rasterClickSelected = rasterVisualization.exploreAt(event.latlng, {
                 onSelected: area => {
-                    updateRasterSeriesArea(area, area?.kind === "catalogSelection" ? "Selected polygons" : area?.kind === "selectedArea" ? "Sampling box" : "Sample area");
+                    updateRasterSeriesArea(area, area?.kind === "catalogSelection" ? "Selected polygons" : ["selectedArea", "samplingBox"].includes(area?.kind) ? "Sampling box" : "Sample area");
                 },
             });
             if (!rasterClickSelected) {
