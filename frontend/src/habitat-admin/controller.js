@@ -13,7 +13,7 @@ const RETRY_STATES = new Set(["failed", "cancelled", "interrupted", "expired"]);
  */
 function preparationKey(selection, year) { return JSON.stringify([selection, year]); }
 
-/** Own explicit coverage checks, recoverable submissions and retained preparation history. */
+/** Own explicit cache inventory/coverage reads, recoverable submissions and preparation history. */
 export class HabitatAdminController {
     /** Connect the Habitat admin view to existing source and job APIs.
      * @param {Object} dependencies Feature-local dependencies.
@@ -34,10 +34,11 @@ export class HabitatAdminController {
         }
         this.state = { options: null, sources: [], searching: false, searchError: "", nextSearch: null,
             areas: [], years: [], coverageRows: [], checking: false, submissions: [], jobs: [], nextCursor: null,
+            inventory: null, inventoryLoading: false, inventoryError: "", inventoryCheckedAt: null,
             historyLoading: false, historyError: "", error: "", submitting: false, canPrepare: false, requestedJobs: 0, completedJobs: 0 };
         this.jobs = new Map(); this.jobMutations = new Map(); this.mutationRevision = 0;
         this.readControllers = new Set(); this.mutationControllers = new Set();
-        this.searchRevision = 0; this.coverageRevision = 0; this.historyRevision = 0;
+        this.searchRevision = 0; this.coverageRevision = 0; this.historyRevision = 0; this.inventoryRevision = 0;
         this.started = false; this.destroyed = false; this.pageHidden = false; this.yearsEdited = false;
         this.historyPaged = false; this.timer = null; this.query = "";
         this.onVisibility = () => this.isVisible() ? this.resume() : this.suspend();
@@ -47,7 +48,7 @@ export class HabitatAdminController {
             addArea: (name, key, filter) => this.addArea(name, key, filter), removeArea: id => this.removeArea(id),
             setYears: years => this.setYears(years), check: () => this.check(), prepare: () => this.prepare(),
             recover: key => this.recover(key), refreshHistory: () => this.refreshHistory(), loadMore: () => this.loadMore(),
-            cancel: id => this.cancel(id), retry: id => this.retry(id) });
+            cancel: id => this.cancel(id), retry: id => this.retry(id), refreshInventory: () => this.refreshInventory() });
     }
 
     /** Restore uncertain commands without posting them and load visible metadata/history.
@@ -83,10 +84,34 @@ export class HabitatAdminController {
         this.clock.clearTimeout(this.timer); this.timer = null;
         for (const controller of this.readControllers) controller.abort();
         this.readControllers.clear();
-        this.searchRevision++; this.coverageRevision++; this.historyRevision++;
-        this.searchRequest = null; this.coverageRequest = null; this.historyRequest = null; this.optionsRequest = null;
-        this.state.searching = this.state.checking = this.state.historyLoading = false;
+        this.searchRevision++; this.coverageRevision++; this.historyRevision++; this.inventoryRevision++;
+        this.searchRequest = null; this.coverageRequest = null; this.historyRequest = null; this.optionsRequest = null; this.inventoryRequest = null;
+        this.state.searching = this.state.checking = this.state.historyLoading = this.state.inventoryLoading = false;
         this.render();
+    }
+
+    /** Read a cache-wide snapshot only after an explicit Refresh action.
+     * Existing snapshots remain visible on a read failure. Hiding the page aborts
+     * the read; returning to the page never schedules another inventory request.
+     * @returns {Promise<void>} Resolves after the current snapshot or error is shown.
+     */
+    async refreshInventory() {
+        if (!this.isVisible() || this.inventoryRequest) return;
+        const revision = ++this.inventoryRevision, controller = new AbortController();
+        this.inventoryRequest = controller; this.readControllers.add(controller);
+        this.state.inventoryLoading = true; this.state.inventoryError = ""; this.render();
+        try {
+            const rows = await this.api.inventory(controller.signal);
+            if (this.destroyed || controller.signal.aborted || revision !== this.inventoryRevision) return;
+            this.state.inventory = rows; this.state.inventoryCheckedAt = new Date().toISOString();
+        } catch (error) {
+            if (!this.destroyed && !controller.signal.aborted && revision === this.inventoryRevision) this.state.inventoryError = error.message;
+        } finally {
+            this.readControllers.delete(controller);
+            if (this.inventoryRequest === controller) {
+                this.inventoryRequest = null; this.state.inventoryLoading = false; this.render();
+            }
+        }
     }
 
     /** Read packaged scientific choices without initiating coverage or acquisition.
