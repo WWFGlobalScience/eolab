@@ -1043,7 +1043,7 @@
                     </label>
                     <button class="secondary-button" id="swap-raster-bivariate-axes" type="button">Swap X/Y</button>
                   </div>
-                  <p class="raster-bivariate-range-help">Preview lower (L), middle (M), and upper (U) thresholds on each outer histogram. Apply a range to update its 2D colors.</p>
+                  <p class="raster-bivariate-range-help">Inspect lower (L), middle (M), and upper (U) percentiles on each outer histogram. Turn on matching to update its 2D map colors as you move the sliders or change the sample area.</p>
                   <fieldset class="raster-percentile-controls raster-bivariate-range">
                     <legend>Horizontal (X) · <span id="bivariate-x-range-label"></span></legend>
                     <label for="bivariate-x-lower">
@@ -1065,7 +1065,7 @@
                       <output id="bivariate-x-upper-value" for="bivariate-x-upper"></output>
                     </label>
                     <p id="bivariate-x-range-status" role="status"></p>
-                    <button class="secondary-button" id="apply-bivariate-x-range" type="button" disabled>Apply horizontal range</button>
+                    <label class="raster-bivariate-rescale"><input id="match-bivariate-x-percentiles" type="checkbox" disabled /><span>Match the map color scale to these percentiles</span></label>
                   </fieldset>
                   <fieldset class="raster-percentile-controls raster-bivariate-range">
                     <legend>Vertical (Y) · <span id="bivariate-y-range-label"></span></legend>
@@ -1088,7 +1088,7 @@
                       <output id="bivariate-y-upper-value" for="bivariate-y-upper"></output>
                     </label>
                     <p id="bivariate-y-range-status" role="status"></p>
-                    <button class="secondary-button" id="apply-bivariate-y-range" type="button" disabled>Apply vertical range</button>
+                    <label class="raster-bivariate-rescale"><input id="match-bivariate-y-percentiles" type="checkbox" disabled /><span>Match the map color scale to these percentiles</span></label>
                   </fieldset>
                   <details class="raster-bivariate-color-key">
                     <summary>Color key</summary>
