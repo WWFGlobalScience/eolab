@@ -440,10 +440,10 @@ export class ModelsController {
                 } else {
                     const kinds = input.areaMode === "samplingArea" ? ["selectedArea", "samplingBox"] : ["polygonArea"];
                     if (!kinds.includes(context.area?.kind)) throw new Error(input.areaMode === "samplingArea"
-                        ? "Click the map to choose a sampling area for this analysis."
+                        ? "Click the map to choose a sampling box for this analysis."
                         : "Select polygons on the map to choose an area for this analysis.");
                     input.area = modelAreaInput(context.area);
-                    input.areaDescription = input.areaMode === "samplingArea" ? "Sampling area" : "Polygons selected on map";
+                    input.areaDescription = input.areaMode === "samplingArea" ? "Sampling box" : "Polygons selected on map";
                 }
             } catch (error) { input.selectionError = error.message; }
         }

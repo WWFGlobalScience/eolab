@@ -273,8 +273,8 @@ dataset.
 1. Add a raster to **Map layers**, then pan and zoom to the area you need.
 2. Open **Tools → Models** and choose **Raster clip**.
 3. Give the run a name, choose **Raster**, and set **Analysis area** to
-   **Visible map area**. Choose **Sampling area** for a sampling box or
-   **Vector layer** for selected polygons instead.
+   **Visible map area**. Choose **Sampling box** to use the box shown on the map,
+   or choose a vector layer directly to use its selected polygons.
 4. Select **Run model** and follow its progress in **Runs**.
 5. When the run is ready, select **Download** under **Clipped raster** to save
    the GeoTIFF.
