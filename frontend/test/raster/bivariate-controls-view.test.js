@@ -19,6 +19,7 @@ class FakeElement extends EventTarget {
     this.style = {};
     this.hidden = false;
     this.disabled = false;
+    this.checked = false;
     this.value = "";
     this.textContent = "";
     this.classes = new Set();
@@ -95,7 +96,7 @@ class FakeBivariateDocument {
       "#raster-bivariate-style-ranges",
       ...["x", "y"].flatMap((axis) => [
         `#bivariate-${axis}-range-label`,
-        `#bivariate-${axis}-range-status`, `#apply-bivariate-${axis}-range`,
+        `#bivariate-${axis}-range-status`, `#match-bivariate-${axis}-percentiles`,
         ...["lower", "middle", "upper"].flatMap((name) => [
           `#bivariate-${axis}-${name}`, `#bivariate-${axis}-${name}-value`,
         ]),
@@ -371,7 +372,6 @@ test("bivariate controls forward native mode, palette, swap, and retry actions",
   view.populatePalettes();
   view.bind({
     onBivariatePercentileInput: (axis) => actions.push(["percentile", axis]),
-    onApplyBivariatePercentiles: (axis) => actions.push(["apply", axis]),
     onBivariateModeChange: (mode) => actions.push(["mode", mode]),
     onBivariatePaletteChange: (palette) => actions.push(["palette", palette]),
     onBivariateSwapAxes: () => actions.push(["swap"]),
@@ -385,10 +385,10 @@ test("bivariate controls forward native mode, palette, swap, and retry actions",
   view.swapButton.dispatchEvent(new Event("click"));
   view.retryButton.dispatchEvent(new Event("click"));
   view.rangeControls.x.inputs.lower.dispatchEvent(new Event("input"));
-  view.rangeControls.y.apply.dispatchEvent(new Event("click"));
+  view.rangeControls.y.rescale.dispatchEvent(new Event("change"));
   view.unbind();
   view.rangeControls.x.inputs.lower.dispatchEvent(new Event("input"));
-  view.rangeControls.y.apply.dispatchEvent(new Event("click"));
+  view.rangeControls.y.rescale.dispatchEvent(new Event("change"));
 
   assert.deepEqual(actions, [
     ["mode", "bivariate"],
@@ -396,28 +396,40 @@ test("bivariate controls forward native mode, palette, swap, and retry actions",
     ["swap"],
     ["retry"],
     ["percentile", "x"],
-    ["apply", "y"],
+    ["percentile", "y"],
   ]);
 });
 
 test("paired range controls show estimates, validity, and disabled unavailable actions", () => {
   const view = new BivariateRasterControlsView(new FakeBivariateDocument());
-  assert.deepEqual(view.readPercentiles("x"), { lower: 5, middle: 50, upper: 95 });
+  assert.deepEqual(view.readPercentiles("x"), { lower: 5, middle: 50, upper: 95, rescale: false });
   view.renderPercentiles("x", {
+    settings: {lower: 5, middle: 50, upper: 95, rescale: false}, available: true,
     values: { lower: "2", middle: "4", upper: "9" },
     message: "Estimated from the map sample", applicable: true, invalid: false,
   });
   assert.equal(view.rangeControls.x.values.middle.textContent, "50% ≈ 4");
-  assert.equal(view.rangeControls.x.apply.disabled, false);
+  assert.equal(view.rangeControls.x.rescale.disabled, false);
   view.renderPercentiles("x", {
+    settings: {lower: 5, middle: 50, upper: 95, rescale: false}, available: false,
     values: null, message: "Waiting", applicable: false, invalid: false,
   });
-  assert.equal(view.rangeControls.x.apply.disabled, true);
+  assert.equal(view.rangeControls.x.rescale.disabled, true);
   assert.equal(view.rangeControls.x.values.middle.textContent, "50% ≈ —");
   view.renderPercentiles("y", {
+    settings: {lower: 50, middle: 50, upper: 95, rescale: true}, available: true,
     values: null, message: "Choose increasing percentiles", applicable: false, invalid: true,
   });
   assert.equal(view.rangeControls.y.inputs.lower.getAttribute("aria-invalid"), "true");
+  assert.equal(view.rangeControls.y.inputs.lower.disabled, false, "invalid drafts remain editable");
+  assert.equal(view.rangeControls.y.rescale.disabled, false, "matching remains operable to turn off");
+  view.renderPercentiles("y", {
+    settings: {lower: 5, middle: 50, upper: 95, rescale: true}, available: false,
+    values: null, range: null, message: "Waiting", applicable: false, invalid: false,
+  });
+  assert.equal(view.rangeControls.y.inputs.lower.disabled, true);
+  assert.equal(view.rangeControls.y.rescale.disabled, false);
+  assert.equal(view.rangeControls.y.rescale.checked, true);
 });
 
 test("the 2D legend uses actual threshold spacing including an off-center midpoint", () => {
@@ -491,6 +503,7 @@ test("range previews preserve histogram interactions and clear on stale or inval
   const cell = view.cells.get("6:4");
   cell.dispatchEvent(new Event("focus"));
   const candidate = {
+    settings: {lower: 5, middle: 25, upper: 95, rescale: false}, available: true,
     values: { lower: "4", middle: "8", upper: "24" },
     range: { minimum: 4, midpoint: 8, maximum: 24 },
     message: "Estimated", applicable: true, invalid: false,

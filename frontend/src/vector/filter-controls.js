@@ -94,9 +94,13 @@ export class VectorFilterControls {
      * @param {string} [action.help] Description of the action's effect.
      * @param {string} [action.filterLabel] Name for the action's applied predicate.
      * @param {()=>void} [action.onClose] Release action-owned preparation when the panel closes or changes targets.
+     * @param {Object} [options={}] Callbacks for this opening of the ordinary map filter.
+     * @param {unknown} [options.applyContext] Opaque caller value forwarded unchanged to the ordinary target's apply callback.
+     * @param {()=>void} [options.onApplied] Commit a caller-owned intent after changed rules are accepted.
+     * Not called for analysis actions, unchanged rules, closed/replaced editors, failures or stale replies.
      * @return {void}
      */
-    open(key, action = null) {
+    open(key, action = null, {onApplied = () => {}, applyContext} = {}) {
         const target = this.getTarget(key);
         if (!target) return;
         if (this.key !== null) {
@@ -106,6 +110,8 @@ export class VectorFilterControls {
         this.#cancelTimer();
         this.key = key;
         this.action = action;
+        this.onApplied = onApplied;
+        this.applyContext = applyContext;
         this.cancelButton.hidden = true;
         this.generation++;
         this.applyButton.textContent = action?.applyLabel ?? (action ? "Use filtered features & calculate" : "Apply filter");
@@ -219,14 +225,15 @@ export class VectorFilterControls {
         const candidate = this.#validate();
         if (!target || !candidate) return;
         const key = this.key, generation = this.generation;
-        const action = this.action;
+        const action = this.action, onApplied = this.onApplied, applyContext = this.applyContext;
+        const previousFilter = JSON.stringify(target.filter);
         const attempt = ++this.attempt;
         this.pendingAction = action;
         this.status.textContent = "Applying filter…";
         this.applyButton.disabled = true;
         this.cancelButton.hidden = !action;
         try {
-            const result = await (action ? action.apply(candidate) : target.apply(candidate));
+            const result = await (action ? action.apply(candidate) : target.apply(candidate, applyContext));
             if (result === null || attempt !== this.attempt || this.destroyed) return;
             if (action) {
                 if (key === this.key && generation === this.generation) this.close();
@@ -234,6 +241,8 @@ export class VectorFilterControls {
                 return;
             }
             if (key !== this.key || generation !== this.generation) return;
+            const accepted = this.getTarget(key);
+            if (accepted && previousFilter !== JSON.stringify(accepted.filter)) onApplied();
             this.status.textContent = "Filter applied. Changes apply automatically.";
             this.refresh();
         } catch (error) {

@@ -35,7 +35,30 @@ export function createStatisticSwatch(documentContext, styleIndex, color = null)
     return svg;
 }
 
-/** Render independent plots of already calculated statistics. */
+/**
+ * @typedef {Object} RasterSeriesPlotCard
+ * @property {HTMLElement} card Retained plot section.
+ * @property {HTMLElement} title Plot heading.
+ * @property {HTMLFieldSetElement} options Retained axis controls.
+ * @property {import("./series-view.js").SeriesPresentation["plots"][number]} plot Current display options.
+ * @property {HTMLSelectElement} scale Y-axis scale control.
+ * @property {Record<"x"|"y",{group:HTMLDivElement,range:HTMLSelectElement,bounds:HTMLDivElement,fields:HTMLInputElement[]}>} axes Axis bounds controls.
+ * @property {Record<string,HTMLInputElement>} appearance Tick, point and font controls.
+ * @property {HTMLParagraphElement} error Axis-edit error message.
+ * @property {HTMLDivElement} legend Statistic legend.
+ * @property {HTMLParagraphElement} note Units and omitted-value explanation.
+ * @property {SVGSVGElement} chart Current chart.
+ * @property {HTMLParagraphElement} empty Non-calculating empty state.
+ * @property {HTMLDivElement} pendingProgress Shared-job progress for this pending plot.
+ * @property {HTMLParagraphElement} pendingDetail Current authoritative calculation message.
+ * @property {HTMLProgressElement} pendingBar Measured shared-job progress.
+ * @property {ReturnType<typeof createChartTooltip>} tooltip Chart inspection tooltip.
+ * @property {string|null} signature Last chart-input signature.
+ * @property {ReturnType<typeof renderOrdinalSeriesChart>} [domains] Last rendered chart domains.
+ * @property {Record<"x"|"y",string>} [rangeModes] Retained automatic/custom bounds choices.
+ */
+
+/** Display statistic plots and their shared calculation's pending state. */
 export class RasterSeriesPlotsView {
     /** Connect the plot container to presentation-only actions.
      * @param {Document} documentContext Owning document.
@@ -46,12 +69,13 @@ export class RasterSeriesPlotsView {
         this.container = documentContext.querySelector("#raster-series-plots");
         this.axisOptions = documentContext.querySelector("#raster-series-plot-options");
         this.actions = actions;
+        /** @type {Map<number,RasterSeriesPlotCard>} Plot-owned retained DOM and chart settings. */
         this.cards = new Map();
     }
 
     /** Create a plot's controls once so result updates preserve focus and scroll position.
-     * @param {{id:number,scale:string}} plot Plot settings.
-     * @return {Object} Card elements and its last drawn data signature.
+     * @param {import("./series-view.js").SeriesPresentation["plots"][number]} plot Plot settings.
+     * @return {RasterSeriesPlotCard} Retained controls, chart and pending-state elements.
      */
     createPlotCard(plot) {
         const card = this.document.createElement("section");
@@ -113,10 +137,20 @@ export class RasterSeriesPlotsView {
         const chart = this.document.createElementNS("http://www.w3.org/2000/svg", "svg");
         chart.classList.add("raster-series-statistics-chart"); chart.setAttribute("role", "group");
         const empty = this.document.createElement("p"); empty.className = "raster-series-empty-plot";
-        card.append(header, legend, note, chart, empty);
+        const pendingProgress = this.document.createElement("div");
+        pendingProgress.className = "raster-series-empty-plot raster-series-pending-plot";
+        pendingProgress.hidden = true;
+        const pendingMessage = this.document.createElement("div"); pendingMessage.className = "raster-series-progress-message";
+        const pendingHeading = this.document.createElement("strong"); pendingHeading.textContent = "Calculating statistics";
+        const pendingDetail = this.document.createElement("p");
+        const pendingBar = this.document.createElement("progress");
+        pendingBar.setAttribute("aria-label", `Calculation progress for Plot ${plot.id}`);
+        pendingMessage.append(pendingHeading, pendingDetail, pendingBar); pendingProgress.append(pendingMessage);
+        card.append(header, legend, note, chart, empty, pendingProgress);
         const tooltip = createChartTooltip(this.document, card);
         this.container.append(card);
-        const elements = { card, title, options, plot, scale, axes, appearance, error, legend, note, chart, empty, tooltip, signature: null };
+        const elements = { card, title, options, plot, scale, axes, appearance, error, legend, note, chart, empty,
+            pendingProgress, pendingDetail, pendingBar, tooltip, signature: null };
         for (const input of [scale, ...Object.values(appearance), ...Object.values(axes).flatMap(axis => [axis.range, ...axis.fields])]) {
             input.addEventListener(input.tagName.toLowerCase() === "input" ? "input" : "change", () => this.editPlotOptions(plot.id, elements));
         }
@@ -165,15 +199,12 @@ export class RasterSeriesPlotsView {
      * All cards use the same current or previous calculation results. Each card
      * is passed to renderPlot() only when its displayed content needs updating.
      * Newly added secondary plots are revealed once; updates preserve scrolling.
-     * @param {Object} state Series view snapshot.
-     * @param {{id:number,scale:string}[]} state.plots Plot settings.
-     * @param {Object[]} state.statistics Formulas, display settings and ordered result rows.
-     * @param {boolean} state.showingPrevious Whether every plot uses the previous area.
-     * @param {"line"|"scatter"|"bar"} state.chartType Plot geometry.
-     * @param {Object|null} state.temporal Temporal dataset choices, or null for ordinary raster layers.
-     * @return {void}
+     * Progress updates change pending placeholders without redrawing retained figures.
+     * @param {import("./series-view.js").SeriesPresentation} state Authoritative result and job-progress snapshot.
+     * @return {boolean} Whether a visible pending plot presents the shared calculation's progress.
      */
     renderPlots(state) {
+        let hasPendingPlot = false;
         for (const [id, elements] of this.cards) {
             if (state.plots.some(plot => plot.id === id)) continue;
             const hadFocus = elements.card.contains(this.document.activeElement);
@@ -199,11 +230,45 @@ export class RasterSeriesPlotsView {
             }));
             // Only chart inputs belong here: progress and catalog metadata do not change a figure.
             const signature = JSON.stringify([elements.chart.clientWidth, plot, state.direction, state.chartType, state.showingPrevious, !!state.temporal, series]);
-            if (elements.signature === signature) continue;
-            elements.signature = signature;
-            this.renderPlot(elements, plot, statistics, state, series);
+            if (elements.signature !== signature) {
+                elements.signature = signature;
+                this.renderPlot(elements, plot, statistics, state, series);
+            }
+            if (this.renderPendingProgress(elements, state, statistics)) hasPendingPlot = true;
             if (added && plot.id !== 1) elements.card.scrollIntoView({ block: "start", inline: "nearest" });
         }
+        return hasPendingPlot;
+    }
+
+    /**
+     * Show the shared temporal job's current progress inside a plot awaiting values.
+     * Completed NoData/error rows, hidden statistics and unassigned plots keep their existing empty states.
+     * This display uses the supplied snapshot and never starts or observes a separate job.
+     * @param {RasterSeriesPlotCard} elements Retained plot presentation.
+     * @param {import("./series-view.js").SeriesPresentation} state Authoritative result and progress snapshot.
+     * @param {import("./series-view.js").SeriesStatistic[]} statistics Visible statistics assigned to this plot.
+     * @return {boolean} Whether the pending progress presentation is visible.
+     */
+    renderPendingProgress(elements, state, statistics) {
+        const waiting = statistics.some(statistic => {
+            const rows = state.showingPrevious ? statistic.previousRows : statistic.rows;
+            return rows.length === 0 || rows.some(row => row.state === "waiting");
+        });
+        const pending = Boolean(state.temporal && state.busy && waiting && elements.chart.hidden);
+        if (elements.pendingProgress.hidden !== !pending) elements.pendingProgress.hidden = !pending;
+        if (!pending) {
+            if (elements.chart.hidden && elements.empty.hidden) elements.empty.hidden = false;
+            return false;
+        }
+        if (!elements.empty.hidden) elements.empty.hidden = true;
+        if (elements.pendingDetail.textContent !== state.message) elements.pendingDetail.textContent = state.message;
+        const total = state.workProgress?.total;
+        if (total > 0) {
+            for (const [name, value] of [["max", total], ["value", state.workProgress.completed ?? 0]]) {
+                if (elements.pendingBar.getAttribute(name) !== String(value)) elements.pendingBar.setAttribute(name, String(value));
+            }
+        } else if (elements.pendingBar.getAttribute("value") !== null) elements.pendingBar.removeAttribute("value");
+        return true;
     }
 
     /** Update one existing plot card's chart, legend, value details and empty-state message.

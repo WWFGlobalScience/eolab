@@ -38,6 +38,12 @@ export class HabitatStackView {
         this.automatic = element("fieldset", "", "models-vector");
         this.automatic.setAttribute("aria-label", "Earth Engine inputs");
         this.automatic.append(field(`models-${name}-year`, "Assessment year", this.year));
+        const manageInputs = element("a", "Manage cached inputs");
+        manageInputs.href = "/admin-eolab/habitat";
+        manageInputs.target = "_blank"; manageInputs.rel = "noopener noreferrer";
+        const administration = element("p", "", "models-help");
+        administration.append(manageInputs, element("span", " (administrator password required)"));
+        this.automatic.append(administration);
         this.datasetSources = element("div", "", "models-habitat-datasets");
         this.datasetLists = {};
         for (const [role, title] of [["predictor", "Predictor datasets"], ["response", "Observed response datasets"]]) {

@@ -74,6 +74,7 @@
 #raster-series-plot-area.is-calculating { min-height: 260px; }
 #raster-series-plot-progress { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; padding: 0.75rem; pointer-events: none; }
 #raster-series-plot-progress[hidden] { display: none; }
+#raster-series-plot-progress.is-summary { inset: auto; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); }
 .raster-series-progress-message { display: grid; gap: 0.65rem; max-width: 100%; box-sizing: border-box; padding: 1rem; text-align: center; background: var(--surface-1); border: 1px solid var(--border-1); border-radius: var(--radius); }
 .raster-series-progress-message strong { font-size: 1.35rem; line-height: 1.25; }
 .raster-series-progress-message p { margin: 0; font-size: 0.9rem; overflow-wrap: anywhere; }

@@ -341,6 +341,13 @@ inputs for your selected **Assessment year**. Setup links to each dataset's
 catalog page. The first run downloads inputs for your area; later runs reuse
 matching cached tiles. Choose **Choose raster layers** to supply your own stack.
 
+Administrators can open **Manage cached inputs** in Habitat setup, or the Habitat
+section of `/admin-eolab`, to choose named Catalog polygon areas and assessment
+years. **Check cached inputs** reports current availability; **Prepare inputs**
+queues downloads without running the model. Preparation continues after closing
+the page. Return to administration to check progress, cancel or retry work, and
+download completion reports while the configured job retention permits.
+
 ### Collaborate with others
 
 #### Share your map
