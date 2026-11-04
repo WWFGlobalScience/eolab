@@ -131,6 +131,8 @@ export class RasterSeriesCalculations {
      * calculations are scheduled only while the owning query is active. Formula
      * changes wait for editing to pause; committed areas and sources start next turn. Changes to
      * names, raster order or the area label refresh the display without recalculating.
+     * Completed results also supply repeated expressions while source, area and
+     * relevant point inputs match. Captured jobs and their formula identities stay unchanged.
      * @param {{key:string,label:string,item:{collection:string,id:string}}[]} sources Selected catalog rasters.
      * @param {Object|null} area Map box, filtered catalog selection, uploaded polygon reference,
      * whole-raster descriptor, or null when no area has been chosen.
@@ -148,6 +150,14 @@ export class RasterSeriesCalculations {
         const formulasChanged = JSON.stringify(formulaKey) !==
             JSON.stringify(this.formulas.map(({id,expression}) => [id,expression.trim()]));
         const key = calculationInputKey(sources, normalized, formulas, point, temporalSource);
+        const inputsChanged = this.inputKey !== key;
+        const capturedResults = this.temporalMode ? [this.temporalResult] : [...this.results.values()];
+        const reuseCompleted = this.complete && !this.busy && !this.hasErrors && !this.needsRecovery &&
+            calculationInputKey(sources, normalized, [], point, temporalSource) ===
+                calculationInputKey(this.sources, this.area, [], this.pixelPoint, this.temporalSource) &&
+            formulas.every(({expression}) => capturedResults.every(result =>
+                result.calculationInputs.calculations.some(calculation => calculation.expression === expression.trim())));
+        this.inputKey = key;
         this.temporalMode = temporalSource !== undefined;
         this.temporalSource = temporalSource;
         this.formulas = formulas.map(formula => ({ ...formula }));
@@ -155,7 +165,7 @@ export class RasterSeriesCalculations {
         this.area = normalized;
         this.areaLabel = label;
         this.pixelPoint = point;
-        if (this.inputKey !== key) { this.inputKey = key; this.resetResultsForChangedInputs(formulasChanged); }
+        if (inputsChanged && !reuseCompleted) this.resetResultsForChangedInputs(formulasChanged);
         else this.onChange();
     }
 

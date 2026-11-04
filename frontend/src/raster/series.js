@@ -37,6 +37,17 @@ function csvField(value) {
  */
 function spreadsheetText(text) { return /^[=+@\-\t\r\n]/.test(text) ? "'" + text : text; }
 
+/** Find the captured formula supplying a statistic's exact expression.
+ * Display identities can differ when another statistic reuses a completed result.
+ * The captured job remains unchanged and retains its original formula labels.
+ * @param {{calculationInputs:{calculations:{label:string,expression:string}[]}}|null|undefined} result Captured result, or none while waiting.
+ * @param {{expression:string}} formula Current statistic to display or export.
+ * @return {string|undefined} Original formula label, or undefined when not calculated.
+ */
+function getCapturedStatisticLabel(result, formula) {
+    return result?.calculationInputs.calculations.find(calculation => calculation.expression === formula.expression.trim())?.label;
+}
+
 /** Own raster choices, formulas and presentation settings for Raster series. */
 export class RasterSeriesController {
     /**
@@ -562,8 +573,9 @@ export class RasterSeriesController {
          */
         const rowsFor = (results, formula) => sources.map(source => {
             const result = results.get(source.key);
-            const row = result?.job?.result?.rows.find(row => row.label === "stat-" + formula.id);
-            const sameFormula = result?.calculationInputs.calculations.some(item => item.label === "stat-" + formula.id && item.expression === formula.expression.trim());
+            const capturedLabel = getCapturedStatisticLabel(result, formula);
+            const row = result?.job?.result?.rows.find(row => row.label === capturedLabel);
+            const sameFormula = capturedLabel !== undefined;
             return { key: source.key, label: source.label, statisticId: formula.id, statisticLabel: formula.label || formula.expression || "Custom statistic",
                 state: row?.state === "ok" && sameFormula ? "value" : result?.error ? "error" : sameFormula ? row?.state ?? "waiting" : "waiting",
                 value: !sameFormula || row?.value == null ? null : Number(row.value), rawValue: sameFormula ? row?.value : null, unit: row?.unit ?? "",
@@ -597,8 +609,9 @@ export class RasterSeriesController {
         const observations = result?.observations ?? [];
         const statistics = this.formulas.map(formula => ({...formula, ...this.statisticDisplay.get(formula.id), previousRows: null,
             rows: observations.map(({time, rows}) => {
-                const row = rows.find(value => value.label === "stat-" + formula.id);
-                const matches = result.calculationInputs.calculations.some(item => item.label === "stat-" + formula.id && item.expression === formula.expression.trim());
+                const capturedLabel = getCapturedStatisticLabel(result, formula);
+                const row = rows.find(value => value.label === capturedLabel);
+                const matches = capturedLabel !== undefined;
                 return {key: time, xValue: Date.parse(time), label: new Date(time).toISOString().replace("T", " ").replace(/(\.000)?Z$/, " UTC"),
                     statisticId: formula.id, statisticLabel: formula.label || formula.expression, state: !matches ? "waiting" : row?.state === "ok" ? "value" : row?.state ?? "waiting",
                     value: !matches || row?.value == null ? null : Number(row.value), rawValue: matches ? row?.value : null, unit: row?.unit ?? ""};
@@ -616,7 +629,9 @@ export class RasterSeriesController {
             canDownload: !!result && !area.busy});
     }
 
-    /** Export every statistic with its exact scalar text, unit, source and area provenance.
+    /** Export every current statistic with exact values and its captured source/area metadata.
+     * Repeated expressions receive separate rows with their current names, in statistic order;
+     * the original completed jobs and temporal CSV remain unchanged.
      * @return {string} CSV document, or an empty string before results are available.
      */
     exportCsv() {
@@ -624,9 +639,16 @@ export class RasterSeriesController {
         if (this.sourceMode === "temporal") {
             if (area.busy || !area.temporalResult) return "";
             const rows = csvParse(area.temporalResult.csv);
-            const labels = new Map(this.formulas.map(formula => ["stat-" + formula.id, formula.label || formula.expression]));
-            for (const row of rows) row.calculation = spreadsheetText(labels.get(row.calculation));
-            return csvFormat(rows) + "\r\n";
+            const observations = new Map();
+            for (const row of rows) {
+                if (!observations.has(row.time_utc)) observations.set(row.time_utc, new Map());
+                observations.get(row.time_utc).set(row.calculation, row);
+            }
+            const statistics = this.formulas.map(formula => ({label: getCapturedStatisticLabel(area.temporalResult, formula),
+                name: spreadsheetText(formula.label || formula.expression)}));
+            const exported = [...observations.values()].flatMap(observation => statistics.map(({label, name}) =>
+                ({...observation.get(label), calculation: name})));
+            return csvFormat(exported, rows.columns) + "\r\n";
         }
         if (area.busy || !area.results.size) return "";
         const lines = [["raster", "collection_id", "item_id", "statistic", "formula", "value", "unit", "status", "error", "area", "job_id", "cached", "pixel_point", "source"]];
@@ -634,7 +656,8 @@ export class RasterSeriesController {
             const result = area.results.get(source.key);
             const reference = rasterSourceReference(source);
             for (const formula of this.formulas) {
-                const row = result?.job?.result?.rows.find(row => row.label === "stat-" + formula.id);
+                const capturedLabel = getCapturedStatisticLabel(result, formula);
+                const row = result?.job?.result?.rows.find(row => row.label === capturedLabel);
                 // Values are validated decimal strings from Processing, not user text.
                 const scalar = row?.value == null ? "" : { scalar: row.value };
                 lines.push([source.label, reference.collectionId ?? "", reference.itemId ?? "", formula.label, formula.expression,
