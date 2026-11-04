@@ -1105,7 +1105,7 @@ for (const mode of ["overlay", "bivariate"]) {
             await flushPromises();
             const range = documentContext.querySelector("#raster-sample-window-range");
             assert.ok(Number.isFinite(Number(range.value)));
-            assert.equal(range.getAttribute("aria-valuetext"), "200 kilometers");
+            assert.equal(range.getAttribute("aria-valuetext"), "600 kilometers");
             h.viewer.exploreAt({lng: 78, lat: 22});
             await flushPromises();
             const original = h.viewer.getSelectedArea();
@@ -1133,7 +1133,7 @@ for (const mode of ["overlay", "bivariate"]) {
             assert.equal(h.viewer.exploreAt({lng: 170, lat: 0}), true);
             assert.deepEqual(h.viewer.getSelectedArea(), selected);
             assert.match(h.controlsView.sampleWindowStatus, /Whole raster/);
-            number.value = "200";
+            number.value = "600";
             number.dispatchEvent(new Event("input"));
             const shrink = [...timers.values()][0];
             timers.clear(); shrink.callback();
@@ -2130,6 +2130,7 @@ test('rapid samples abort obsolete and hidden-layer requests and ignore late res
     await h.viewer.show(createRasterItem('first'));
     await h.viewer.show(createRasterItem('second'));
     await flushPromises();
+    h.controlsView.handlers.onSampleWindowRangeInput(200);
     h.viewer.exploreAt({ lng: -74, lat: 41 });
     h.viewer.exploreAt({ lng: -72, lat: 43 });
     assert.equal(reads.length, 4);
@@ -4538,6 +4539,7 @@ test("map box resizes immediately while committing only the final debounced area
 
     await viewer.show(createRasterItem("centered-box"));
     await flushPromises();
+    controlsView.handlers.onSampleWindowRangeInput(200);
     controlsView.handlers.onUseMapWindow();
     await flushPromises();
 
@@ -4614,7 +4616,7 @@ for (const transition of ["whole", "vector", "close", "center", "invalid", "orig
         if (transition === "close") h.viewer.cancelSampleWindowResize();
         if (transition === "center") h.viewer.exploreAt({lng: -80, lat: 35});
         if (transition === "invalid") h.controlsView.handlers.onSampleWindowNumberInput("");
-        if (transition === "original") h.controlsView.handlers.onSampleWindowRangeInput(200);
+        if (transition === "original") h.controlsView.handlers.onSampleWindowRangeInput(600);
         assert.equal(timers.size, 0);
         await flushPromises();
         if (["whole", "vector"].includes(transition)) {

@@ -18,7 +18,7 @@ export { validateRasterSelectedBounds } from "../selected-area.js";
  */
 
 /** Default side length for the interactive raster sample window, in kilometers. */
-export const DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM = 200;
+export const DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM = 600;
 
 /** Smallest supported raster sample-window side length, in kilometers. */
 const MINIMUM_RASTER_SAMPLE_WINDOW_SIZE_KM = 1;
