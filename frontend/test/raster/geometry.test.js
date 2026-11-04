@@ -44,11 +44,11 @@ test("sample windows use ground distance instead of projected map metres", () =>
     DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM,
   );
 
-  assert.ok(Math.abs(equatorial.south + 0.8993) < 0.01);
-  assert.ok(Math.abs(equatorial.north - 0.8993) < 0.01);
-  assert.ok(Math.abs(equatorial.west + 0.8994) < 0.01);
-  assert.ok(Math.abs(equatorial.east - 0.8994) < 0.01);
-  assert.ok(highLatitude.east - highLatitude.west > 3.5);
+  assert.ok(Math.abs(equatorial.south + 2.6970) < 0.01);
+  assert.ok(Math.abs(equatorial.north - 2.6970) < 0.01);
+  assert.ok(Math.abs(equatorial.west + 2.7000) < 0.01);
+  assert.ok(Math.abs(equatorial.east - 2.7000) < 0.01);
+  assert.ok(highLatitude.east - highLatitude.west > 11.5);
   assert.equal(validateRasterSelectedBounds(equatorial), equatorial);
 });
 
