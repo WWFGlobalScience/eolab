@@ -9,6 +9,12 @@ import { CATALOG_SELECTION } from "../../test-support/raster/fixtures.js";
 import { ProcessingJobs } from "../../src/processing/jobs.js";
 import { ProcessingApiClient, ProcessingRequestError } from "../../src/processing/api.js";
 import { VectorSamplingController } from "../../src/vector/sampling.js";
+import { VectorSamplingView } from "../../src/vector/sampling-view.js";
+import { VectorFilterControls } from "../../src/vector/filter-controls.js";
+import { EMPTY_VECTOR_FILTER, normalizeVectorFilter } from "../../src/vector/filter.js";
+import { FakeRasterControlDocument } from "../../test-support/raster/fake-controls-document.js";
+import { RasterSeriesView } from "../../src/raster/series-view.js";
+import { RasterSamplingAreaControlsView } from "../../src/raster/sampling-area-controls-view.js";
 
 /** @param {number} west Longitude. @return {Object} Valid sampling box. */
 const box = west => ({kind:"selectedArea",selectedBounds:{west,south:0,east:west+1,north:1}});
@@ -161,7 +167,7 @@ test("catalog, upload and drawing selections preserve captured background work w
         {polygonArea: {id: "a".repeat(32), sha256: "b".repeat(64)}}]) {
         const h = fixture(); h.controller.updateSamplingForPanelVisibility(true);
         h.view.actions.onArea("vector");
-        h.controller.setVectorSelectionState({phase: "reading"});
+        h.controller.setVectorSelectionState({phase: "reading", explicit: false, sequence: 1});
         assert.equal(h.view.state.area.area, null);
         h.controller.setVectorSamplingArea({...info, label: "Reviewed polygons"});
         h.view.actions.onRetry(); await flush();
@@ -169,7 +175,7 @@ test("catalog, upload and drawing selections preserve captured background work w
             : {kind: "catalogSelection", catalogSelection: info.selection};
         assert.deepEqual(h.requests.filter(([kind]) => kind === "submit").map(([, request]) => request.area), [expected, expected]);
         h.controller.updateSamplingForPanelVisibility(false);
-        h.controller.setVectorSelectionState({phase: "reading"});
+        h.controller.setVectorSelectionState({phase: "reading", explicit: false, sequence: 2});
         assert.deepEqual(h.area.area, expected, "passive selection progress preserves hidden explicit inputs");
         assert.equal(h.requests.filter(([kind]) => kind === "cancel").length, 0);
         h.controller.invalidateArea(expected); await flush();
@@ -265,7 +271,7 @@ test("explicit calculations keep their sources, point and area while hidden and 
     h.controller.updateSamplingForPanelVisibility(false);
     h.controller.setArea(box(10), "Another map box");
     h.controller.setVectorSamplingArea({selection: CATALOG_SELECTION, label: "A different polygon area"});
-    h.controller.setVectorSelectionState({phase: "reading"});
+    h.controller.setVectorSelectionState({phase: "reading", explicit: false, sequence: 1});
     h.controller.setPosition({longitude: 10.5, latitude: 0.5});
     h.controller.updateAvailableRasters([source("3")]);
     await flush();
@@ -891,4 +897,325 @@ test("a box choice publishes its intent before composition commits a rectangle",
         assert.deepEqual(h.view.state.area.area, box(10));
         assert.equal(h.view.state.area.areaChoice, "selection");
     } finally { h.close(); }
+});
+
+
+/** Connect the production root's two polygon workflows to real statistics and DOM adapters.
+ * Only the source transport, retained map records and dock foreground are fakes.
+ * @param {Object} h Existing real Processing/calculation fixture.
+ * @return {Object} Accepted per-view filters, both controls, filter actions and scope presentation.
+ */
+function samplingComposition(h) {
+    const document = new FakeRasterControlDocument();
+    document.defaultView.requestAnimationFrame = () => 1;
+    document.defaultView.cancelAnimationFrame = () => {};
+    document.defaultView.ResizeObserver = class {observe() {}};
+    const oldDocument = globalThis.document; globalThis.document = document;
+    const floating = new RasterSamplingAreaControlsView(document);
+    const presentation = new RasterSeriesView(document, {onContextChange: context => floating.setAreaContext(context)});
+    h.view.actions.onOpenArea = () => floating.openAreaEditor();
+    presentation.bind(h.view.actions);
+    const originalRender = h.view.render.bind(h.view);
+    h.view.render = state => { originalRender(state); presentation.render(state); };
+    const fields = [{name: "iso3", type: "string"}];
+    const records = ["countries", "copy"].map(key => ({entry: {key, label: key === "copy" ? "Other countries view" : "Countries"},
+        filter: structuredClone(EMPTY_VECTOR_FILTER)}));
+    const reads = [], pendingFilters = [], pendingReads = [];
+    let composed, delayedFilters = false, delayedReads = false, foreground = "raster-series";
+    /** Refresh accepted source snapshots through the actual root's layer-change statements.
+     * @return {void}
+     */
+    const refresh = () => new Function("vectorSampling", "summarySampling",
+        main.match(/        vectorSampling\?\.refresh\(\);\s*summarySampling\?\.refresh\(\);/)[0])
+        (composed?.vectorSampling, composed?.summarySampling);
+    const adapter = {
+        describeSource: () => ({geometryKind: "polygon", source: {collectionId: CATALOG_SELECTION.collectionId,
+            itemId: CATALOG_SELECTION.itemId}, fields}),
+        exportFilterState: record => structuredClone(record.filter),
+        describeFilter: record => ({filter: structuredClone(record.filter), status: "Authoritative layer count"}),
+        cancelPendingFilter: () => {},
+        applyFilterState: async (record, candidate) => {
+            if (delayedFilters) await new Promise((resolve, reject) => pendingFilters.push({resolve, reject}));
+            record.filter = normalizeVectorFilter(candidate, fields); refresh(); return record.filter;
+        },
+    };
+    for (const record of records) record.adapter = adapter;
+    const layers = {retainedRecords: records, getRecord: key => records.find(record => record.entry.key === key) ?? null};
+    const inspection = {showFilter() {foreground = "filter"; h.controller.updateSamplingForPanelVisibility(false);},
+        hideFilter() {foreground = "raster-series"; h.controller.updateSamplingForPanelVisibility(true);}, updateLayerEditorName() {}};
+    const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8");
+    const editor = main.slice(main.indexOf("    let modelFilterControls = null;"), main.indexOf("    models = new ModelsController({"));
+    const workflows = main.slice(main.indexOf("    vectorSampling = new VectorSamplingController({"),
+        main.indexOf("    const vectorStyleControls = new VectorStyleControls();"));
+    assert.ok(editor.includes("const getPolygonTargets") && workflows.includes("summarySampling ="));
+    const createArea = async (_source, filter, signal) => {
+        reads.push({filter, signal});
+        if (delayedReads) await new Promise((resolve, reject) => pendingReads.push({resolve, reject}));
+        return {selection: {...CATALOG_SELECTION, filter}, matched: filter.rules.length ? 1 : 253,
+            total: 253, filter, bbox: [-180, -85, 180, 85]};
+    };
+    const updateArea = (area, label) => h.controller.setArea(area, label);
+    composed = new Function("document", "VectorFilterControls", "VectorSamplingController", "VectorSamplingView",
+        "createVectorSamplingArea", "VectorSelectionOverlay", "leafletMap", "L", "mapInspection", "mapLayerController",
+        "vectorMapLayerAdapter", "annotations", "processingApi", "rasterSeries", "updateRasterSeriesArea",
+        "rasterVisualization", "models", "EMPTY_VECTOR_FILTER", `
+        let vectorFilterControls, vectorSampling, summarySampling, modelArea, modelAreaDescription;
+        ${editor} ${workflows}
+        return {vectorFilterControls, vectorSampling, summarySampling};`)(document, VectorFilterControls,
+        VectorSamplingController, VectorSamplingView, createArea, class {load() {} clear() {}}, {}, {}, inspection,
+        layers, adapter, {filterTarget: () => null, summaryTargets: () => []}, {}, h.controller, updateArea,
+        {setVectorSelection: area => { if (area) updateArea({kind: "catalogSelection", catalogSelection: area.selection}, area.label); }},
+        {refreshMapArea() {}}, EMPTY_VECTOR_FILTER);
+    h.controller.onAreaChoice = choice => {
+        if (choice === "vector") void composed.summarySampling.use();
+        else composed.summarySampling.invalidate("");
+    };
+    h.controller.render();
+    return {...composed, document, floating, presentation, records, reads, pendingFilters, pendingReads,
+        get foreground() {return foreground;},
+        delayFilters: () => {delayedFilters = true;}, delayReads: () => {delayedReads = true;},
+        /** Apply a complete editor draft without waiting for its debounce timer.
+         * @param {string} value Accepted country code. @return {Promise<void>} Settled composition callbacks.
+         */
+        async apply(value) {
+            const controls = composed.vectorFilterControls;
+            controls.draft = {enabled: true, match: "all", rules: [{field: "iso3", operator: "eq", value}]};
+            controls.applyButton.dispatchEvent(new Event("click")); await flush();
+        },
+        /** Release callbacks, source reads and the fake global document. @return {void} */
+        close() {
+            composed.vectorFilterControls.destroy(); composed.vectorSampling.destroy(); composed.summarySampling.destroy();
+            globalThis.document = oldDocument;
+        },
+    };
+}
+
+test("statistics-origin filter commits replace captured inputs through both production workflow instances", async () => {
+    const h = fixture(), c = samplingComposition(h);
+    try {
+        await h.open(); await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries"); await h.tick();
+        const initial = h.requests.filter(([kind]) => kind === "submit").length;
+        assert.equal(c.floating.samplingAreaSummary.textContent, "Sample area · Countries · 253 of 253 features");
+        c.summarySampling.views[0].elements.filter.dispatchEvent(new Event("click"));
+        assert.equal(c.foreground, "filter");
+        await c.apply("PER");
+        assert.equal(h.controller.active, false, "an explicit area choice does not fake panel visibility");
+        assert.equal(c.records[0].filter.rules[0].value, "PER");
+        assert.equal(c.records[1].filter.rules.length, 0, "another retained view keeps its independent accepted predicate");
+        assert.equal(c.vectorSampling.views[0].elements.status.textContent, "Sampling 1 of 253 features.");
+        assert.equal(c.summarySampling.views[0].elements.status.textContent, "Sampling 1 of 253 features.");
+        assert.equal(c.floating.samplingAreaSummary.textContent, "Sample area · Countries · 1 of 253 features");
+        assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "PER");
+        assert.equal(h.requests.filter(([kind]) => kind === "submit").length, initial, "hidden editing schedules no replacement jobs");
+        assert.ok(h.requests.some(([kind]) => kind === "cancel"), "committed explicit intent cancels the superseded calculation");
+        c.vectorFilterControls.close(); await h.finish("cancelled"); await h.finish("cancelled"); await h.tick();
+        const replacements = h.requests.filter(([kind]) => kind === "submit").slice(initial);
+        assert.equal(replacements.length, 2);
+        assert.ok(replacements.every(([, intent]) => intent.area.catalogSelection.filter.rules[0].value === "PER"));
+        const count = h.requests.length;
+        c.summarySampling.views[0].elements.filter.dispatchEvent(new Event("click")); await c.apply("PER");
+        assert.equal(h.requests.length, count, "reapplying the same predicate does not restart captured work");
+    } finally {c.close(); h.close();}
+});
+
+test("map-origin edits retain captured counts and explain different predicates even with equal totals", async () => {
+    const h = fixture(), c = samplingComposition(h);
+    try {
+        c.records[0].filter = {enabled: true, match: "all", rules: [{field: "iso3", operator: "eq", value: "PER"}]};
+        c.vectorSampling.refresh(); c.summarySampling.refresh();
+        await h.open(); await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries"); await h.tick();
+        const captured = h.view.state.area.area, count = h.requests.length;
+        c.vectorFilterControls.open("countries"); await c.apply("ECU");
+        assert.deepEqual(h.view.state.area.area, captured);
+        assert.equal(h.requests.length, count, "outside filter changes neither cancel nor submit captured calculations");
+        assert.match(h.view.state.message, /These statistics use the previous filter/);
+        assert.match(h.view.state.message, /Use current polygon filter/);
+        assert.equal(c.floating.samplingAreaSummary.textContent, "Sample area · Countries · 1 of 253 features");
+        c.vectorFilterControls.close(); await h.tick();
+        assert.deepEqual(h.view.state.area.area, captured, "reopening preserves the captured predicate");
+        c.records[0].entry.label = "Renamed countries"; c.vectorSampling.refresh(); c.summarySampling.refresh();
+        assert.equal(h.requests.length, count, "renaming does not become a new calculation intent");
+        c.presentation.renderAreaControls(h.view.state);
+        const adopt = c.document.querySelector("#raster-series-use-current-filter");
+        assert.equal(adopt.hidden, false);
+        adopt.dispatchEvent(new Event("click")); await flush();
+        assert.equal(c.document.activeElement, c.document.querySelector("#raster-series-open-area"));
+        assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "ECU");
+        c.presentation.renderAreaControls(h.view.state); assert.equal(adopt.hidden, true);
+        assert.doesNotMatch(h.view.state.message, /previous filter/);
+    } finally {c.close(); h.close();}
+});
+
+test("failed stats filters preserve captured jobs and cleared selections ignore late prepared areas", async () => {
+    const h = fixture(), c = samplingComposition(h);
+    try {
+        await h.open(); await c.summarySampling.choose("countries"); await h.tick();
+        const captured = h.view.state.area.area, count = h.requests.length;
+        c.delayFilters(); c.summarySampling.views[0].elements.filter.dispatchEvent(new Event("click"));
+        const applying = c.apply("PER"); await flush(); c.pendingFilters.at(-1).reject(Error("Filter unavailable")); await applying; await flush();
+        assert.deepEqual(h.view.state.area.area, captured); assert.equal(h.requests.length, count);
+        assert.match(c.vectorFilterControls.status.textContent, /previous applied filter remains/);
+        c.vectorFilterControls.close(); c.delayReads();
+        h.view.actions.onArea("vector"); await flush();
+        h.view.actions.onArea("whole"); await h.tick();
+        c.pendingReads.at(-1).resolve(); await flush();
+        assert.equal(h.view.state.area.areaChoice, "whole");
+        assert.deepEqual(h.view.state.area.area, {kind: "wholeRaster"});
+    } finally {c.close(); h.close();}
+});
+
+
+test("closing an in-flight statistics filter respects subsequent explicit area choices", async () => {
+    for (const chooseWhole of [false, true]) {
+        const h = fixture(), c = samplingComposition(h);
+        try {
+            await h.open(); await c.summarySampling.choose("countries"); await h.tick();
+            c.delayFilters(); c.summarySampling.views[0].elements.filter.dispatchEvent(new Event("click"));
+            await c.apply("PER"); c.vectorFilterControls.close();
+            if (chooseWhole) h.view.actions.onArea("whole");
+            c.pendingFilters.at(-1).resolve(); await flush();
+            if (chooseWhole) {
+                assert.deepEqual(h.view.state.area.area, {kind: "wholeRaster"}, "a closed editor cannot override the later whole-raster intent");
+            } else {
+                assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "PER",
+                    "the foreground workflow follows the accepted filter through its ordinary selection lifecycle");
+                assert.equal(c.floating.samplingAreaSummary.textContent, "Sample area · Countries · 1 of 253 features");
+            }
+        } finally {c.close(); h.close();}
+    }
+});
+
+
+test("passive polygon reads preserve their captured area when statistics reopens before the reply", async () => {
+    for (const areaChoice of ["vector", "selection"]) {
+        const h = fixture(), c = samplingComposition(h);
+        try {
+            await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries");
+            if (areaChoice === "selection") h.controller.selectSource({collectionId: "catalog", itemId: "1"}, h.view.state.area.area);
+            await h.open();
+            const captured = h.view.state.area.area, count = h.requests.length;
+            const scope = c.floating.samplingAreaSummary.textContent;
+            c.delayReads(); c.vectorFilterControls.open("countries"); await c.apply("PER");
+            assert.equal(c.pendingReads.length, 2);
+            c.vectorFilterControls.close();
+            c.summarySampling.refresh();
+            for (const read of c.pendingReads) read.resolve(); await flush();
+            assert.deepEqual(h.view.state.area.area, captured, "both preceding map-area publication and vector adoption preserve the captured descriptor");
+            assert.equal(h.requests.length, count, "reopening during passive preparation never cancels or resubmits work");
+            assert.equal(h.view.state.area.hasPendingVectorArea, true);
+            assert.equal(c.floating.samplingAreaSummary.textContent, scope);
+        } finally {c.close(); h.close();}
+    }
+});
+
+test("late map-filter acceptance preserves capture or respects a newer explicit polygon/whole choice", async () => {
+    for (const laterChoice of ["none", "whole", "copy"]) {
+        const h = fixture(), c = samplingComposition(h);
+        try {
+            await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries"); await h.open();
+            const captured = h.view.state.area.area;
+            c.delayFilters(); c.vectorFilterControls.open("countries"); await c.apply("PER");
+            c.vectorFilterControls.close();
+            if (laterChoice === "whole") h.view.actions.onArea("whole");
+            if (laterChoice === "copy") {
+                const layer = c.summarySampling.views[0].elements.layer;
+                layer.value = "copy"; layer.dispatchEvent(new Event("change")); await flush();
+                assert.equal(h.view.state.area.areaLabel, "Other countries view · 253 of 253 features");
+            }
+            const count = h.requests.length;
+            c.pendingFilters.at(-1).resolve(); await flush();
+            assert.equal(h.requests.length, count, "the late passive filter does not replace the selected calculation");
+            if (laterChoice === "whole") assert.deepEqual(h.view.state.area.area, {kind: "wholeRaster"});
+            else if (laterChoice === "copy") {
+                assert.equal(c.summarySampling.views[0].elements.layer.value, "copy");
+                assert.equal(h.view.state.area.areaLabel, "Other countries view · 253 of 253 features");
+                assert.equal(h.view.state.area.area.catalogSelection.filter.rules.length, 0);
+            } else {
+                assert.deepEqual(h.view.state.area.area, captured);
+                assert.equal(h.view.state.area.hasPendingVectorArea, true);
+                assert.match(h.view.state.message, /Use current polygon filter/);
+            }
+        } finally {c.close(); h.close();}
+    }
+});
+
+
+test("explicit Clear selection supersedes delayed passive filter and area replies without reviving work", async () => {
+    for (const delay of ["filter", "area"]) {
+        const h = fixture(), c = samplingComposition(h);
+        try {
+            await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries"); await h.open();
+            if (delay === "filter") c.delayFilters(); else c.delayReads();
+            c.vectorFilterControls.open("countries"); await c.apply("PER"); c.vectorFilterControls.close();
+            c.summarySampling.views[0].elements.remove.dispatchEvent(new Event("click")); await flush();
+            assert.equal(c.summarySampling.views[0].elements.layer.value, "");
+            assert.equal(h.view.state.area.area, null);
+            assert.equal(h.view.state.area.hasPendingVectorArea, false);
+            const count = h.requests.length;
+            if (delay === "filter") c.pendingFilters.at(-1).resolve();
+            else for (const read of c.pendingReads) read.resolve();
+            await flush(); await h.tick();
+            assert.equal(h.view.state.area.area, null);
+            assert.equal(h.requests.length, count, "late replies never restart a cleared calculation");
+        } finally {c.close(); h.close();}
+    }
+});
+
+
+test("an older map-filter operation keeps its passive origin after explicitly selecting its view", async () => {
+    for (const initiallyCaptured of [true, false]) for (const choices of [["copy"], ["copy", "countries"]]) {
+        const h = fixture(), c = samplingComposition(h);
+        try {
+            await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries");
+            if (initiallyCaptured) await h.open();
+            c.delayFilters(); c.vectorFilterControls.open(choices.at(-1)); await c.apply("PER"); c.vectorFilterControls.close();
+            for (const key of choices) {
+                const layer = c.summarySampling.views[0].elements.layer;
+                layer.value = key; layer.dispatchEvent(new Event("change")); await flush();
+                while ([...h.server.values()].some(job => job.status === "cancelling")) await h.finish("cancelled");
+                await h.tick();
+            }
+            const captured = h.view.state.area.area, count = h.requests.length;
+            assert.equal(captured.catalogSelection.filter.rules.length, 0);
+            assert.equal(h.area.hasCapturedInputs, true);
+            c.pendingFilters.at(-1).resolve(); await flush();
+            assert.deepEqual(h.view.state.area.area, captured);
+            assert.equal(h.requests.length, count, "the older passive operation cannot cancel work captured before or after its request began");
+            assert.equal(c.summarySampling.views[0].elements.layer.value, choices.at(-1));
+            assert.equal(h.view.state.area.hasPendingVectorArea, true);
+        } finally {c.close(); h.close();}
+    }
+});
+
+
+test("a histogram-owned pending area opens choices without adopting another statistics layer", async () => {
+    const h = fixture(), c = samplingComposition(h);
+    try {
+        c.records[0].filter = {enabled: true, match: "all", rules: [{field: "iso3", operator: "eq", value: "PER"}]};
+        c.records[1].filter = {enabled: true, match: "all", rules: [{field: "iso3", operator: "eq", value: "ECU"}]};
+        c.vectorSampling.refresh(); c.summarySampling.refresh();
+        await c.vectorSampling.choose("copy"); await c.summarySampling.choose("countries");
+        h.controller.selectSource({collectionId: "catalog", itemId: "1"},
+            {kind: "catalogSelection", catalogSelection: c.vectorSampling.state.area.selection});
+        await h.open();
+        c.vectorFilterControls.open("copy"); await c.apply("MEX"); c.vectorFilterControls.close();
+        const captured = h.view.state.area.area, count = h.requests.length;
+        assert.equal(captured.catalogSelection.filter.rules[0].value, "ECU");
+        assert.equal(h.view.state.area.areaChoice, "selection");
+        c.presentation.renderAreaControls(h.view.state);
+        const button = c.document.querySelector("#raster-series-use-current-filter");
+        button.dispatchEvent(new Event("click")); await flush();
+        assert.deepEqual(h.view.state.area.area, captured, "opening choices cannot silently substitute statistics layer A/PER for pending map layer B/MEX");
+        assert.equal(h.requests.length, count);
+        assert.equal(c.floating.disclosure.open, true);
+        assert.equal(button.textContent, "Choose polygon layer");
+        assert.match(h.view.state.message, /Choose polygon layer/);
+        assert.equal(c.summarySampling.views[0].elements.layer.value, "countries");
+        const radio = c.document.querySelector("#raster-series-area-vector");
+        radio.checked = true; radio.dispatchEvent(new Event("change")); await flush();
+        const layer = c.summarySampling.views[0].elements.layer;
+        layer.value = "copy"; layer.dispatchEvent(new Event("change")); await flush();
+        assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "MEX");
+        assert.equal(h.view.state.area.areaChoice, "vector");
+    } finally {c.close(); h.close();}
 });
