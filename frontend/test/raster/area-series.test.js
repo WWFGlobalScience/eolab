@@ -913,6 +913,7 @@ function samplingComposition(h) {
     const oldDocument = globalThis.document; globalThis.document = document;
     const floating = new RasterSamplingAreaControlsView(document);
     const presentation = new RasterSeriesView(document, {onContextChange: context => floating.setAreaContext(context)});
+    h.view.actions.onOpenArea = () => floating.openAreaEditor();
     presentation.bind(h.view.actions);
     const originalRender = h.view.render.bind(h.view);
     h.view.render = state => { originalRender(state); presentation.render(state); };
@@ -1184,4 +1185,37 @@ test("an older map-filter operation keeps its passive origin after explicitly se
             assert.equal(h.view.state.area.hasPendingVectorArea, true);
         } finally {c.close(); h.close();}
     }
+});
+
+
+test("a histogram-owned pending area opens choices without adopting another statistics layer", async () => {
+    const h = fixture(), c = samplingComposition(h);
+    try {
+        c.records[0].filter = {enabled: true, match: "all", rules: [{field: "iso3", operator: "eq", value: "PER"}]};
+        c.records[1].filter = {enabled: true, match: "all", rules: [{field: "iso3", operator: "eq", value: "ECU"}]};
+        c.vectorSampling.refresh(); c.summarySampling.refresh();
+        await c.vectorSampling.choose("copy"); await c.summarySampling.choose("countries");
+        h.controller.selectSource({collectionId: "catalog", itemId: "1"},
+            {kind: "catalogSelection", catalogSelection: c.vectorSampling.state.area.selection});
+        await h.open();
+        c.vectorFilterControls.open("copy"); await c.apply("MEX"); c.vectorFilterControls.close();
+        const captured = h.view.state.area.area, count = h.requests.length;
+        assert.equal(captured.catalogSelection.filter.rules[0].value, "ECU");
+        assert.equal(h.view.state.area.areaChoice, "selection");
+        c.presentation.renderAreaControls(h.view.state);
+        const button = c.document.querySelector("#raster-series-use-current-filter");
+        button.dispatchEvent(new Event("click")); await flush();
+        assert.deepEqual(h.view.state.area.area, captured, "opening choices cannot silently substitute statistics layer A/PER for pending map layer B/MEX");
+        assert.equal(h.requests.length, count);
+        assert.equal(c.floating.disclosure.open, true);
+        assert.equal(button.textContent, "Choose polygon layer");
+        assert.match(h.view.state.message, /Choose polygon layer/);
+        assert.equal(c.summarySampling.views[0].elements.layer.value, "countries");
+        const radio = c.document.querySelector("#raster-series-area-vector");
+        radio.checked = true; radio.dispatchEvent(new Event("change")); await flush();
+        const layer = c.summarySampling.views[0].elements.layer;
+        layer.value = "copy"; layer.dispatchEvent(new Event("change")); await flush();
+        assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "MEX");
+        assert.equal(h.view.state.area.areaChoice, "vector");
+    } finally {c.close(); h.close();}
 });

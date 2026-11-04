@@ -165,8 +165,10 @@ export class RasterSeriesView {
         this.download.addEventListener("click", actions.onDownload);
         this.document.querySelector("#raster-series-open-area").addEventListener("click", actions.onOpenArea);
         this.document.querySelector("#raster-series-use-current-filter").addEventListener("click", () => {
-            actions.onArea("vector");
-            this.document.querySelector("#raster-series-open-area").focus({preventScroll: true});
+            if (this.snapshot.area.areaChoice === "vector") {
+                actions.onArea("vector");
+                this.document.querySelector("#raster-series-open-area").focus({preventScroll: true});
+            } else actions.onOpenArea();
         });
         for (const [choice, input] of this.areaChoices) {
             input.addEventListener("change", () => { if (input.checked) actions.onArea(choice); });
@@ -503,6 +505,8 @@ export class RasterSeriesView {
         if (action.getAttribute("aria-label") !== actionLabel) action.setAttribute("aria-label", actionLabel);
         const adopt = this.document.querySelector("#raster-series-use-current-filter");
         if (adopt.hidden !== !area.hasPendingVectorArea) adopt.hidden = !area.hasPendingVectorArea;
+        const adoptLabel = area.areaChoice === "vector" ? "Use current polygon filter" : "Choose polygon layer";
+        if (adopt.textContent !== adoptLabel) adopt.textContent = adoptLabel;
         const vector = this.document.querySelector("#raster-series-vector-area");
         if (vector.hidden !== (area.areaChoice !== "vector")) vector.hidden = area.areaChoice !== "vector";
         const addFormula = this.document.querySelector("#raster-series-add-formula");

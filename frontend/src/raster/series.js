@@ -530,7 +530,9 @@ export class RasterSeriesController {
         if (!this.hasPendingVectorArea) return "";
         const pending = this.pendingVectorArea;
         const label = this.areaChoice === "vector" ? this.vectorAreaLabel : this.selectedAreaLabel;
-        return `These statistics use the previous filter: ${label}. The polygon layer now selects ${pending.label}. Use current polygon filter to update these statistics.`;
+        const action = this.areaChoice === "vector" ? "Use current polygon filter to update these statistics."
+            : "Choose polygon layer, then select the layer and filter for these statistics.";
+        return `These statistics use the previous filter: ${label}. The polygon layer now selects ${pending.label}. ${action}`;
     }
 
     /** Supply the area calculator with chosen original sources, independent of chart order. @return {void} */
