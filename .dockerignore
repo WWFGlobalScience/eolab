@@ -21,6 +21,7 @@ tests/fixtures/*
 !tests/fixtures/saved-map-v1.json
 !tests/fixtures/saved-map-v2.json
 !tests/fixtures/saved-map-v3-categorical.json
+!tests/fixtures/sampling-box-geodesics.json
 !tests/fixtures/rasters/
 !tests/fixtures/rasters/*.tif
 !tests/fixtures/vectors/
