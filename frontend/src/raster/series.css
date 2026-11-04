@@ -41,7 +41,8 @@
 #raster-series-sources .raster-series-source-headings span:last-child { text-align: center; }
 #raster-series-sources .raster-series-range-choice { display: flex; align-items: center; justify-content: center; min-height: 24px; cursor: pointer; }
 #raster-series-sources span { overflow-wrap: anywhere; min-width: 0; }
-.raster-series-table-scroll { overflow-x: auto; }
+.raster-series-table-scroll { max-height: min(24rem, 50dvh); overflow: auto; overscroll-behavior: contain; }
+.raster-series-table-scroll:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 #raster-series table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
 #raster-series th, #raster-series td { padding: 0.4rem; border-bottom: 1px solid var(--border-1); text-align: left; overflow-wrap: anywhere; }
 #raster-series td { font-variant-numeric: tabular-nums; }
