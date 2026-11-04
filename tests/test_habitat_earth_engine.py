@@ -30,6 +30,7 @@ from eolab_app.processing.habitat_earth_engine import (
     HabitatEarthEngineSettings,
     get_habitat_tiles,
     inspect_habitat_cache,
+    inspect_habitat_cache_inventory,
     load_habitat_stack,
 )
 from eolab_app.processing import habitat_earth_engine
@@ -598,6 +599,11 @@ def test_failure_or_cancellation_preserves_completed_tiles(
     assert list(working_directory.iterdir()) == []
     assert updates == [(0, 2), (1, 2)]
     assert "private-server-detail" not in str(error.value)
+    inventory = inspect_habitat_cache_inventory(tmp_path / "cache")
+    assert len(inventory) == 1
+    assert inventory[0].cached_tiles == 1
+    assert inventory[0].stored_bytes == cached[0].stat().st_size
+    assert inventory[0].configuration.year == stack.year
 
 
 def test_authentication_errors_do_not_expose_credentials(
@@ -719,3 +725,178 @@ def test_concurrent_downloads_publish_one_complete_entry(tmp_path: Path) -> None
     assert len(cached) == 1
     with rasterio.open(cached[0]) as dataset:
         assert dataset.read(1)[1, 1] == 3
+    (row,) = inspect_habitat_cache_inventory(cache)
+    assert row.cached_tiles == 1
+    assert row.stored_bytes == cached[0].stat().st_size
+    assert row.configuration.year == 2019
+    metadata = cache / row.configuration_sha256 / "configuration.json"
+    assert json.loads(metadata.read_text(encoding="utf-8"))["year"] == 2019
+
+
+def test_cache_inventory_counts_completed_namespaces_without_history_or_raster_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identify historical installed years and retain unknown configurations separately.
+
+    Args:
+        tmp_path: Private cache and unrelated staging/report fixtures.
+        monkeypatch: Fail any unexpected pixel or Earth Engine access.
+    """
+    cache = tmp_path / "cache"
+    assert inspect_habitat_cache_inventory(cache) == ()
+    assert not cache.exists()
+    configurations = [load_habitat_stack(year) for year in (2017, 2018)]
+    for index, configuration in enumerate(configurations, start=1):
+        entry = cache / configuration.raster_configuration_sha256 / "-1_2"
+        entry.mkdir(parents=True)
+        (entry / "tile.tif").write_bytes(b"x" * index)
+    unknown = cache / ("b" * 64)
+    for name, size in (("0_0", 3), ("1_0", 4)):
+        entry = unknown / name
+        entry.mkdir(parents=True)
+        (entry / "tile.tif").write_bytes(b"x" * size)
+    (unknown / "2_0").mkdir()
+    (unknown / "report.json").write_text("{}")
+    staging = unknown / "habitat-gee-unpublished"
+    staging.mkdir()
+    (staging / "tile.tif").write_bytes(b"not published")
+    (cache / "attempt").mkdir()
+    (cache / "attempt" / "tile.tif").write_bytes(b"not a namespace")
+    recorded = cache / ("c" * 64)
+    (recorded / "0_0").mkdir(parents=True)
+    (recorded / "0_0" / "tile.tif").write_bytes(b"recorded")
+    (recorded / "configuration.json").write_text(
+        json.dumps({"configuration_sha256": "c" * 64, "year": 2018}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        rasterio,
+        "open",
+        Mock(side_effect=AssertionError("Inventory must not reopen pixels")),
+    )
+    monkeypatch.setattr(
+        habitat_earth_engine,
+        "_build_habitat_image",
+        Mock(side_effect=AssertionError("Inventory must not contact Earth Engine")),
+    )
+    inventory = {
+        row.configuration_sha256: row for row in inspect_habitat_cache_inventory(cache)
+    }
+    assert len(inventory) == 4
+    for index, configuration in enumerate(configurations, start=1):
+        row = inventory[configuration.raster_configuration_sha256]
+        assert row.configuration.year == configuration.year
+        assert row.cached_tiles == 1
+        assert row.stored_bytes == index
+        assert not (cache / row.configuration_sha256 / "configuration.json").exists()
+    assert inventory["b" * 64].configuration is None
+    assert inventory["b" * 64].cached_tiles == 2
+    assert inventory["b" * 64].stored_bytes == 7
+    assert inventory["c" * 64].configuration.year == 2018
+    assert inventory["c" * 64].cached_tiles == 1
+    assert inventory["c" * 64].stored_bytes == len(b"recorded")
+
+
+def test_ordinary_acquisition_persists_inventory_labels_without_historical_backfill(
+    tmp_path: Path,
+    working_directory: Path,
+    stack: RasterStackConfiguration,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep ordinary-run tiles identifiable after installed scientific settings change.
+
+    Args:
+        tmp_path: Persistent cache parent, independent of any preparation history.
+        working_directory: Existing attempt directory owning acquisition staging.
+        stack: Scientific test configuration with one requested acquisition tile.
+        monkeypatch: Use the official offline Earth Engine client, then deny raster reads.
+    """
+    pixels = _tile_bytes(7, 31)
+    _use_offline_earth_engine(monkeypatch, [({"status": "200"}, pixels)])
+    cache = tmp_path / "cache"
+    tiles = get_habitat_tiles(
+        box(7, 11, 27, 31),
+        stack,
+        HabitatEarthEngineSettings("habitat-test", tmp_path / "key.json"),
+        cache_directory=cache,
+        working_directory=working_directory,
+        progress=lambda done, total: None,
+        check_cancelled=lambda: None,
+    )
+    metadata = cache / stack.raster_configuration_sha256 / "configuration.json"
+    expected = json.loads(metadata.read_text(encoding="utf-8"))
+    assert expected["year"] == stack.year
+    assert expected["configuration_sha256"] == stack.raster_configuration_sha256
+    monkeypatch.setattr(
+        habitat_earth_engine,
+        "load_habitat_stack",
+        Mock(
+            side_effect=AssertionError(
+                "Persisted metadata needs no historical reconstruction"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        rasterio,
+        "open",
+        Mock(side_effect=AssertionError("Inventory must not reopen pixels")),
+    )
+    (row,) = inspect_habitat_cache_inventory(cache)
+    assert row.configuration.year == stack.year
+    assert row.cached_tiles == 1
+    assert row.stored_bytes == tiles.tiles[0].stat().st_size
+    # A warm historical namespace requires no metadata migration or download.
+    metadata.unlink()
+    reused = get_habitat_tiles(
+        box(7, 11, 27, 31),
+        stack,
+        HabitatEarthEngineSettings("habitat-test", tmp_path / "key.json"),
+        cache_directory=cache,
+        working_directory=working_directory,
+        progress=lambda done, total: None,
+        check_cancelled=lambda: None,
+    )
+    assert reused.tiles == tiles.tiles
+    assert not metadata.exists()
+    assert list(working_directory.iterdir()) == []
+
+
+@pytest.mark.parametrize("link_kind", ["namespace", "tile", "raster", "metadata"])
+def test_inventory_rejects_cache_symlinks(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    """Reject symbolic links rather than inspect files outside the private cache.
+
+    Args:
+        tmp_path: Cache and separate external-file fixture directories.
+        link_kind: Cache boundary replaced with an external symbolic link.
+    """
+    cache = tmp_path / "cache"
+    namespace = cache / ("b" * 64)
+    tile = namespace / "0_0"
+    tile.mkdir(parents=True)
+    (tile / "tile.tif").write_bytes(b"complete tile")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if link_kind == "namespace":
+        (tile / "tile.tif").unlink()
+        tile.rmdir()
+        namespace.rmdir()
+        namespace.symlink_to(outside, target_is_directory=True)
+    elif link_kind == "tile":
+        (tile / "tile.tif").unlink()
+        tile.rmdir()
+        tile.symlink_to(outside, target_is_directory=True)
+    else:
+        external_file = outside / "private-file"
+        external_file.write_text("private contents")
+        path = (
+            tile / "tile.tif"
+            if link_kind == "raster"
+            else namespace / "configuration.json"
+        )
+        if path.exists():
+            path.unlink()
+        path.symlink_to(external_file)
+    with pytest.raises(ValueError, match="symbolic link"):
+        inspect_habitat_cache_inventory(cache)

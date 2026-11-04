@@ -58,3 +58,6 @@ dialog::backdrop { background: #0006; }
   #habitat-admin .habitat-inline label { flex-basis: 100%; }
   #habitat-admin .habitat-actions > * { max-width: 100%; }
 }
+
+#habitat-admin .habitat-inventory-configuration { min-width: 15rem; overflow-wrap: anywhere; }
+#habitat-admin .habitat-inventory-scroll:focus-visible { outline: 3px solid #008bc5; outline-offset: 3px; }

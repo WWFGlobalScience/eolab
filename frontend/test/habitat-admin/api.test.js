@@ -64,6 +64,7 @@ test("all admin commands use the fixed endpoints, exact request IDs and browser-
     const api = new HabitatAdminApi(async (url, init) => {
         calls.push({url, init});
         if (url.includes("earth-engine-options")) return response(options);
+        if (url.endsWith("cache-inventory")) return response({configurations: []});
         if (url.endsWith("cache-coverage")) return response({configurationSha256: DIGEST,
             year: 2018, requiredTiles: 6, cachedTiles: 4, missingTiles: 2});
         if (url.includes("?")) return response({jobs: [job()], nextCursor: "next-page"});
@@ -77,11 +78,12 @@ test("all admin commands use the fixed endpoints, exact request IDs and browser-
     await api.get(ID, abort.signal);
     await api.cancel(ID, abort.signal);
     await api.retry(ID, "retry-countries-2018", abort.signal);
+    assert.deepEqual(await api.inventory(abort.signal), []);
     assert.deepEqual(calls.map(call => call.url), [
         "/api/processing/models/habitat-condition/earth-engine-options",
         "/api/admin/habitat/cache-coverage", PREPARATIONS,
         `${PREPARATIONS}?limit=20&cursor=older+page%2Btoken`, `${PREPARATIONS}/${ID}`,
-        `${PREPARATIONS}/${ID}/cancel`, `${PREPARATIONS}/${ID}/retry`,
+        `${PREPARATIONS}/${ID}/cancel`, `${PREPARATIONS}/${ID}/retry`, "/api/admin/habitat/cache-inventory",
     ]);
     assert.deepEqual(JSON.parse(calls[2].init.body), command);
     assert.deepEqual(JSON.parse(calls[6].init.body), {requestId: "retry-countries-2018"});
@@ -212,4 +214,17 @@ test("an aborted response body preserves cancellation instead of becoming an HTT
     const api = new HabitatAdminApi(async () => ({ok: true, status: 200,
         json: async () => { throw new DOMException("Cancelled body", "AbortError"); }}));
     await assert.rejects(api.get(ID), error => error.name === "AbortError");
+});
+
+
+test("inventory validates known and unknown configuration rows and returns only path-free fields", async () => {
+    const known = {configurationSha256: "a".repeat(64), year: 2018, cachedTiles: 12, storedBytes: 12345678};
+    const unknown = {configurationSha256: "b".repeat(64), year: null, cachedTiles: 1, storedBytes: 1000};
+    const api = new HabitatAdminApi(async () => response({configurations: [{...known, path: "/private/cache"}, unknown]}));
+    assert.deepEqual(await api.inventory(), [known, unknown]);
+    for (const configurations of [null, [known, known], [{...known, cachedTiles: -1}],
+        [{...known, storedBytes: Number.MAX_SAFE_INTEGER + 1}], [{...known, year: "2018"}], [{...known, configurationSha256: "../private"}]]) {
+        const invalid = new HabitatAdminApi(async () => response({configurations}));
+        await assert.rejects(invalid.inventory(), error => error instanceof HabitatAdminRequestError && error.status === 200);
+    }
 });

@@ -236,3 +236,45 @@ test("destroy aborts page-owned requests and never cancels accepted server work"
     h.document.dispatchEvent(new Event("visibilitychange")); h.window.dispatchEvent(new Event("pageshow")); await flush();
     assert.equal(h.renders.length, renders); assert.deepEqual(h.cancelled, []);
 });
+
+
+test("inventory reads require explicit refresh and remain separate from coverage and history", async t => {
+    const reads = [], h = fixture({inventory: async signal => { reads.push(signal); return []; }});
+    t.after(() => h.controller.destroy());
+    await chooseArea(h);
+    assert.equal(reads.length, 0);
+    await h.handlers.refreshInventory();
+    assert.equal(reads.length, 1); assert.deepEqual(h.controller.state.inventory, []);
+    assert.ok(h.controller.state.inventoryCheckedAt);
+    assert.equal(h.controller.state.inventoryLoading, false);
+    assert.equal(h.controller.state.areas.length, 1);
+    assert.equal(h.controller.state.coverageRows[0].coverage, null);
+    assert.equal(h.submitted.length, 0); assert.equal(h.checked.length, 0);
+    await h.handlers.refreshHistory();
+    assert.equal(reads.length, 1);
+    h.api.inventory = async () => { throw new Error("Private cache is temporarily unavailable."); };
+    await h.handlers.refreshInventory();
+    assert.deepEqual(h.controller.state.inventory, []);
+    assert.match(h.controller.state.inventoryError, /temporarily unavailable/);
+});
+
+
+test("hiding the page cancels inventory reads and late replies cannot replace an explicit newer snapshot", async t => {
+    const pending = deferred(); let signal, calls = 0;
+    const h = fixture({inventory: async requestSignal => { calls++; signal = requestSignal; return pending.promise; }});
+    t.after(() => h.controller.destroy());
+    await h.controller.start();
+    const read = h.handlers.refreshInventory();
+    assert.equal(h.controller.state.inventoryLoading, true);
+    h.document.hidden = true; h.document.visibilityState = "hidden";
+    h.document.dispatchEvent(new Event("visibilitychange"));
+    assert.equal(signal.aborted, true); assert.equal(h.controller.state.inventoryLoading, false);
+    h.document.hidden = false; h.document.visibilityState = "visible";
+    h.document.dispatchEvent(new Event("visibilitychange")); await flush();
+    assert.equal(calls, 1, "visibility/history must not schedule inventory reads");
+    h.api.inventory = async () => [{configurationSha256: "b".repeat(64)}];
+    await h.handlers.refreshInventory();
+    pending.resolve([{configurationSha256: "a".repeat(64)}]); await read;
+    assert.deepEqual(h.controller.state.inventory, [{configurationSha256: "b".repeat(64)}]);
+    assert.equal(h.controller.state.inventoryError, "");
+});
