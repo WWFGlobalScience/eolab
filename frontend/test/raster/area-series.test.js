@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { csvParse } from "d3";
 import { RasterSeriesCalculations } from "../../src/processing/raster-series-calculations.js";
 import { RasterSeriesController } from "../../src/raster/series.js";
 import { CalculationRequests } from "../../src/processing/calculation-requests.js";
@@ -899,6 +900,46 @@ test("a box choice publishes its intent before composition commits a rectangle",
     } finally { h.close(); }
 });
 
+
+test("adding an identical completed raster statistic reuses exact values with independent display settings", async () => {
+    const h = fixture();
+    try {
+        await h.open(); await h.finish(); await h.finish("ready", true);
+        const captured = [...h.area.results.values()];
+        const requestCount = h.requests.length;
+        h.view.actions.onAddFormula("mean");
+        assert.equal(h.view.state.busy, false);
+        assert.deepEqual(h.view.state.statistics[1].rows.map(row => [row.rawValue, row.unit, row.state]),
+            h.view.state.statistics[0].rows.map(row => [row.rawValue, row.unit, row.state]));
+        h.view.actions.onEditFormula(2, {label: "Another mean"});
+        h.view.actions.onAddPlot(); h.view.actions.onStatisticDisplay(2, {plotId: 2, color: "#ff0000"});
+        h.view.actions.onStatisticDisplay(1, {visible: false});
+        assert.deepEqual(h.view.state.statistics.map(statistic => [statistic.id, statistic.label, statistic.visible, statistic.plotId, statistic.styleIndex]),
+            [[1, "Mean", false, 1, 0], [2, "Another mean", true, 2, 1]]);
+        assert.equal(h.view.state.statistics[1].color, "#ff0000");
+        const rows = csvParse(h.controller.exportCsv());
+        assert.deepEqual(rows.map(row => [row.statistic, row.formula, row.value, row.cached]), [
+            ["Mean", "mean(a)", "-123.4567890123456789", "false"],
+            ["Another mean", "mean(a)", "-123.4567890123456789", "false"],
+            ["Mean", "mean(a)", "-123.4567890123456789", "true"],
+            ["Another mean", "mean(a)", "-123.4567890123456789", "true"],
+        ]);
+        assert.deepEqual(rows.map(row => row.job_id), captured.flatMap(result => [result.job.jobId, result.job.jobId]));
+        await h.tick(700);
+        assert.equal(h.requests.length, requestCount);
+        assert.deepEqual([...h.area.results.values()], captured);
+        assert.ok(captured.every(result => result.calculationInputs.calculations.length === 1 && result.job.result.rows.length === 1),
+            "reuse does not rewrite the completed job or its captured inputs");
+        h.view.actions.onRemoveFormula(1);
+        assert.equal(h.view.state.statistics[0].id, 2);
+        assert.equal(h.view.state.statistics[0].rows[0].rawValue, "-123.4567890123456789");
+        await h.tick(700);
+        assert.equal(h.requests.length, requestCount);
+        h.view.actions.onAddFormula("sum"); await h.tick(700);
+        assert.equal(h.requests.filter(([kind]) => kind === "submit").length, 4,
+            "an uncaptured expression uses the established calculation path");
+    } finally { h.close(); }
+});
 
 /** Connect the production root's two polygon workflows to real statistics and DOM adapters.
  * Source transport, retained map records, dock foreground and viewport are fakes.

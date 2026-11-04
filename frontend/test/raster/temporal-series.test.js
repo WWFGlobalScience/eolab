@@ -352,3 +352,115 @@ test("a second named view can replace a range choice while its Catalog metadata 
         assert.equal(h.submitted.length, 0);
     } finally { h.close(); }
 });
+
+
+test("completed temporal statistics can be repeated without another run or download and keep exact CSV rows", async () => {
+    const h = fixture();
+    try {
+        await h.controller.chooseTimeRange(DATASET.key);
+        h.view.actions.onTemporalEdit({periodMode: "month", startTime: "2000-01-01T00:00", endTime: "2000-02-01T00:00"});
+        h.view.actions.onAddFormula("min"); h.controller.updateSamplingForPanelVisibility(true); await h.tick();
+        const job = [...h.server.values()][0], request = h.submitted[0];
+        const observations = [0, 1].map(hour => ({time: `2000-01-01T0${hour}:00:00Z`,
+            rows: request.calculations.map((calculation, index) => ({...calculation, value: index ? null : "298.1234567890123456",
+                valueType: "float", unit: "K", state: index ? "no_valid_data" : "ok", aggregates: []}))}));
+        const originalRows = observations.flatMap(observation => observation.rows.map(row => ({time_utc: observation.time,
+            interval_start_utc: observation.time, interval_end_utc: observation.time, variable: request.source.variable,
+            calculation: row.label, expression: row.expression, value: row.value, value_type: row.valueType, unit: row.unit,
+            state: row.state, aggregates: JSON.stringify(row.aggregates)})));
+        const csv = csvFormat(originalRows);
+        await h.finish(job.jobId, "ready", {observations, csv});
+        const captured = h.calculations.temporalResult;
+        h.view.actions.onAddFormula("mean"); h.view.actions.onAddFormula("min");
+        assert.equal(h.view.state.busy, false);
+        assert.equal(h.view.state.rows.length, 8);
+        for (const [duplicate, original] of [[2, 0], [3, 1]]) {
+            assert.deepEqual(h.view.state.statistics[duplicate].rows.map(row => [row.rawValue, row.unit, row.state]),
+                h.view.state.statistics[original].rows.map(row => [row.rawValue, row.unit, row.state]));
+        }
+        h.view.actions.onEditFormula(3, {label: "=Another mean"});
+        h.view.actions.onEditFormula(4, {label: "Another minimum"});
+        h.view.actions.onAddPlot(); h.view.actions.onStatisticDisplay(3, {plotId: 2, color: "#ff0000"});
+        h.view.actions.onStatisticDisplay(1, {visible: false});
+        assert.deepEqual(h.view.state.statistics.map(statistic => [statistic.id, statistic.label, statistic.visible, statistic.plotId, statistic.styleIndex]),
+            [[1, "Mean", false, 1, 0], [2, "Minimum", true, 1, 1], [3, "=Another mean", true, 2, 2], [4, "Another minimum", true, 1, 3]]);
+        const exported = csvParse(h.controller.exportCsv()), original = csvParse(csv);
+        assert.deepEqual(exported.columns, original.columns);
+        const names = ["Mean", "Minimum", "'=Another mean", "Another minimum"];
+        assert.deepEqual([...exported], observations.flatMap(observation => names.map((calculation, index) => ({
+            ...original.find(row => row.time_utc === observation.time && row.expression === request.calculations[index % 2].expression), calculation,
+        }))));
+        await h.tick();
+        assert.equal(h.submitted.length, 1); assert.deepEqual(h.downloads, [job.jobId]); assert.deepEqual(h.cancelled, []);
+        assert.equal(h.calculations.temporalResult, captured);
+        assert.equal(captured.csv, csv); assert.equal(captured.calculationInputs.calculations.length, 2);
+        h.view.actions.onRemoveFormula(1); await h.tick();
+        assert.equal(h.submitted.length, 1);
+        assert.equal(h.view.state.statistics.find(statistic => statistic.id === 3).rows[0].rawValue, "298.1234567890123456");
+        assert.deepEqual([...csvParse(h.controller.exportCsv())].map(row => row.calculation),
+            observations.flatMap(() => ["Minimum", "'=Another mean", "Another minimum"]));
+        h.view.actions.onRemoveFormula(2); h.view.actions.onRemoveFormula(4);
+        h.view.actions.onAddFormula("min"); await h.tick();
+        assert.equal(h.submitted.length, 1, "an expression removed from display is still covered by the same captured result");
+        assert.equal(h.view.state.statistics[1].id, 5);
+        assert.deepEqual(h.view.state.statistics[1].rows.map(row => [row.rawValue, row.unit, row.state]),
+            observations.map(() => [null, "K", "no_valid_data"]));
+    } finally { h.close(); }
+});
+
+
+for (const change of ["area", "predicate", "period", "variable", "dataset", "pixel point", "refresh", "expression"]) {
+    test(`captured statistic reuse stops after a changed ${change}`, async () => {
+        const h = fixture({variables: {
+            temperature: {description: "Temperature", unit: "K", "eolab:time_support": "instantaneous"},
+            pressure: {description: "Pressure", unit: "Pa", "eolab:time_support": "instantaneous"},
+        }});
+        try {
+            await h.controller.chooseTimeRange(DATASET.key);
+            h.view.actions.onTemporalVariable("temperature");
+            h.view.actions.onTemporalEdit({periodMode: "month", startTime: "2000-01-01T00:00", endTime: "2000-02-01T00:00"});
+            h.controller.setPosition({longitude: -63, latitude: -4}); h.view.actions.onAddFormula("pixel");
+            if (change === "predicate") h.controller.setVectorSamplingArea({selection: CATALOG_SELECTION, label: "Selected counties"});
+            h.controller.updateSamplingForPanelVisibility(true); await h.tick();
+            const first = [...h.server.values()][0], request = h.submitted[0];
+            const observations = [{time: "2000-01-01T00:00:00Z", rows: request.calculations.map(calculation =>
+                ({...calculation, value: "298.1234567890123456", valueType: "float", unit: "K", state: "ok", aggregates: []}))}];
+            const csv = csvFormat(observations.flatMap(observation => observation.rows.map(row =>
+                ({time_utc: observation.time, calculation: row.label, expression: row.expression, value: row.value}))));
+            await h.finish(first.jobId, "ready", {observations, csv});
+            h.view.actions.onAddFormula("mean"); await h.tick();
+            assert.equal(h.submitted.length, 1);
+            assert.equal(h.view.state.statistics[2].rows[0].rawValue, "298.1234567890123456");
+            if (change === "area") h.controller.setArea({...AREA, selectedBounds: {...AREA.selectedBounds, west: -65}}, "Another box");
+            if (change === "predicate") {
+                const selection = structuredClone(CATALOG_SELECTION);
+                selection.filter.rules[0].value = "Another county";
+                h.controller.setVectorSamplingArea({selection, label: "Other counties"});
+            }
+            if (change === "period") h.view.actions.onTemporalEdit({periodMode: "times", startTime: "2000-01-01T01:00", endTime: "2000-02-01T00:00"});
+            if (change === "variable") h.view.actions.onTemporalVariable("pressure");
+            if (change === "dataset") {
+                const other = {...DATASET, key: "other-weather", itemId: "other-weather"};
+                h.controller.updateAvailableRasters([ORDINARY], [DATASET, other]);
+                await h.controller.chooseTimeRange(other.key);
+                h.view.actions.onTemporalVariable("temperature");
+            }
+            if (change === "pixel point") h.controller.setPosition({longitude: -62, latitude: -4});
+            if (change === "refresh") await h.controller.loadTemporalItem();
+            if (change === "expression") h.view.actions.onEditFormula(3, {expression: "sum(a)"});
+            assert.deepEqual(h.view.state.rows, [], "old values cannot become current rows after inputs or availability change");
+            assert.equal(h.view.state.canDownload, false);
+            await h.tick();
+            assert.equal(h.submitted.length, 2);
+            const replacement = h.submitted[1];
+            if (change === "area") assert.equal(replacement.area.selectedBounds.west, -65);
+            if (change === "predicate") assert.equal(replacement.area.catalogSelection.filter.rules[0].value, "Another county");
+            if (change === "period") assert.equal(replacement.source.startTime, "2000-01-01T01:00:00.000Z");
+            if (change === "variable") assert.equal(replacement.source.variable, "pressure");
+            if (change === "dataset") assert.equal(replacement.source.itemId, "other-weather");
+            if (change === "pixel point") assert.equal(replacement.pixelPoint.longitude, -62);
+            if (change === "refresh") assert.deepEqual(replacement.source, request.source);
+            if (change === "expression") assert.equal(replacement.calculations[2].expression, "sum(a)");
+        } finally { h.close(); }
+    });
+}
