@@ -371,14 +371,14 @@ test("run and history progress render descriptions as text and keep unknown tota
 
 test("area choices use histogram terminology and follow the map without Update controls", () => {
     const h = fixture();
-    const labels = () => h.view.setup.inputs.area.areaMode.children.map(option => option.textContent);
-    assert.deepEqual(labels(), ["Entire raster", "Visible map area", "Sampling area", "Vector layer"]);
+    const labels = () => h.view.setup.inputs.area.source.children.map(option => option.textContent);
+    assert.deepEqual(labels(), ["Choose an area…", "Whole raster", "Visible map area", "Sampling box"]);
     assert.equal(h.view.setup.bounds, undefined); assert.equal(h.view.setup.updateArea, undefined);
-    assert.match(h.view.setup.inputs.area.mapHelp.textContent, /sampling area shown in Histograms/);
+    assert.match(h.view.setup.inputs.area.mapHelp.textContent, /sampling box shown in Histograms/);
     h.state.draft.inputs.area.areaOrigin = "run"; h.state.draft.inputs.area.areaMode = "captured"; h.view.render(h.state);
     assert.equal(labels().at(-1), "Area from original run"); assert.match(h.view.setup.inputs.area.mapHelp.textContent, /exact area from the original run/);
     h.state.draft = createModelDraft(model, {rasters: [raster]}, "no-selected-area"); h.view.render(h.state);
-    assert.ok(labels().includes("Sampling area"));
+    assert.ok(labels().includes("Sampling box"));
     h.state.draft.inputs.area.areaMode = "viewport"; h.state.draft.inputs.area.area = area; h.view.render(h.state);
     assert.equal(h.view.setup.run.disabled, false); assert.match(h.view.setup.inputs.area.mapHelp.textContent, /Pan or zoom/);
     h.state.draft.inputs.area.area = null; h.view.render(h.state); assert.equal(h.view.setup.run.disabled, true);
@@ -450,7 +450,7 @@ test("selected features have one prominent count and predicate; removed layers k
 
 test("clip setup shows supported areas and no summary formula", () => {
     const h = fixture(); h.state.draft = createModelDraft(clipModel, {rasters: [raster], area}, "clip"); h.view.render(h.state);
-    assert.deepEqual(h.view.setup.inputs.area.areaMode.children.map(option => option.textContent), ["Visible map area", "Sampling area", "Vector layer"]);
+    assert.deepEqual(h.view.setup.inputs.area.source.children.map(option => option.textContent), ["Choose an area…", "Visible map area", "Sampling box"]);
     assert.deepEqual(h.view.setup.parameters, {}); assert.equal(h.view.setup.run.disabled, false);
 });
 
@@ -535,8 +535,8 @@ test("temporal recipes show UTC period fields and reuse area choices without an 
     assert.equal(h.view.setup.inputs.raster, undefined);
     assert.equal(h.view.setup.run.textContent, "Run analysis");
     assert.equal(h.view.setup.run.disabled, false);
-    assert.deepEqual(h.view.setup.inputs.region.areaMode.children.map(option => option.textContent),
-        ["Entire raster", "Visible map area", "Sampling area", "Vector layer"]);
+    assert.deepEqual(h.view.setup.inputs.region.source.children.map(option => option.textContent),
+        ["Choose an area…", "Whole raster", "Visible map area", "Sampling box"]);
     assert.match(h.view.setup.inputs.region.mapHelp.textContent, /Run analysis/);
     assert.equal(controls.period.startDate.type, "text"); assert.equal(controls.period.endDate.type, "text");
     assert.equal(controls.period.startDate.placeholder, "YYYY-MM-DD");

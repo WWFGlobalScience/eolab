@@ -752,8 +752,7 @@ test("named raster and vector controls preserve distinct inputs through refresh,
         controls[name].source.dispatchEvent(new Event("change"));
     }
     for (const [name, value, count] of [["study", "North", 3], ["reference", "South", 1]]) {
-        controls[name].areaMode.value = "vector"; controls[name].areaMode.dispatchEvent(new Event("change"));
-        controls[name].vector.value = `view:${name}`; controls[name].vector.dispatchEvent(new Event("change"));
+        controls[name].source.value = `vector:view:${name}`; controls[name].source.dispatchEvent(new Event("change"));
         await new Promise(resolve => setImmediate(resolve));
         controls[name].editFilter.dispatchEvent(new Event("click"));
         await new Promise(resolve => setImmediate(resolve));
@@ -779,8 +778,8 @@ test("named raster and vector controls preserve distinct inputs through refresh,
     h.context.vectors[0].filter = {enabled: false, match: "all", rules: []};
     h.context.area = {kind: "wholeRaster"}; h.controller.refreshMapLayers(); h.controller.refreshMapArea();
     assert.deepEqual(captureModelSubmission(h.controller.state.draft, "duplicate-inputs").inputs, expected);
-    assert.equal(view.setup.inputs.study.areaMode.value, "captured");
-    assert.equal(view.setup.inputs.reference.areaMode.value, "captured");
+    assert.equal(view.setup.inputs.study.source.value, "captured");
+    assert.equal(view.setup.inputs.reference.source.value, "captured");
     assert.match(view.setup.inputs.study.areaDescription.textContent, /BASIN equals "North"/);
     assert.match(view.setup.inputs.reference.areaDescription.textContent, /BASIN equals "South"/);
     assert.equal(h.submitted.length, 1);
@@ -1110,11 +1109,11 @@ for (const source of [
     h.controller.prepareVector = async value => ({selection: {...selectedSource, filter: structuredClone(value.filter)}, matched: 1, total: 8});
     await h.controller.loadLibrary(); h.controller.chooseModel(model); h.controller.editInput("raster", {raster});
     const controls = view.setup.inputs.area;
-    controls.areaMode.value = "vector"; controls.areaMode.dispatchEvent(new Event("change"));
-    assert.deepEqual(controls.vector.children.map(option => [option.value, option.textContent]), [
-        ["", "Choose a vector layer…"], ["view:north", "Northern basins"], ["view:south", "Southern basins"],
+    assert.deepEqual(controls.source.querySelectorAll("option").filter(option => option.value.startsWith("vector:"))
+        .map(option => [option.value, option.textContent]), [
+        ["vector:view:north", "Northern basins"], ["vector:view:south", "Southern basins"],
     ]);
-    controls.vector.value = "view:south"; controls.vector.dispatchEvent(new Event("change"));
+    controls.source.value = "vector:view:south"; controls.source.dispatchEvent(new Event("change"));
     await new Promise(resolve => setImmediate(resolve));
     const input = h.controller.state.draft.inputs.area;
     assert.equal(input.vectorKey, "view:south");
@@ -1126,7 +1125,7 @@ for (const source of [
     assert.equal(editing.source.key, "view:south");
     await editing.apply(west); editing.complete();
     h.context.vectors.reverse(); h.controller.refreshMapLayers();
-    assert.equal(controls.vector.value, "view:south");
+    assert.equal(controls.source.value, "vector:view:south");
     assert.deepEqual(input.vectors.find(value => value.key === "view:north").filter, north);
     assert.deepEqual(h.context.vectors.find(value => value.key === "view:north").filter, north);
     assert.deepEqual(input.area.selection.filter, west);

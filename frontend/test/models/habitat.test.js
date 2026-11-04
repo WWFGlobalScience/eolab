@@ -99,7 +99,7 @@ async function fixture(contextOverrides = {}) {
  */
 async function chooseVector(harness, name, source, basin) {
     const controls = harness.view.setup.inputs[name];
-    edit(controls.areaMode, "vector"); edit(controls.vector, source.key); await settle();
+    edit(controls.source, `vector:${source.key}`); await settle();
     controls.editFilter.dispatchEvent(new Event("click")); await settle();
     const action = harness.filters.at(-1), filter = structuredClone(selection.filter);
     assert.equal(action.host, controls.filterHost);
@@ -176,16 +176,17 @@ for (const [label, areaIndex, referenceIndex, withMask] of [
     await chooseVector(h, "area", h.context.vectors[areaIndex], "North");
     const references = h.view.setup.inputs.references;
     if (referenceIndex === null) {
-        edit(references.areaMode, "raster");
-        edit(references.maskRaster, modelSourceKey(h.context.rasters[3]));
-        assert.match(references.maskGroup.children.at(-1).textContent, /equal to 1/);
-        assert.doesNotMatch(references.maskGroup.children.at(-1).textContent, /greater than zero/);
+        edit(references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
+        assert.match(references.maskHint.textContent, /equal to 1/);
+        assert.doesNotMatch(references.maskHint.textContent, /greater than zero/);
     } else {
         await chooseVector(h, "references", h.context.vectors[referenceIndex], "South");
         assert.equal(h.view.setup.inputs.area.selectedCount.textContent, "3 of 8 features selected");
         assert.equal(references.selectedCount.textContent, "1 of 8 features selected");
     }
-    assert.equal(references.maskRaster.required, referenceIndex === null);
+    assert.equal(references.source.required, true);
+    assert.equal(references.maskGroup.hidden, referenceIndex !== null);
+    assert.equal(references.resampling.disabled, referenceIndex !== null);
     assert.equal(h.view.setup.inputs.habitat_mask.source.required, false);
     if (withMask) edit(h.view.setup.inputs.habitat_mask.source, modelSourceKey(h.context.rasters[4]));
     assert.equal(h.requests.length, 0); assert.equal(h.view.setup.run.disabled, false);
@@ -212,8 +213,7 @@ test("Habitat stack edits preserve other rows and require unambiguous roles befo
     const h = await fixture(), controls = h.view.setup.inputs.stack;
     assert.equal(h.view.setup.run.disabled, true);
     chooseStack(h);
-    edit(h.view.setup.inputs.references.areaMode, "raster");
-    edit(h.view.setup.inputs.references.maskRaster, modelSourceKey(h.context.rasters[3]));
+    edit(h.view.setup.inputs.references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
     await settle();
     assert.equal(h.view.setup.run.disabled, false);
     const category = controls.predictors[1].name;
@@ -273,8 +273,8 @@ test("Habitat duplicates a large mixed stack and preserves unavailable private s
     await h.controller.duplicateRun();
     assert.equal(h.controller.state.draft.inputs.stack.kind, "manual");
     const references = h.view.setup.inputs.references;
-    assert.equal(references.areaMode.value, "captured");
-    assert.equal(references.areaMode.children.find(option => option.value === "captured").textContent, "Area from original run");
+    assert.equal(references.source.value, "captured");
+    assert.equal(references.source.children.find(option => option.value === "captured").textContent, "Area from original run");
     assert.match(references.areaDescription.textContent, /BASIN equals "South"/);
     assert.equal(references.vectorGroup.hidden, true);
     h.context.vectors.forEach(value => { value.filter = {enabled: false, match: "all", rules: []}; });
@@ -299,8 +299,7 @@ test("Habitat duplicates a large mixed stack and preserves unavailable private s
 
 test("Habitat keeps raster reference and assessment choices separate through duplication and removal", async () => {
     const h = await fixture(); chooseStack(h);
-    edit(h.view.setup.inputs.references.areaMode, "raster");
-    edit(h.view.setup.inputs.references.maskRaster, modelSourceKey(h.context.rasters[3]));
+    edit(h.view.setup.inputs.references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
     edit(h.view.setup.inputs.habitat_mask.source, modelSourceKey(h.context.rasters[4]));
     await settle();
     await h.controller.submit(); await h.controller.duplicateRun();
@@ -319,16 +318,20 @@ test("Habitat keeps raster reference and assessment choices separate through dup
     h.controller.rememberRun(parent); h.controller.refreshMapLayers();
     const privateReference = h.controller.state.draft.sources.find(source => source.kind === "runArtifact");
     const referenceControls = h.view.setup.inputs.references;
-    edit(referenceControls.maskRaster, modelSourceKey(privateReference));
+    edit(referenceControls.source, `raster:${modelSourceKey(privateReference)}`);
     assert.equal(h.jobs.tracked.has(parentId), true);
-    edit(referenceControls.areaMode, "vector");
+    edit(referenceControls.source, "");
     assert.equal(h.jobs.tracked.has(parentId), false);
-    edit(referenceControls.areaMode, "raster");
+    edit(referenceControls.source, `raster:${modelSourceKey(privateReference)}`);
     assert.equal(h.jobs.tracked.has(parentId), true); assert.equal(h.view.setup.run.disabled, false);
-    edit(referenceControls.areaMode, "vector");
+    edit(referenceControls.source, "");
     h.controller.rememberRun({...parent, status: "expired", updatedAt: "2026-10-09T00:00:00Z",
         artifacts: {...artifacts, availability: "unavailable", files: []}});
-    edit(referenceControls.areaMode, "raster");
+    h.controller.refreshMapLayers();
+    const unavailable = referenceControls.source.querySelectorAll("option").find(option => option.value === `raster:${modelSourceKey(privateReference)}`);
+    assert.equal(unavailable.disabled, true);
+    assert.match(unavailable.textContent, /unavailable/);
+    h.controller.chooseArea("references", "raster");
     assert.equal(h.controller.state.draft.inputs.references.maskRaster.artifactId, privateReference.artifactId);
     assert.equal(h.controller.state.draft.inputs.references.maskRaster.available, false);
     assert.equal(h.view.setup.run.disabled, true);
@@ -338,8 +341,7 @@ test("Habitat keeps raster reference and assessment choices separate through dup
 
 test("Habitat shows Reference similarity first and diagnostics under Details with an omitted mask", async () => {
     const h = await fixture(); chooseStack(h);
-    edit(h.view.setup.inputs.references.areaMode, "raster");
-    edit(h.view.setup.inputs.references.maskRaster, modelSourceKey(h.context.rasters[3]));
+    edit(h.view.setup.inputs.references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
     const artifacts = fileManifest(), [primary, diagnostics, provenance] = artifacts.files;
     Object.assign(primary, {name: "reference_similarity", label: "Reference similarity", displayName: "Reference similarity · Habitat condition"});
     Object.assign(diagnostics, {name: "diagnostics", label: "Response diagnostics", displayName: "Response diagnostics · Habitat condition",
@@ -376,7 +378,7 @@ test("Habitat captures independent resampling and duplicates the exact chosen gr
     chooseStack(h);
     const stack = h.view.setup.inputs.stack, grid = h.view.setup.inputs.preparation;
     const references = h.view.setup.inputs.references, mask = h.view.setup.inputs.habitat_mask;
-    edit(references.areaMode, "raster"); edit(references.maskRaster, modelSourceKey(h.context.rasters[3]));
+    edit(references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
     edit(mask.source, modelSourceKey(h.context.rasters[4]));
     edit(stack.responses[0].source, modelSourceKey(h.context.rasters[0]));
     await settle();
@@ -386,7 +388,7 @@ test("Habitat captures independent resampling and duplicates the exact chosen gr
     assert.match(grid.unit.textContent, /metre/); assert.match(grid.description.textContent, /approximation/);
     const count = lookups.length;
     edit(stack.predictors[0].resampling, "bilinear"); edit(stack.predictors[1].resampling, "mode");
-    edit(stack.responses[0].resampling, "average"); edit(references.referenceRaster.resampling, "nearest"); edit(mask.resampling, "cubic");
+    edit(stack.responses[0].resampling, "average"); edit(references.resampling, "nearest"); edit(mask.resampling, "cubic");
     edit(stack.predictors[1].name, "renamed_class", "input");
     await settle();
     assert.equal(lookups.length, count, "Methods and variable names do not reload immutable grid metadata");
@@ -407,7 +409,7 @@ test("Habitat captures independent resampling and duplicates the exact chosen gr
     assert.deepEqual(captureModelSubmission(h.controller.state.draft, "copied-grid").inputs.preparation, expected);
     assert.equal(h.view.setup.inputs.stack.responses[0].resampling.value, "average");
     assert.equal(h.view.setup.inputs.habitat_mask.resampling.value, "cubic");
-    edit(h.view.setup.inputs.references.areaMode, "vector");
+    edit(h.view.setup.inputs.references.source, "");
     await chooseVector(h, "references", h.context.vectors[1], "South");
     edit(h.view.setup.inputs.habitat_mask.source, "");
     assert.deepEqual(captureModelSubmission(h.controller.state.draft, "active-methods").inputs.preparation.resampling,
@@ -424,8 +426,7 @@ test("Habitat preserves custom grid choices through late and failed metadata loo
         return {crs: "EPSG:4326", projectedGrid: {crs: targetCrs, unit: "metre", pixelSize: [5000, 9000], origin: [0, 0], approximate: true}};
     };
     chooseStack(h);
-    edit(h.view.setup.inputs.references.areaMode, "raster");
-    edit(h.view.setup.inputs.references.maskRaster, modelSourceKey(h.context.rasters[3]));
+    edit(h.view.setup.inputs.references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
     const grid = h.view.setup.inputs.preparation;
     edit(grid.resolution, "custom"); edit(grid.pixelX, "100", "input"); edit(grid.pixelY, "200", "input");
     assert.equal(h.controller.state.draft.inputs.preparation.loading, true);
@@ -446,12 +447,12 @@ test("Earth Engine runs need no map rasters and duplicate the year, explicit are
     h.context.viewportBounds = {west: -109, south: 46, east: -107, north: 48};
     const stack = h.view.setup.inputs.stack;
     edit(stack.source, "manual");
-    edit(h.view.setup.inputs.area.areaMode, "whole");
+    edit(h.view.setup.inputs.area.source, "whole");
     edit(stack.source, "earthEngine");
     assert.equal(stack.manual.hidden, true); assert.equal(stack.manual.disabled, true);
     assert.equal(stack.automatic.disabled, false); assert.equal(stack.year.value, "2018");
-    assert.equal(h.view.setup.inputs.area.areaMode.value, "viewport");
-    assert.equal(h.view.setup.inputs.area.areaMode.children.some(option => option.value === "whole"), false);
+    assert.equal(h.view.setup.inputs.area.source.value, "viewport");
+    assert.equal(h.view.setup.inputs.area.source.children.some(option => option.value === "whole"), false);
     await chooseVector(h, "references", h.context.vectors[1], "South");
     edit(stack.year, "2017");
     assert.equal(h.view.setup.run.disabled, false);
@@ -474,8 +475,7 @@ test("Earth Engine runs need no map rasters and duplicate the year, explicit are
 
 test("Earth Engine grid stays first with raster masks and preserves custom choices through duplication", async () => {
     const h = await fixture(), inputs = h.view.setup.inputs;
-    edit(inputs.references.areaMode, "raster");
-    edit(inputs.references.maskRaster, modelSourceKey(h.context.rasters[3]));
+    edit(inputs.references.source, `raster:${modelSourceKey(h.context.rasters[3])}`);
     edit(inputs.habitat_mask.source, modelSourceKey(h.context.rasters[4]));
     await settle();
     assert.deepEqual(h.controller.state.draft.inputs.preparation.pixelSize, [500, 500]);
@@ -555,4 +555,71 @@ test("Late Habitat options preserve a chosen custom stack and cannot replace ano
     assert.equal(abandoned.inputs.stack.configuration, null);
     assert.equal(h.requests.length, 0);
     h.controller.destroy();
+});
+
+
+test("direct spatial choices retain opaque view identity, independent filters and captured areas", async t => {
+    const h = await fixture(); t.after(() => h.controller.destroy()); chooseStack(h);
+    const first = h.context.vectors[0], second = {...structuredClone(first),
+        key: 'retained:view:raster:["basins"]:2', label: "Catalog basins · second view"};
+    second.filter.rules[0].value = "South";
+    h.context.vectors.push(second); h.controller.refreshMapLayers();
+    const controls = h.view.setup.inputs, areaSource = controls.area.source, referenceSource = controls.references.source;
+    assert.equal(controls.references.group.contains(referenceSource), true);
+    assert.equal(controls.references.group.contains(controls.references.filterHost), true);
+    assert.equal(controls.references.group.querySelectorAll("label").filter(label => label.textContent === "Reference sites").length, 1);
+    assert.equal(controls.area.source.querySelectorAll("option").some(option => option.value.startsWith("raster:")), false);
+    referenceSource.focus();
+    edit(areaSource, `vector:${first.key}`); edit(referenceSource, `vector:${second.key}`); await settle();
+    assert.equal(h.controller.state.draft.inputs.area.vectorKey, first.key);
+    assert.equal(h.controller.state.draft.inputs.references.vectorKey, second.key);
+    assert.equal(h.doc.activeElement, referenceSource);
+    assert.match(controls.area.filterDescription.textContent, /North/);
+    assert.match(controls.references.filterDescription.textContent, /South/);
+    assert.equal(controls.references.resampling.disabled, true);
+    await h.controller.openVectorFilter("references");
+    const filter = structuredClone(second.filter); filter.rules[0].value = "West";
+    await h.filters.at(-1).apply(filter); h.filters.at(-1).complete(); await settle();
+    assert.equal(h.context.vectors[0].filter.rules[0].value, "North");
+    assert.equal(h.context.vectors[2].filter.rules[0].value, "West");
+    assert.equal(h.controller.state.draft.inputs.area.area.selection.filter.rules[0].value, "North");
+    assert.equal(h.controller.state.draft.inputs.references.area.selection.filter.rules[0].value, "West");
+    assert.equal(h.requests.length, 0);
+    await h.controller.submit(); await h.controller.duplicateRun();
+    const captured = structuredClone(h.requests[0].inputs);
+    assert.equal(h.view.setup.inputs.references.source.value, "captured");
+    h.context.vectors[2].filter.rules[0].value = "East"; h.controller.refreshMapLayers(); await settle();
+    assert.deepEqual(captureModelSubmission(h.controller.state.draft, "fixed-areas").inputs, captured);
+    edit(h.view.setup.inputs.references.source, `vector:${second.key}`); await settle();
+    assert.equal(h.controller.state.draft.inputs.references.area.selection.filter.rules[0].value, "East");
+    assert.deepEqual(h.controller.state.draft.inputs.area.area, captured.area);
+    edit(h.view.setup.inputs.references.source, "");
+    assert.equal(h.controller.state.draft.inputs.references.area, null);
+    assert.equal(h.view.setup.inputs.references.source.value, "");
+    assert.equal(h.view.setup.inputs.references.selectionCard.hidden, true);
+    assert.equal(h.view.setup.inputs.references.resampling.disabled, true);
+    assert.equal(h.view.setup.run.disabled, true);
+    assert.deepEqual(h.requests[0].inputs, captured);
+});
+
+test("an expired selected reference output stays identified and explained by the direct chooser", async t => {
+    const h = await fixture(); t.after(() => h.controller.destroy()); chooseStack(h);
+    const parentId = "2".repeat(32), artifacts = fileManifest(); artifacts.jobId = parentId;
+    const parent = job({jobId: parentId, status: "ready", expiresAt: artifacts.expiresAt, artifacts});
+    h.controller.rememberRun(parent); h.controller.refreshMapLayers();
+    const source = h.controller.state.draft.sources.find(value => value.kind === "runArtifact");
+    const references = h.view.setup.inputs.references;
+    edit(references.source, `raster:${modelSourceKey(source)}`); await settle();
+    assert.equal(h.view.setup.run.disabled, false);
+    h.controller.rememberRun({...parent, status: "expired", updatedAt: "2026-10-09T00:00:00Z",
+        artifacts: {...artifacts, availability: "unavailable", files: []}});
+    h.controller.refreshMapLayers();
+    assert.equal(references.source.value, `raster:${modelSourceKey(source)}`);
+    const option = references.source.querySelectorAll("option").find(value => value.value === references.source.value);
+    assert.equal(option.disabled, true); assert.match(option.textContent, /unavailable/);
+    assert.equal(references.maskGroup.hidden, false); assert.match(references.rasterReason.textContent, /no longer available/);
+    assert.ok(references.source.getAttribute("aria-describedby").split(" ").includes(references.rasterReason.id));
+    assert.equal(h.view.setup.run.disabled, true);
+    assert.throws(() => captureModelSubmission(h.controller.state.draft, "expired-source"), /available|expired/i);
+    assert.equal(h.requests.length, 0);
 });
