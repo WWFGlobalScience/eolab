@@ -901,9 +901,9 @@ test("a box choice publishes its intent before composition commits a rectangle",
 
 
 /** Connect the production root's two polygon workflows to real statistics and DOM adapters.
- * Only the source transport, retained map records and dock foreground are fakes.
+ * Source transport, retained map records, dock foreground and viewport are fakes.
  * @param {Object} h Existing real Processing/calculation fixture.
- * @return {Object} Accepted per-view filters, both controls, filter actions and scope presentation.
+ * @return {Object} Accepted filters, both controls, filter actions, scope presentation and recorded viewport events/fits.
  */
 function samplingComposition(h) {
     const document = new FakeRasterControlDocument();
@@ -943,6 +943,26 @@ function samplingComposition(h) {
     const layers = {retainedRecords: records, getRecord: key => records.find(record => record.entry.key === key) ?? null};
     const inspection = {showFilter() {foreground = "filter"; h.controller.updateSamplingForPanelVisibility(false);},
         hideFilter() {foreground = "raster-series"; h.controller.updateSamplingForPanelVisibility(true);}, updateLayerEditorName() {}};
+    const viewportEvents = new Map(), fits = [];
+    const viewport = {
+        /** Register the composition root's map listener.
+         * @param {string} event Map event name. @param {()=>void} handler Listener.
+         * @return {void}
+         */
+        on(event, handler) {viewportEvents.set(event, handler);},
+        /** Record a composed fit and emit its ordinary map-movement event.
+         * @param {Object} bounds Padded geographic envelope. @param {Object} options Fit settings.
+         * @return {void}
+         */
+        fitBounds(bounds, options) {fits.push({bounds, options}); viewportEvents.get("movestart")?.();},
+    };
+    const leaflet = {
+        /** Retain the bounds and padding supplied by browser composition.
+         * @param {number[][]} positions South/west and north/east corners.
+         * @return {{pad:(padding:number)=>{positions:number[][],padding:number}}} Inspectable bounds adapter.
+         */
+        latLngBounds(positions) {return {pad: padding => ({positions, padding})};},
+    };
     const main = readFileSync(new URL("../../src/main.js", import.meta.url), "utf8");
     const editor = main.slice(main.indexOf("    let modelFilterControls = null;"), main.indexOf("    models = new ModelsController({"));
     const workflows = main.slice(main.indexOf("    vectorSampling = new VectorSamplingController({"),
@@ -962,7 +982,7 @@ function samplingComposition(h) {
         let vectorFilterControls, vectorSampling, summarySampling, modelArea, modelAreaDescription;
         ${editor} ${workflows}
         return {vectorFilterControls, vectorSampling, summarySampling};`)(document, VectorFilterControls,
-        VectorSamplingController, VectorSamplingView, createArea, class {load() {} clear() {}}, {}, {}, inspection,
+        VectorSamplingController, VectorSamplingView, createArea, class {load() {} clear() {}}, viewport, leaflet, inspection,
         layers, adapter, {filterTarget: () => null, summaryTargets: () => []}, {}, h.controller, updateArea,
         {setVectorSelection: area => { if (area) updateArea({kind: "catalogSelection", catalogSelection: area.selection}, area.label); }},
         {refreshMapArea() {}}, EMPTY_VECTOR_FILTER);
@@ -971,7 +991,7 @@ function samplingComposition(h) {
         else composed.summarySampling.invalidate("");
     };
     h.controller.render();
-    return {...composed, document, floating, presentation, records, reads, pendingFilters, pendingReads,
+    return {...composed, document, floating, presentation, records, reads, pendingFilters, pendingReads, viewportEvents, fits,
         get foreground() {return foreground;},
         delayFilters: () => {delayedFilters = true;}, delayReads: () => {delayedReads = true;},
         /** Apply a complete editor draft without waiting for its debounce timer.
@@ -1218,4 +1238,47 @@ test("a histogram-owned pending area opens choices without adopting another stat
         assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "MEX");
         assert.equal(h.view.state.area.areaChoice, "vector");
     } finally {c.close(); h.close();}
+});
+
+
+test("composed filtered zoom preserves statistics filter intent and rejects obsolete fits", async () => {
+    const h = fixture(), c = samplingComposition(h), pendingExtents = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (url, options) => {
+        assert.equal(url, "/api/vector-sampling/extent");
+        return new Promise(resolve => pendingExtents.push({input: JSON.parse(options.body), signal: options.signal, resolve}));
+    };
+    try {
+        await h.open(); await c.vectorSampling.choose("countries"); await c.summarySampling.choose("countries"); await h.tick();
+        const captured = h.view.state.area.area, initialCalls = h.requests.length;
+        c.summarySampling.views[0].elements.filter.dispatchEvent(new Event("click"));
+        c.vectorFilterControls.zoomButton.dispatchEvent(new Event("click")); await flush();
+        assert.deepEqual(pendingExtents[0].input.filter, EMPTY_VECTOR_FILTER);
+        assert.deepEqual(h.view.state.area.area, captured);
+        assert.equal(h.requests.length, initialCalls, "zoom does not invoke the filter opening's statistics commit callback");
+
+        await c.apply("PER");
+        assert.equal(pendingExtents[0].signal.aborted, true, "accepted filter replacement cancels its old extent");
+        assert.equal(h.view.state.area.area.catalogSelection.filter.rules[0].value, "PER");
+        assert.equal(h.requests.filter(([kind]) => kind === "cancel").length, 2,
+            "the statistics-origin commit still replaces its two captured jobs");
+        pendingExtents[0].resolve(Response.json({matched: 253, bbox: [-180, -85, 180, 85]})); await flush();
+        assert.equal(c.fits.length, 0, "obsolete pre-commit bounds cannot move the map");
+
+        const committedCalls = h.requests.length;
+        c.vectorFilterControls.zoomButton.dispatchEvent(new Event("click")); await flush();
+        assert.equal(pendingExtents[1].input.filter.rules[0].value, "PER");
+        pendingExtents[1].resolve(Response.json({matched: 1, bbox: [-5, -4, 3, 2]})); await flush();
+        assert.deepEqual(c.fits, [{bounds: {positions: [[-4, -5], [2, 3]], padding: 0.15},
+            options: {padding: [24, 24], maxZoom: 14}}]);
+        assert.match(c.vectorFilterControls.zoomStatus.textContent, /Showing 1 matching feature/);
+        assert.equal(h.requests.length, committedCalls, "a successful fit neither resubmits nor cancels statistics");
+
+        c.vectorFilterControls.zoomButton.dispatchEvent(new Event("click")); await flush();
+        c.viewportEvents.get("movestart")();
+        assert.equal(pendingExtents[2].signal.aborted, true);
+        pendingExtents[2].resolve(Response.json({matched: 1, bbox: [10, 10, 11, 11]})); await flush();
+        assert.equal(c.fits.length, 1, "a user pan invalidates a pending composed fit");
+        assert.equal(h.requests.length, committedCalls);
+    } finally {globalThis.fetch = originalFetch; c.close(); h.close();}
 });

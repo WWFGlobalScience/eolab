@@ -4,7 +4,7 @@ import {
     EMPTY_VECTOR_FILTER, MAX_VECTOR_FILTER_RULES, normalizeVectorFilter,
     vectorFilterFieldKind, vectorFilterOperators, vectorFilterSummary,
 } from "./filter.js";
-import { getVectorFieldValues } from "./api.js";
+import { getVectorFieldValues, getVectorFilterExtent } from "./api.js";
 import { VectorFilterValuePicker } from "./filter-value-picker.js";
 
 /** Own a rule-builder panel without reaching into style or inspection peers. */
@@ -19,10 +19,13 @@ export class VectorFilterControls {
      * @param {Function} [options.setTimer] Debounce scheduler.
      * @param {Function} [options.clearTimer] Debounce canceller.
      * @param {typeof getVectorFieldValues} [options.loadValues=getVectorFieldValues] Prepared-value lookup; targets with a path-free source enable suggestions.
+     * @param {typeof getVectorFilterExtent} [options.loadExtent=getVectorFilterExtent] Original-source extent API.
+     * @param {((bbox:[number,number,number,number])=>void)|null} [options.onZoom=null] Composition-owned padded map fit; only map editors offer zoom.
      */
     constructor({ getTarget, inspection, host = null, documentContext = document,
         setTimer = (handler, delay) => globalThis.setTimeout(handler, delay),
-        clearTimer = (timer) => globalThis.clearTimeout(timer), loadValues = getVectorFieldValues }) {
+        clearTimer = (timer) => globalThis.clearTimeout(timer), loadValues = getVectorFieldValues,
+        loadExtent = getVectorFilterExtent, onZoom = null }) {
         this.document = documentContext;
         this.getTarget = getTarget;
         this.inspection = inspection;
@@ -30,12 +33,16 @@ export class VectorFilterControls {
         this.clearTimer = clearTimer;
         this.host = host;
         this.loadValues = loadValues;
+        this.loadExtent = loadExtent;
+        this.onZoom = onZoom;
+        this.zoomRequest = null;
         this.valuePickers = [];
         const template = documentContext.querySelector("#vector-filter-panel");
         this.root = host ? template.cloneNode(true) : template;
         const controls = {title: "vector-filter-title", rules: "vector-filter-rules", enabled: "vector-filter-enabled",
             match: "vector-filter-match", status: "vector-filter-status", applied: "vector-filter-applied",
-            count: "vector-filter-count", add: "vector-filter-add", clear: "vector-filter-clear",
+            count: "vector-filter-count", zoomButton: "vector-filter-zoom", cancelZoomButton: "vector-filter-zoom-cancel",
+            zoomStatus: "vector-filter-zoom-status", add: "vector-filter-add", clear: "vector-filter-clear",
             closeButton: "close-vector-filter", applyButton: "vector-filter-apply", cancelButton: "vector-filter-cancel", help: "vector-filter-help"};
         for (const [name, id] of Object.entries(controls)) {
             this[name] = host ? this.root.querySelector(`#${id}`) : documentContext.querySelector(`#${id}`);
@@ -66,6 +73,12 @@ export class VectorFilterControls {
         this.#listen(this.clear, "click", () => {
             this.draft = structuredClone(EMPTY_VECTOR_FILTER);
             this.#renderDraft(); this.#changed(true);
+        });
+        this.zoomButton.hidden = true;
+        this.cancelZoomButton.hidden = true;
+        this.#listen(this.zoomButton, "click", () => { void this.#zoomToFilteredFeatures(); });
+        this.#listen(this.cancelZoomButton, "click", () => {
+            this.cancelZoom("Zoom cancelled."); this.zoomButton.focus();
         });
         this.#listen(this.closeButton, "click", () => this.close());
         this.#listen(this.applyButton, "click", () => { this.#cancelTimer(); void this.#apply(); });
@@ -108,6 +121,8 @@ export class VectorFilterControls {
             if (this.timer !== null) void this.#apply();
         }
         this.#cancelTimer();
+        this.cancelZoom();
+        this.zoomStatus.textContent = "";
         this.key = key;
         this.action = action;
         this.onApplied = onApplied;
@@ -134,6 +149,10 @@ export class VectorFilterControls {
         if (this.key === null) return;
         const target = this.getTarget(this.key);
         if (!target) { this.close(); return; }
+        this.zoomButton.hidden = !this.onZoom || !!this.host || !!this.action || !target.source;
+        if (this.zoomRequest && !this.#isZoomCurrent(this.zoomRequest)) {
+            this.cancelZoom("The applied filter changed. Zoom again to find its features.");
+        }
         this.title.textContent = target.label;
         if (!this.host) this.inspection.updateLayerEditorName("filter", target.label);
         this.applied.textContent = this.action
@@ -146,6 +165,7 @@ export class VectorFilterControls {
     /** Apply pending map edits, release action preparation, hide the panel and restore focus. @return {void} */
     close() {
         if (this.key === null) return;
+        this.cancelZoom();
         this.#clearValuePickers();
         if (this.timer !== null) { this.#cancelTimer(); if (!this.action) void this.#apply(); }
         this.action?.onClose?.();
@@ -158,12 +178,69 @@ export class VectorFilterControls {
     /** Detach panel listeners and cancel timers on teardown. @return {void} */
     destroy() {
         this.destroyed = true;
+        this.cancelZoom();
         this.pendingAction?.cancel();
         this.#cancelTimer();
         this.#clearValuePickers();
         this.generation++;
         for (const [element, type, listener] of this.listeners) element.removeEventListener(type, listener);
         this.listeners = [];
+    }
+
+    /**
+     * Cancel this editor's pending zoom when the map moves or its context changes.
+     * @param {string} [message=""] Optional readable cancellation feedback.
+     * @return {void}
+     */
+    cancelZoom(message = "") {
+        if (this.zoomRequest === null) return;
+        this.zoomRequest.controller.abort();
+        this.zoomRequest = null;
+        this.cancelZoomButton.hidden = true;
+        this.zoomButton.setAttribute("aria-busy", "false");
+        this.zoomStatus.textContent = message;
+    }
+
+    /**
+     * Check the accepted source and predicate before moving the map.
+     * @param {{key:string,identity:string,controller:AbortController}} request Captured request.
+     * @return {boolean} Whether this request still owns the map action.
+     */
+    #isZoomCurrent(request) {
+        const target = this.getTarget(request.key);
+        return !this.destroyed && this.key === request.key && this.zoomRequest === request &&
+            target !== null && JSON.stringify([target.source, target.filter]) === request.identity;
+    }
+
+    /** Find bounds of the accepted filter; drafts and stale replies cannot move the map. @return {Promise<void>} */
+    async #zoomToFilteredFeatures() {
+        const target = this.getTarget(this.key);
+        if (!this.onZoom || this.host || this.action || !target?.source) return;
+        this.cancelZoom();
+        const request = { key: this.key, identity: JSON.stringify([target.source, target.filter]), controller: new AbortController() };
+        this.zoomRequest = request;
+        this.zoomStatus.textContent = `Finding filtered features in ${target.label}…`;
+        this.zoomButton.setAttribute("aria-busy", "true");
+        this.cancelZoomButton.hidden = false;
+        try {
+            const result = await this.loadExtent(target.source, structuredClone(target.filter), request.controller.signal);
+            if (!this.#isZoomCurrent(request)) return;
+            // Release the request before composition moves the map and emits movestart.
+            this.zoomRequest = null;
+            this.zoomStatus.textContent = result.bbox === null
+                ? (result.matched === 0 ? "No features match the applied filter." : "Matching features have no coordinates to zoom to.")
+                : `Showing ${result.matched.toLocaleString()} matching ${result.matched === 1 ? "feature" : "features"}.`;
+            if (result.bbox !== null) this.onZoom(result.bbox);
+        } catch (error) {
+            if (!this.#isZoomCurrent(request) || error.name === "AbortError") return;
+            this.zoomStatus.textContent = error.message;
+        } finally {
+            if (this.zoomRequest === request) this.zoomRequest = null;
+            if (this.zoomRequest === null) {
+                this.cancelZoomButton.hidden = true;
+                this.zoomButton.setAttribute("aria-busy", "false");
+            }
+        }
     }
 
     /**

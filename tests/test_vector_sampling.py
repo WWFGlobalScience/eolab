@@ -59,7 +59,7 @@ def test_unsupported_selection_reports_source_without_private_path(
         asyncio.run(service.select(request))
     assert str(failure.value) == (
         f"The selected source is {kind} {format}; "
-        "sampling requires a mounted Shapefile or GeoPackage polygon layer."
+        "reading original features requires a mounted Shapefile or GeoPackage layer."
     )
     assert str(tmp_path) not in str(failure.value)
 

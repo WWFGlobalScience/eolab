@@ -304,9 +304,11 @@ def test_scheduler_has_only_explicit_operation_registration_edge() -> None:
                 imports = [
                     name
                     for name in imports
-                    if name not in {
+                    if name
+                    not in {
                         "eolab_app.vector.outline_operation",
                         "eolab_app.vector.selection_operation",
+                        "eolab_app.vector.extent_operation",
                     }
                 ]
             assert not any(
