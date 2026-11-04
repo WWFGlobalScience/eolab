@@ -4730,7 +4730,7 @@ test("map box resizes immediately while committing only the final debounced area
     viewer.destroy();
 });
 
-for (const transition of ["whole", "vector", "close", "center", "invalid", "original"]) {
+for (const transition of ["whole", "vector", "center", "invalid", "original"]) {
     test(`pending resize cannot replace a newer ${transition} choice`, async () => {
         const timers = new Map(), requests = [];
         let timerId = 0;
@@ -4749,7 +4749,6 @@ for (const transition of ["whole", "vector", "close", "center", "invalid", "orig
         assert.equal(timers.size, 1);
         if (transition === "whole") h.controlsView.handlers.onClearSampleWindow();
         if (transition === "vector") h.controlsView.handlers.onUseVectorArea();
-        if (transition === "close") h.viewer.cancelSampleWindowResize();
         if (transition === "center") h.viewer.exploreAt({lng: -80, lat: 35});
         if (transition === "invalid") h.controlsView.handlers.onSampleWindowNumberInput("");
         if (transition === "original") h.controlsView.handlers.onSampleWindowRangeInput(600);

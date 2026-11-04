@@ -40,7 +40,7 @@ test("sampling-area adapter requires its semantic subgroup root", () => {
     );
 });
 
-test("showing, editing and minimizing sampling controls never changes the chosen area", () => {
+test("opening and collapsing sampling controls retains the chosen area and box size", () => {
     const document = new FakeRasterControlDocument();
     const view = new RasterSamplingAreaControlsView(document);
     const edits = [];
@@ -48,21 +48,12 @@ test("showing, editing and minimizing sampling controls never changes the chosen
         onSampleWindowRangeInput: value => edits.push(value) });
     view.setSampleWindowSize(200, MAXIMUM_RASTER_SAMPLE_WINDOW_SIZE_KM);
     view.setSamplingAreaMode("selectedArea", "200 km box");
-    view.setActive(true, true);
-    assert.equal(view.tool.hidden, false);
     assert.equal(view.mapBoxControls.hidden, false);
     assert.equal(view.dimensions.textContent, "200 × 200 km");
     assert.equal(view.samplingAreaSummary.textContent, "Sampling box · 200 × 200 km");
-    view.disclosure.open = false;
-    view.setActive(false, false);
-    assert.equal(view.tool.hidden, true);
-    view.setActive(true, true);
-    assert.equal(view.disclosure.open, false, "the sampling disclosure stays collapsed");
-    assert.equal(view.sampleWindowNumber.value, "200");
-    view.setActive(true, false);
-    assert.equal(view.mapBoxControls.hidden, true, "whole-raster workflows do not show box sizing");
     view.openAreaEditor();
-    assert.equal(view.mapBoxControls.hidden, false, "an explicit edit exposes the retained box");
+    assert.equal(view.disclosure.open, true);
+    assert.equal(view.sampleWindowNumber.value, "200");
     assert.equal(view.samplingAreaSummary.textContent, "Sample area", "expanded controls show dimensions only beside the slider");
     view.setSampleWindowSize(80, MAXIMUM_RASTER_SAMPLE_WINDOW_SIZE_KM);
     assert.equal(view.samplingAreaSummary.textContent, "Sample area");
@@ -70,9 +61,10 @@ test("showing, editing and minimizing sampling controls never changes the chosen
     assert.equal(document.activeElement, view.disclosureSummary);
     view.disclosure.open = false;
     view.disclosure.dispatchEvent(new Event("toggle"));
-    assert.equal(view.mapBoxControls.hidden, true);
+    assert.equal(view.disclosure.open, false);
+    assert.equal(view.useMapWindowButton.checked, true);
+    assert.equal(view.sampleWindowNumber.value, "80");
     assert.equal(view.samplingAreaSummary.textContent, "Sampling box · 80 × 80 km");
-    view.setActive(true, true);
     // A radio change hides sizing before a proposed polygon selection is accepted.
     view.useMapWindowButton.checked = false;
     view.vectorChoice.checked = true;
@@ -168,7 +160,7 @@ test("composed area context keeps a foreground polygon workflow separate from hi
     const view = new RasterSamplingAreaControlsView(document);
     view.setSamplingAreaMode("selectedArea", "Histogram box");
     view.setAreaContext({scope: "Shared reserve drawings", usesSamplingBox: false});
-    view.setActive(true, false); view.openAreaEditor();
+    view.openAreaEditor();
     assert.equal(view.isSamplingBoxSelected(), false);
     assert.equal(view.mapBoxControls.hidden, true);
     view.disclosure.open = false;

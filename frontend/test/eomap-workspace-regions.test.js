@@ -362,7 +362,7 @@ test("map-layer Info can reveal Catalog through composition", () => {
     );
 });
 
-test("one collapsed sampling control stays outside the toolbar and results column", () => {
+test("one collapsed sampling control stays outside the inspection panel and results column", () => {
     const panel = requireElementRange("control-panel");
     const exploration = requireElementRange("map-histogram-panel");
     const disclosure = requireElementRange("raster-sampling-disclosure");
@@ -370,9 +370,9 @@ test("one collapsed sampling control stays outside the toolbar and results colum
     const toolbar = requireElementRange("map-tools-toolbar");
     const box = requireElementRange("raster-map-box-controls");
     const inspection = requireElementRange("map-inspection");
-    const panels = requireElementRange("map-inspection-panels");
-    assert.ok(disclosure.start > toolbar.end && disclosure.end < inspection.end);
-    assert.ok(disclosure.start > panels.end, "sampling shares the top layer but stays outside the result column");
+    assert.ok(disclosure.start > toolbar.start && disclosure.end < toolbar.end,
+        "persistent map tools retain sampling independently of the inspection popover");
+    assert.ok(disclosure.end < inspection.start);
     assert.ok(box.start > disclosure.start && box.end < disclosure.end, "one disclosure exposes box sizing and area choices");
     assert.doesNotMatch(exploration.source, /id="raster-sampling-/);
     assert.ok(exploration.start > panel.end);

@@ -10,8 +10,6 @@ export class MapLayerStyleEditor {
      * @param {(key:string)=>Object|null} [dependencies.getVectorStyleTarget]
      * Composition callback returning one narrow vector style target.
      * @param {(key:string)=>void} [dependencies.onFilterRequested] Open filtering through composition.
-     * @param {(kind:"raster"|"vector"|null)=>void} [dependencies.onTargetChange]
-     * Report the edited layer kind before activation, or null after closing.
      * @param {Document} [dependencies.documentContext=document] Owning document.
      */
     constructor({
@@ -21,7 +19,6 @@ export class MapLayerStyleEditor {
         vectorStyleControls = { show() {}, hide() {} },
         getVectorStyleTarget = () => null,
         onFilterRequested = () => {},
-        onTargetChange = () => {},
         documentContext = document,
     }) {
         this.mapLayers = mapLayers;
@@ -29,7 +26,6 @@ export class MapLayerStyleEditor {
         this.inspection = inspection;
         this.vectorStyleControls = vectorStyleControls;
         this.getVectorStyleTarget = getVectorStyleTarget;
-        this.onTargetChange = onTargetChange;
         this.document = documentContext;
         this.root = documentContext.querySelector("#layer-style-editor");
         this.title = documentContext.querySelector("#layer-style-title");
@@ -73,7 +69,6 @@ export class MapLayerStyleEditor {
         this.isRaster = this.rasterViewer.openStyle(key);
         this.refresh();
         if (this.key === null) return;
-        this.onTargetChange(this.isRaster ? "raster" : "vector");
         this.inspection.showStyle(this.title.textContent);
         this.closeButton.focus();
     }
@@ -123,7 +118,6 @@ export class MapLayerStyleEditor {
         this.rasterViewer.closeStyle();
         this.vectorStyleControls.hide();
         this.inspection.hideStyle();
-        this.onTargetChange(null);
         const replacement = [...this.document.querySelectorAll('[data-layer-action="style"]')]
             .find((element) => element.dataset.layerKey === key);
         // Prefer the originating shortcut; removed or hidden controls cannot

@@ -22,7 +22,7 @@ const SAMPLE_WINDOW_SLIDER_STEPS = 1000;
  * @property {() => void} onUseVectorArea Stops box preview while choosing polygons.
  */
 
-/** Present sampling controls without changing the selected area on show or hide. */
+/** Present map sampling choices independently of inspection-panel visibility. */
 export class RasterSamplingAreaControlsView {
     #root;
     /** @type {boolean} Whether current spatial guidance is shown visually. */
@@ -40,11 +40,9 @@ export class RasterSamplingAreaControlsView {
             documentContext,
             "#raster-sampling-area-controls"
         );
-        this.tool = requireRasterControl(documentContext, "#raster-sampling-tool");
         this.disclosure = requireRasterControl(documentContext, "#raster-sampling-disclosure");
         this.disclosureSummary = requireRasterControl(documentContext, "#raster-sampling-disclosure > summary");
         this.dimensions = requireRasterControl(documentContext, "#raster-sample-window-dimensions");
-        this.usesBox = true;
         this.areaLabel = "No raster selected";
         this.samplingAreaSummary = requireRasterControl(
             documentContext,
@@ -182,20 +180,6 @@ export class RasterSamplingAreaControlsView {
         this.#renderAreaSummary();
     }
 
-    /** Show controls for an active sampling workflow, without selecting an area.
-     * @param {boolean} active Whether a sampling workflow is in the foreground.
-     * @param {boolean} usesBox Whether that workflow uses the shared map box.
-     * @return {void}
-     */
-    setActive(active, usesBox) {
-        this.tool.hidden = !active;
-        this.usesBox = usesBox;
-        if (!active) {
-            this.disclosure.open = false;
-        }
-        this.#renderSelectedControls();
-    }
-
     /** Display a foreground workflow's committed area while it edits its own form.
      * The composition root supplies context; this view does not inspect the workflow.
      * @param {{scope:string,usesSamplingBox:boolean}|null} context Area description, or null for the ordinary map sampler.
@@ -236,7 +220,7 @@ export class RasterSamplingAreaControlsView {
      */
     #renderSelectedControls() {
         const boxSelected = this.areaContext?.usesSamplingBox ?? this.useMapWindowButton.checked;
-        this.mapBoxControls.hidden = !boxSelected || !(this.usesBox || this.disclosure.open);
+        this.mapBoxControls.hidden = !boxSelected;
         this.vectorControls.hidden = !this.vectorChoice.checked;
         this.#renderAreaSummary();
     }
