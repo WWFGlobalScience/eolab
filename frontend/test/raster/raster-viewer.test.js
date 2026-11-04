@@ -1040,6 +1040,12 @@ for (const mode of ["overlay", "bivariate"]) {
                 setSize(size);
                 sampling.setSampleWindowSize(size, maximum);
             };
+            h.controlsView.setSampleWindowStatus = (message, showMessage) => {
+                h.controlsView.sampleWindowStatus = message;
+                sampling.setSampleWindowStatus(message, showMessage);
+            };
+            h.controlsView.setSampleWindowInvalid = invalid => sampling.setSampleWindowInvalid(invalid);
+            sampling.disclosure.open = false;
             try {
                 await h.viewer.show(createRasterItem("rejected-box-x"));
                 await h.viewer.show(createRasterItem("rejected-box-y"));
@@ -1063,6 +1069,9 @@ for (const mode of ["overlay", "bivariate"]) {
                     assert.equal(committed.length, 0, "a rejected box must not recalculate the retained old area");
                     assert.equal(histogramRequests, presentationsBefore + 1);
                     assert.match(h.controlsView.sampleWindowStatus, /pole or date line/);
+                    assert.equal(sampling.sampleWindowStatus.classList.contains("visually-hidden"), false);
+                    assert.equal(sampling.sampleWindowNumber.getAttribute("aria-invalid"), null);
+                    assert.equal(sampling.disclosure.open, false, "boundary guidance is outside the collapsed form");
                     assert.deepEqual(h.viewer.getSelectedArea(), previousArea);
                 }
                 await flushPromises();
@@ -1079,6 +1088,8 @@ for (const mode of ["overlay", "bivariate"]) {
                 assert.ok(requests.length > requestCount);
                 assert.notDeepEqual(h.viewer.getSelectedArea(), previousArea);
                 assert.match(h.controlsView.samplingAreaLabel, /1000 km/);
+                assert.equal(sampling.sampleWindowStatus.classList.contains("visually-hidden"), true,
+                    "valid selection restores the ordinary screen-reader announcement");
             } finally { sampling.unbind(); h.destroy(); }
         });
     }
