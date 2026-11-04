@@ -246,3 +246,130 @@ test("queued count replies and errors cannot replace a newer filter; busy counts
     counts[5].reject(Object.assign(Error("Late full"), { category: "filter_count_queue_full" })); await flush();
     assert.equal(record.state.filterCountError, null);
 });
+
+
+test("filtered zoom uses the accepted predicate despite invalid drafts and keeps independent view filters", async () => {
+    const doc = new FakeRasterControlDocument(), requests = [], fits = [];
+    const targets = {
+        first: {fields, source: {collectionId: "vectors", itemId: "quakes"}, filter: filter(2020), label: "First view", cancelPending() {}},
+        second: {fields, source: {collectionId: "vectors", itemId: "quakes"}, filter: filter(2024), label: "Second view", cancelPending() {}},
+    };
+    const controls = new VectorFilterControls({documentContext: doc, getTarget: key => targets[key] ?? null,
+        inspection: {showFilter() {}, hideFilter() {}, updateLayerEditorName() {}}, onZoom: bbox => fits.push(bbox),
+        loadExtent: async (source, accepted, signal) => { requests.push({source, accepted, signal}); return {matched: 1, bbox: [1, 2, 1, 2]}; },
+    });
+    controls.open("first");
+    assert.equal(controls.zoomButton.hidden, false);
+    const input = controls.rules.children[0].children[2];
+    input.value = ""; input.dispatchEvent(new Event("input"));
+    controls.zoomButton.dispatchEvent(new Event("click")); await flush();
+    assert.deepEqual(requests[0].accepted, filter(2020));
+    assert.deepEqual(fits, [[1, 2, 1, 2]]);
+    controls.open("second"); controls.zoomButton.dispatchEvent(new Event("click")); await flush();
+    assert.deepEqual(requests[1].accepted, filter(2024));
+    assert.deepEqual(targets.first.filter, filter(2020));
+    assert.match(controls.zoomStatus.textContent, /Showing 1 matching feature/);
+    controls.destroy();
+});
+
+test("filtered zoom ignores obsolete responses after view, accepted filter, map or lifecycle changes", async () => {
+    for (const change of ["view", "filter", "source", "removed", "map", "cancel", "close", "destroy", "new request"]) {
+        const doc = new FakeRasterControlDocument(), pending = [], fits = [];
+        let target = {fields, source: {uploadId: "owned"}, filter: filter(), label: "Private view", cancelPending() {}};
+        const controls = new VectorFilterControls({documentContext: doc, getTarget: () => target,
+            inspection: {showFilter() {}, hideFilter() {}, updateLayerEditorName() {}}, onZoom: bbox => fits.push(bbox),
+            loadExtent: (source, accepted, signal) => new Promise(resolve => pending.push({signal, resolve})),
+        });
+        controls.open("first"); controls.zoomButton.dispatchEvent(new Event("click"));
+        assert.equal(controls.cancelZoomButton.hidden, false);
+        if (change === "view") controls.open("second");
+        if (change === "filter") { target.filter = filter(2025); controls.refresh(); }
+        if (change === "source") { target.source = {uploadId: "other"}; controls.refresh(); }
+        if (change === "removed") { target = null; controls.refresh(); }
+        if (change === "map") controls.cancelZoom("Map moved.");
+        if (change === "cancel") controls.cancelZoomButton.dispatchEvent(new Event("click"));
+        if (change === "close") controls.close();
+        if (change === "destroy") controls.destroy();
+        if (change === "new request") controls.zoomButton.dispatchEvent(new Event("click"));
+        assert.equal(pending[0].signal.aborted, true, change);
+        pending[0].resolve({matched: 1, bbox: [1, 2, 3, 4]}); await flush();
+        assert.equal(fits.length, 0, change);
+        if (change === "new request") {
+            assert.equal(controls.cancelZoomButton.hidden, false);
+            pending[1].resolve({matched: 2, bbox: [5, 6, 7, 8]}); await flush();
+            assert.deepEqual(fits, [[5, 6, 7, 8]]);
+        }
+        controls.destroy();
+    }
+});
+
+test("empty and failed filtered zooms keep the map unchanged and support retry without selecting an area", async () => {
+    const doc = new FakeRasterControlDocument(), fits = [], applied = [];
+    let outcome = {matched: 0, bbox: null};
+    const controls = new VectorFilterControls({documentContext: doc,
+        getTarget: () => ({fields, source: {collectionId: "vectors", itemId: "quakes"}, filter: filter(), label: "Quakes", apply: value => applied.push(value)}),
+        inspection: {showFilter() {}, hideFilter() {}, updateLayerEditorName() {}}, onZoom: bbox => fits.push(bbox),
+        loadExtent: async () => { if (outcome instanceof Error) throw outcome; return outcome; },
+    });
+    controls.open("quakes"); controls.zoomButton.dispatchEvent(new Event("click")); await flush();
+    assert.match(controls.zoomStatus.textContent, /No features match/);
+    outcome = {matched: 2, bbox: null}; controls.zoomButton.dispatchEvent(new Event("click")); await flush();
+    assert.match(controls.zoomStatus.textContent, /no coordinates/);
+    outcome = Error("Vector reading exceeded its time budget"); controls.zoomButton.dispatchEvent(new Event("click")); await flush();
+    assert.equal(controls.zoomStatus.textContent, "Vector reading exceeded its time budget");
+    assert.equal(fits.length, 0); assert.equal(applied.length, 0);
+    outcome = {matched: 1, bbox: [5, 6, 5, 6]}; controls.zoomButton.dispatchEvent(new Event("click")); await flush();
+    assert.deepEqual(fits, [[5, 6, 5, 6]]);
+    controls.open("quakes", {filter: filter(), apply() {}, complete() {}, cancel() {}});
+    assert.equal(controls.zoomButton.hidden, true);
+    controls.destroy();
+});
+
+test("map filter commit callbacks belong to one opening and only changed accepted rules", async () => {
+    const doc = new FakeRasterControlDocument(), notifications = [], replies = [];
+    let current = filter(), label = "Countries";
+    const context = Symbol("caller intent");
+    const controls = new VectorFilterControls({documentContext: doc,
+        getTarget: () => ({fields, filter: current, label, cancelPending() {},
+            apply: (candidate, applyContext) => new Promise((resolve, reject) => replies.push({candidate, applyContext, resolve, reject}))}),
+        inspection: {showFilter() {}, hideFilter() {}, updateLayerEditorName() {}},
+        setTimer: () => 1, clearTimer() {},
+    });
+    /** Open a new filter edit with its own intent callback. @return {void} */
+    const opening = () => controls.open("countries", null, {applyContext: context, onApplied: () => notifications.push(current)});
+    /** Send a complete draft to the controlled transport.
+     * @param {number} value Year threshold. @return {Object} Controllable accepted-filter reply.
+     */
+    const apply = value => {
+        const input = controls.rules.children[0].children[2];
+        input.value = String(value); input.dispatchEvent(new Event("input"));
+        controls.applyButton.dispatchEvent(new Event("click"));
+        return replies.at(-1);
+    };
+    opening();
+    controls.applyButton.dispatchEvent(new Event("click"));
+    assert.equal(replies.at(-1).applyContext, context, "the generic editor forwards opaque caller context unchanged");
+    replies.at(-1).resolve(current); await flush();
+    label = "Renamed countries"; controls.refresh();
+    assert.equal(notifications.length, 0, "unchanged rules and presentation refreshes are not calculation intents");
+
+    const changed = apply(2024); current = changed.candidate; changed.resolve(current); await flush();
+    assert.deepEqual(notifications, [filter(2024)]);
+    controls.applyButton.dispatchEvent(new Event("click")); replies.at(-1).resolve(undefined); await flush();
+    assert.equal(notifications.length, 1, "annotation-style void apply results still compare the authoritative accepted predicate");
+    apply(2025).reject(Error("Filter failed")); await flush();
+    assert.equal(notifications.length, 1);
+    assert.match(controls.status.textContent, /previous applied filter remains/);
+    apply(2026).resolve(null); await flush();
+    assert.equal(notifications.length, 1, "superseded or cancelled map filters cannot commit an intent");
+
+    const stale = apply(2027); controls.open("other-view");
+    stale.resolve(stale.candidate); await flush();
+    assert.equal(notifications.length, 1, "another opening owns its own commit callback");
+    opening(); const closed = apply(2028); controls.close();
+    current = closed.candidate; closed.resolve(current); await flush();
+    assert.equal(notifications.length, 1, "a closed editor does not replace a later foreground choice");
+    opening(); const destroyed = apply(2029); controls.destroy();
+    destroyed.resolve(destroyed.candidate); await flush();
+    assert.equal(notifications.length, 1);
+});

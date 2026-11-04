@@ -43,7 +43,7 @@ const STATES = { waiting: "Waiting", error: "Unavailable", no_matches: "No match
  * @property {{completed?:number|null,total?:number|null,unit?:string|null}|null} [workProgress] Measured temporal work; absent before the server reports counts.
  * @property {"line"|"scatter"|"bar"} chartType Plot geometry.
  * @property {boolean} canDownload Whether current values can be exported.
- * @property {{formulas:SeriesStatistic[],sources:object[],areaChoice:string,area:object|null,areaLabel:string,hasErrors:boolean,recoverable:boolean}} area Selected scope and retry/recovery availability.
+ * @property {{formulas:SeriesStatistic[],sources:object[],areaChoice:string,area:object|null,areaLabel:string,hasPendingVectorArea:boolean,hasErrors:boolean,recoverable:boolean}} area Selected scope and retry/recovery availability.
  * @property {SeriesStatistic[]} statistics Statistic presentation.
  * @property {{id:number,scale:"linear"|"log",bounds:[number,number]|null,xBounds:[number,number]|null}[]} plots Independent display bounds and scale; null chooses automatic bounds.
  * @property {"forward"|"reverse"} direction Display direction; temporal data and CSV retain observation order.
@@ -164,6 +164,12 @@ export class RasterSeriesView {
         this.document.querySelector("#raster-series-chart-type").addEventListener("change", event => actions.onChartType(event.target.value));
         this.download.addEventListener("click", actions.onDownload);
         this.document.querySelector("#raster-series-open-area").addEventListener("click", actions.onOpenArea);
+        this.document.querySelector("#raster-series-use-current-filter").addEventListener("click", () => {
+            if (this.snapshot.area.areaChoice === "vector") {
+                actions.onArea("vector");
+                this.document.querySelector("#raster-series-open-area").focus({preventScroll: true});
+            } else actions.onOpenArea();
+        });
         for (const [choice, input] of this.areaChoices) {
             input.addEventListener("change", () => { if (input.checked) actions.onArea(choice); });
         }
@@ -308,7 +314,10 @@ export class RasterSeriesView {
         if (this.chartNote.hidden !== !showingPrevious) this.chartNote.hidden = !showingPrevious;
         const chartNote = showingPrevious ? "Previous results — calculating replacements." : "";
         if (this.chartNote.textContent !== chartNote) this.chartNote.textContent = chartNote;
-        if (!hidePlots) this.plotsView.renderPlots(state);
+        const pendingPlot = !hidePlots && this.plotsView.renderPlots(state);
+        if (this.plotProgress.classList.contains("is-summary") !== Boolean(pendingPlot)) {
+            this.plotProgress.classList.toggle("is-summary", Boolean(pendingPlot));
+        }
         this.renderValuesTable(state.rows);
         if (this.download.disabled !== !state.canDownload) this.download.disabled = !state.canDownload;
     }
@@ -497,6 +506,10 @@ export class RasterSeriesView {
         const action = this.document.querySelector("#raster-series-open-area");
         const actionLabel = `Change sample area: ${label}`;
         if (action.getAttribute("aria-label") !== actionLabel) action.setAttribute("aria-label", actionLabel);
+        const adopt = this.document.querySelector("#raster-series-use-current-filter");
+        if (adopt.hidden !== !area.hasPendingVectorArea) adopt.hidden = !area.hasPendingVectorArea;
+        const adoptLabel = area.areaChoice === "vector" ? "Use current polygon filter" : "Choose polygon layer";
+        if (adopt.textContent !== adoptLabel) adopt.textContent = adoptLabel;
         const vector = this.document.querySelector("#raster-series-vector-area");
         if (vector.hidden !== (area.areaChoice !== "vector")) vector.hidden = area.areaChoice !== "vector";
         const addFormula = this.document.querySelector("#raster-series-add-formula");

@@ -56,6 +56,43 @@ export async function getVectorFieldValues(source, query, signal, fetchImplement
 }
 
 /**
+ * Read the complete accepted filter's original-source extent independently of rendering.
+ * @param {VectorFieldValueSource} source Path-free Catalog or owned upload identity.
+ * @param {ReturnType<typeof import("./filter.js").normalizeVectorFilter>} filter Complete accepted predicate.
+ * @param {AbortSignal} signal Cancellation when the view, predicate or map changes.
+ * @param {typeof fetch} [fetchImplementation=globalThis.fetch] HTTP transport.
+ * @return {Promise<{matched:number,bbox:[number,number,number,number]|null}>} Combined WGS84 original-feature envelopes with densified native edges, including a valid point or empty result.
+ * @throws {Error} If authorization, the bounded read or response validation fails.
+ * @throws {DOMException} If the request is aborted.
+ */
+export async function getVectorFilterExtent(source, filter, signal, fetchImplementation = globalThis.fetch) {
+    const uploaded = "uploadId" in source;
+    let response;
+    try {
+        response = await fetchImplementation("/api/vector-sampling/extent", {
+            method: "POST", signal, credentials: "same-origin", cache: "no-store",
+            headers: { Accept: "application/json", "Content-Type": "application/json",
+                ...(uploaded ? {"X-EOLab-Uploads": "1"} : {}) },
+            body: JSON.stringify({ ...(uploaded ? {uploadId: source.uploadId}
+                : {collectionId: source.collectionId, itemId: source.itemId}), filter }),
+        });
+    } catch (error) {
+        if (error.name === "AbortError") throw error;
+        throw new Error("Could not find filtered features. Check your connection and try again.");
+    }
+    if (!response.ok) throw await vectorRenderingError(response, "zoom");
+    const result = await response.json().catch(() => null);
+    const bbox = result?.bbox;
+    if (!Number.isSafeInteger(result?.matched) || result.matched < 0 ||
+        !(bbox === null || (result.matched > 0 && Array.isArray(bbox) && bbox.length === 4 &&
+            bbox.every(Number.isFinite) && bbox[0] >= -180 && bbox[2] <= 180 &&
+            bbox[1] >= -90 && bbox[3] <= 90 && bbox[0] <= bbox[2] && bbox[1] <= bbox[3]))) {
+        throw new Error("Filtered features returned invalid bounds. Try again.");
+    }
+    return result;
+}
+
+/**
  * Admitted upload metadata tagged for the ordinary vector rendering pipeline.
  * @typedef {import("../vector-uploads/api.js").VectorUpload & {kind:"upload"}} UploadedVectorSource
  */

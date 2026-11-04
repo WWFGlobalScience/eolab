@@ -127,6 +127,37 @@ def create_shared_layer_admin_router(
             media_type="text/javascript",
         )
 
+    @router.get("/admin-eolab/habitat", include_in_schema=False)
+    def habitat_page() -> Response:
+        """Open Habitat input preparation using this site's administrator session.
+
+        Returns:
+            Independent HTML page with no job data, source paths or credentials.
+        """
+        return Response(
+            files("eolab_app.annotation_sessions")
+            .joinpath("admin.habitat.html")
+            .read_text(encoding="utf-8"),
+            media_type="text/html",
+        )
+
+    @router.get("/assets/habitat-admin.js", include_in_schema=False)
+    def habitat_javascript() -> Response:
+        """Return the bundled Habitat administration client after authentication.
+
+        Returns:
+            The frontend build's independent admin entry, with private cache policy.
+
+        Raises:
+            OSError: If the deployed frontend bundle is missing or unreadable.
+        """
+        return Response(
+            files("eolab_app")
+            .joinpath("static", "assets", "habitat-admin.js")
+            .read_text(encoding="utf-8"),
+            media_type="text/javascript",
+        )
+
     @router.get("/admin-eolab/admin.css", include_in_schema=False)
     def stylesheet() -> Response:
         """Return the standalone page's styles.

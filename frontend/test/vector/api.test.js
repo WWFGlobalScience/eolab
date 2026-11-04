@@ -6,6 +6,7 @@ import {
     classifyVectorNumbers,
     countVectorFilter,
     getVectorFieldValues,
+    getVectorFilterExtent,
     publishVector,
     styleVector,
     summarizeVectorCategories,
@@ -306,4 +307,39 @@ test("vector publication preserves actionable upstream categories", async () => 
         assert.equal(error.message, "The vector style is not initialized.");
         return true;
     });
+});
+
+
+test("filtered extents send only original-source identity and accepted predicate with private upload ownership", async () => {
+    const predicate = {enabled: true, match: "all", rules: [{field: "year", operator: "eq", value: 2026}]};
+    for (const source of [{collectionId: "vectors", itemId: "points", path: "/private"}, {uploadId: "owned-id", path: "/private"}]) {
+        const controller = new AbortController();
+        const result = {matched: 1, bbox: [5, 10, 5, 10]};
+        assert.deepEqual(await getVectorFilterExtent(source, predicate, controller.signal, async (url, options) => {
+            assert.equal(url, "/api/vector-sampling/extent");
+            assert.equal(options.signal, controller.signal);
+            assert.equal(options.credentials, "same-origin");
+            assert.equal(options.cache, "no-store");
+            assert.deepEqual(JSON.parse(options.body), {...("uploadId" in source ? {uploadId: source.uploadId} : {collectionId: source.collectionId, itemId: source.itemId}), filter: predicate});
+            assert.equal(options.headers["X-EOLab-Uploads"], "uploadId" in source ? "1" : undefined);
+            return Response.json(result);
+        }), result);
+    }
+});
+
+test("filtered extents preserve empty success and reject malformed bounds, read failures and cancellation", async () => {
+    const source = {collectionId: "vectors", itemId: "points"};
+    for (const value of [{matched: 0, bbox: null}, {matched: 2, bbox: null}, {matched: 2, bbox: [-180, -90, 180, 90]}]) {
+        assert.deepEqual(await getVectorFilterExtent(source, {}, undefined, async () => Response.json(value)), value);
+    }
+    for (const value of [null, {}, {matched: -1, bbox: null}, {matched: 1.5, bbox: null},
+        {matched: 0, bbox: [0, 0, 1, 1]}, {matched: 1, bbox: [2, 0, 1, 1]},
+        {matched: 1, bbox: [-181, 0, 1, 1]}, {matched: 1, bbox: [0, 2, 1, 1]},
+        {matched: 1, bbox: [0, 0, 1, 91]}, {matched: 1, bbox: [0, 0, 1]}]) {
+        await assert.rejects(getVectorFilterExtent(source, {}, undefined, async () => Response.json(value)), /invalid bounds/);
+    }
+    await assert.rejects(getVectorFilterExtent(source, {}, undefined, async () => new Response("bad")), /invalid bounds/);
+    await assert.rejects(getVectorFilterExtent(source, {}, undefined, async () => Response.json({detail: "This upload is not available to this browser."}, {status: 404})), /not available/);
+    await assert.rejects(getVectorFilterExtent(source, {}, undefined, async () => { throw Error("offline"); }), /connection/);
+    await assert.rejects(getVectorFilterExtent(source, {}, undefined, async () => { throw new DOMException("Cancelled", "AbortError"); }), {name: "AbortError"});
 });

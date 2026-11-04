@@ -23,7 +23,7 @@ export class VectorSamplingController {
      * @param {(area:Object)=>void} dependencies.onActivate Adopt prepared polygons using the consumer's calculation policy.
      * @param {(selection:Object|undefined,area:Object)=>void} dependencies.onInvalidate Cancel work using an obsolete area.
      * @param {(key:string)=>void} dependencies.onEditFilter Open the selected layer's filter controls.
-     * @param {(state:Object)=>void} [dependencies.onSelectionState] Report selection progress.
+     * @param {(state:{phase:string,message:string,explicit:boolean,sequence:number})=>void} [dependencies.onSelectionState] Report progress, user intent and the existing cancellation sequence. Repeated renders retain that sequence; automatic refreshes are passive and choices, retries and explicit clearing are user intent.
      */
     constructor({ view, getTargets, createArea, onActivate, onInvalidate, onEditFilter, onSelectionState = () => {}, releaseArea = () => {} }) {
         Object.assign(this, { view, getTargets, createArea, onActivate, onInvalidate, onEditFilter });
@@ -31,6 +31,7 @@ export class VectorSamplingController {
         this.releaseArea = releaseArea;
         this.views = Array.isArray(view) ? view : [view];
         this.sequence = 0;
+        this.explicitSelection = false;
         this.state = { targets: [], key: "", phase: "idle", area: null, message: "Choose a polygon layer." };
         this.views.forEach(target => target.bind({ onLayer: key => void this.choose(key), onRetry: () => void this.use(),
             onRemove: () => void this.choose(""),
@@ -48,7 +49,7 @@ export class VectorSamplingController {
         const changed = this.sourceIdentity && this.sourceIdentity !== samplingTargetIdentity(next);
         this.state.targets = targets;
         if (changed) {
-            if (next) void this.use({ key: next.key });
+            if (next) void this.use({ key: next.key, explicit: false });
             else {
                 this.state.key = "";
                 this.invalidate("The selected polygon layer was removed.");
@@ -70,13 +71,15 @@ export class VectorSamplingController {
      * A newer selection cancels the older request and discards its response.
      * @param {Object} [options={}] Explicit source choice.
      * @param {string} [options.key=this.state.key] Retained polygon-layer key.
+     * @param {boolean} [options.explicit=true] A user chose or retried this area; false follows an accepted source/filter refresh.
      * @return {Promise<Object|null>} Adopted polygon area with the chosen layer's display label,
      * or null if no source, failed or superseded. Actual read failures remain visible in the controls.
      */
-    async use({ key = this.state.key } = {}) {
+    async use({ key = this.state.key, explicit = true } = {}) {
         const target = this.state.targets.find(value => value.key === key);
         this.invalidate("");
         this.state.key = key;
+        this.explicitSelection = explicit;
         if (!target) {
             this.state.message = "Choose a polygon layer.";
             this.render();
@@ -116,6 +119,7 @@ export class VectorSamplingController {
      */
     invalidate(message) {
         ++this.sequence;
+        this.explicitSelection = false;
         this.abort?.abort();
         const area = this.state.area;
         this.state.area = null; this.state.phase = "idle"; this.state.message = message; this.sourceIdentity = null;
@@ -127,7 +131,7 @@ export class VectorSamplingController {
         const target = this.state.targets.find(value => value.key === this.state.key);
         const state = { ...this.state, filterSummary: vectorFilterSummary(target?.filter ?? EMPTY_VECTOR_FILTER) };
         this.views.forEach(view => view.render(state));
-        this.onSelectionState({ phase: state.phase, message: state.message });
+        this.onSelectionState({ phase: state.phase, message: state.message, explicit: this.explicitSelection, sequence: this.sequence });
     }
     /** Cancel reading, release the prepared area and detach the controls. @return {void} */
     destroy() { this.invalidate(""); this.views.forEach(view => view.unbind()); }

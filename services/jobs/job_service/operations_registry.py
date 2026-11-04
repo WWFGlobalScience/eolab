@@ -16,6 +16,10 @@ from eolab_app.vector.outline_operation import (
     OutlineResult,
     calculate_outline,
 )
+from eolab_app.vector.extent_operation import (
+    SelectionExtentResult,
+    measure_selected_extent,
+)
 from eolab_app.vector.selection_operation import (
     SelectionMeasurementInput,
     SelectionMeasurementResult,
@@ -61,6 +65,13 @@ OPERATIONS = {
         OutlineInput,
         OutlineResult,
         calculate_outline,
+    ),
+    "vector.selection-extent.v1": InstalledOperation(
+        "vector.selection-extent.v1",
+        "Measure original-source bounds of matching catalog or uploaded vector features.",
+        SelectionMeasurementInput,
+        SelectionExtentResult,
+        measure_selected_extent,
     ),
     "vector.selection-measurement.v1": InstalledOperation(
         "vector.selection-measurement.v1",

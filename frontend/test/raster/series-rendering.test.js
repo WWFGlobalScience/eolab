@@ -42,7 +42,7 @@ function controlsFixture() {
         return element;
     };
     const plots = [];
-    h.view.plotsView = { renderPlots: state => plots.push(state) };
+    h.view.plotsView = { renderPlots: state => { plots.push(state); return false; } };
     h.view.actions = {};
     const source = { key: "a", label: "Raster A", selected: true };
     const formula = { id: 1, label: "Mean", expression: "mean(a)", visible: true, plotId: 1, styleIndex: 0,

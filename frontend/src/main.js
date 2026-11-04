@@ -1089,8 +1089,12 @@ async function initializeCatalog(
         onDeleted: removeDeletedUpload,
     });
     let modelFilterControls = null;
+    /** @type {symbol} Distinguish explicit statistics-area edits from passive map-filter updates. */
+    const statisticsAreaFilterIntent = Symbol("statistics-area-filter");
     vectorFilterControls = new VectorFilterControls({
         inspection: mapInspection,
+        onZoom: ([west, south, east, north]) => leafletMap.fitBounds(
+            L.latLngBounds([[south, west], [north, east]]).pad(0.15), {padding: [24, 24], maxZoom: 14}),
         getTarget: (key) => {
             const annotation = annotations?.filterTarget(key);
             if (annotation) return annotation;
@@ -1101,11 +1105,22 @@ async function initializeCatalog(
                 fields: record.adapter.describeSource(record).fields,
                 source: record.adapter.describeSource(record).source,
                 ...record.adapter.describeFilter(record),
-                apply: (candidate) => record.adapter.applyFilterState(record, candidate),
+                /** Commit the map view's filter while retaining any captured statistics polygons.
+                 * @param {Object} candidate Complete field conditions.
+                 * @param {unknown} context Opaque caller context; statistics-area edits commit their own explicit intent.
+                 * @return {Promise<Object|null>} Accepted rules, or null when superseded.
+                 * @throws {Error} If the vector owner cannot apply these conditions.
+                 */
+                apply: async (candidate, context) => {
+                    const release = context === statisticsAreaFilterIntent ? null : rasterSeries.preserveCapturedVectorArea();
+                    try { return await record.adapter.applyFilterState(record, candidate); }
+                    finally { release?.(); }
+                },
                 cancelPending: () => record.adapter.cancelPendingFilter(record),
             };
         },
     });
+    leafletMap.on("movestart", () => vectorFilterControls.cancelZoom("Map moved. Zoom again to find filtered features."));
     mapLayerController.onFilter = key => vectorFilterControls.open(key);
     const vectorSamplingOverlay = new VectorSelectionOverlay(leafletMap, L);
     /** Read polygon choices for Models, histogram and summary controls.
@@ -1224,6 +1239,7 @@ async function initializeCatalog(
         getTargets: getPolygonTargets,
         createArea: createVectorSamplingArea,
         onEditFilter: key => vectorFilterControls.open(key),
+        onSelectionState: selection => rasterSeries.setVectorSelectionState({...selection, explicit: false}, "map"),
         /** Adopt filtered features through the shared map-area calculation lifecycle.
          * @param {Object} area Authoritative vector descriptor and selection metadata.
          * @return {void}
@@ -1238,7 +1254,7 @@ async function initializeCatalog(
             modelArea = null; modelAreaDescription = "";
             models.refreshMapArea();
             rasterVisualization.setVectorSelection(null);
-            rasterSeries.invalidateArea({kind: "catalogSelection", catalogSelection: id});
+            rasterSeries.invalidateArea({kind: "catalogSelection", catalogSelection: id}, "map");
         },
     });
     summarySampling = new VectorSamplingController({
@@ -1261,7 +1277,12 @@ async function initializeCatalog(
             return { ...area, label: target.label, total: target.polygons.length, filter };
         },
         releaseArea: area => { if (area.polygonArea) void processingApi.discardPolygonArea(area.polygonArea.id).catch(() => {}); },
-        onEditFilter: key => vectorFilterControls.open(key),
+        onEditFilter: key => vectorFilterControls.open(key, null, {
+            // Editing the statistics area's filter is an explicit new area choice.
+            // Map-origin edits keep the existing background calculation untouched.
+            applyContext: statisticsAreaFilterIntent,
+            onApplied: () => rasterSeries.chooseArea("vector"),
+        }),
         onSelectionState: selection => rasterSeries.setVectorSelectionState(selection),
         onActivate: area => {
             const label = `${area.label} · ${area.matched} of ${area.total} features`;

@@ -116,6 +116,7 @@ from eolab_app.vector.sources import (
 from eolab_app.vector.sampling import VectorSamplingService
 from eolab_app.vector.outline_jobs import OutlineJobs
 from eolab_app.vector.selection_jobs import SelectionJobs
+from eolab_app.vector.extent_jobs import ExtentJobs
 from eolab_jobs.client import JobsClient
 from eolab_app.routes.vector_sampling import create_vector_sampling_router
 from eolab_app.vector.styling import VectorStyleService
@@ -214,9 +215,11 @@ def create_app(
         app_global_configuration.vector_upload_max_bytes,
     )
     vector_selection_reader = VectorSamplingService(
-        vector_catalog, vector_source_resolver,
+        vector_catalog,
+        vector_source_resolver,
         OutlineJobs(vector_jobs),
         selection_executor=SelectionJobs(vector_jobs),
+        extent_executor=ExtentJobs(vector_jobs),
         uploads=vector_uploads,
     )
     processing_limits = load_processing_limits()

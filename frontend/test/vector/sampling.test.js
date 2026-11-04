@@ -149,3 +149,25 @@ test("catalog and uploaded count-only responses activate the accepted source and
         assert.deepEqual(h.events,[["activate",selection]]);
     }
 });
+
+
+test("selection progress identifies user choices and passive refreshes with the existing read sequence", async () => {
+    const states = [], h = fixture();
+    h.controller.onSelectionState = state => states.push(state);
+    await h.controller.choose("countries");
+    const explicit = states.find(state => state.phase === "reading");
+    assert.equal(explicit.explicit, true);
+    h.change([{...h.view.state.targets[0], filter: otherFilter}]); await flush();
+    const passive = states.filter(state => state.phase === "reading").at(-1);
+    assert.equal(passive.explicit, false);
+    assert.ok(passive.sequence > explicit.sequence);
+    h.controller.refresh();
+    assert.equal(states.at(-1).sequence, passive.sequence, "presentation refresh does not create another read identity");
+    h.view.handlers.onRetry(); await flush();
+    assert.equal(states.filter(state => state.phase === "reading").at(-1).explicit, true);
+    await h.controller.choose("");
+    assert.equal(states.at(-1).phase, "idle", "an empty choice does not invent a reading state");
+    assert.equal(states.at(-1).explicit, true, "clearing is an explicit user intent");
+    h.controller.destroy();
+    assert.equal(states.at(-1).explicit, false, "ordinary invalidation cannot inherit a previous explicit choice");
+});

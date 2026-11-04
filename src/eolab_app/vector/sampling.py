@@ -1,4 +1,4 @@
-"""Authorize vector selections, count their features, and request map outlines.
+"""Authorize vector selections, count features, and request bounds or map outlines.
 
 Source/filter preparation lives in selection_source so readers and installed Jobs
 operations use the same rules without constructing this service.
@@ -30,7 +30,7 @@ from eolab_app.vector_uploads import VectorUploadStore
 
 
 class VectorSamplingService:
-    """Authorize filtered vector features and request their counts or outlines."""
+    """Authorize filtered vector features and request counts, bounds or outlines."""
 
     def __init__(
         self,
@@ -43,9 +43,12 @@ class VectorSamplingService:
         selection_executor: (
             Callable[[VectorSelection, str | None], Awaitable[dict[str, Any]]] | None
         ) = None,
+        extent_executor: (
+            Callable[[VectorSelection, str | None], Awaitable[dict[str, Any]]] | None
+        ) = None,
         uploads: VectorUploadStore | None = None,
     ) -> None:
-        """Connect vector source resolution with feature-count and outline jobs.
+        """Connect vector source resolution with feature-count, extent and outline jobs.
 
         Args:
             catalog: Authoritative Catalog reader.
@@ -56,6 +59,8 @@ class VectorSamplingService:
             selection_executor: Jobs adapter for counting filtered features.
                 Consumers that only reauthorize descriptors may omit it; select()
                 then reports unavailable without launching a local process.
+            extent_executor: Jobs adapter for original-source bounds; omit when
+                the consumer does not offer filtered map zoom.
             uploads: Original browser-owned GeoPackages and their admission metadata.
         """
         self.catalog = catalog
@@ -63,6 +68,7 @@ class VectorSamplingService:
         self._outline_executor = outline_executor
         self._selection_executor = selection_executor
         self._uploads = uploads
+        self._extent_executor = extent_executor
 
     async def resolve_for_sampling(
         self, selection: VectorSelection, upload_owner: str | None = None
@@ -159,6 +165,35 @@ class VectorSamplingService:
                 else request.item_id
             ),
         }
+
+    async def extent(
+        self,
+        request: CatalogVectorFilterRequest | UploadedVectorFilterRequest,
+        upload_owner: str | None = None,
+    ) -> dict[str, Any]:
+        """Return original-source bounds for the complete accepted filter.
+
+        Args:
+            request: Catalog or upload identity and immutable typed predicate.
+            upload_owner: Server-derived browser identity for private uploads.
+
+        Returns:
+            Matched count and WGS84 bbox, or null when matches have no coordinates.
+
+        Raises:
+            VectorConflictError: If execution is unavailable or the read fails.
+            SelectionUnavailableError: If the original source cannot be read.
+            VectorUploadError: If the upload is unavailable to this browser.
+            asyncio.CancelledError: After Jobs cancels and cleans up abandoned work.
+        """
+        resolved = await resolve_selection(
+            self.catalog, self.resolver, request, self._uploads, upload_owner
+        )
+        if self._extent_executor is None:
+            raise VectorConflictError("The vector zoom executor is unavailable")
+        if isinstance(resolved.selection, UploadedSelection):
+            await asyncio.to_thread(self._uploads.prepare_source_read, resolved.path)
+        return await self._extent_executor(resolved.selection, upload_owner)
 
     async def outline(
         self, selection: VectorSelection, upload_owner: str | None = None

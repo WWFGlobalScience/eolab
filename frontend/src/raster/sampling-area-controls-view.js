@@ -25,6 +25,8 @@ const SAMPLE_WINDOW_SLIDER_STEPS = 1000;
 /** Present sampling controls without changing the selected area on show or hide. */
 export class RasterSamplingAreaControlsView {
     #root;
+    /** @type {boolean} Whether current spatial guidance is shown visually. */
+    #sampleWindowGuidanceVisible = false;
 
     /**
      * Resolve the required sampling-area elements once at startup.
@@ -246,7 +248,9 @@ export class RasterSamplingAreaControlsView {
      * @return {void}
      */
     setSampleWindowInvalid(isInvalid) {
-        this.sampleWindowStatus.classList.toggle("visually-hidden", !isInvalid);
+        this.sampleWindowStatus.classList.toggle(
+            "visually-hidden", !isInvalid && !this.#sampleWindowGuidanceVisible
+        );
         if (isInvalid) {
             this.sampleWindowNumber.setAttribute("aria-invalid", "true");
         } else {
@@ -255,12 +259,19 @@ export class RasterSamplingAreaControlsView {
     }
 
     /**
-     * Replace the current sample-window guidance when it has changed.
+     * Show spatial guidance or announce routine sampling status.
      *
-     * @param {string} message Sample-window guidance message.
+     * @param {string} message Guidance or ordinary selection announcement.
+     * @param {boolean} [showMessage=false] Show the message visually even when
+     * the numeric size is valid. Routine status remains available to screen readers.
      * @return {void}
      */
-    setSampleWindowStatus(message) {
+    setSampleWindowStatus(message, showMessage = false) {
+        this.#sampleWindowGuidanceVisible = showMessage;
+        this.sampleWindowStatus.classList.toggle(
+            "visually-hidden",
+            !showMessage && this.sampleWindowNumber.getAttribute("aria-invalid") !== "true"
+        );
         if (this.sampleWindowStatus.textContent !== message) {
             this.sampleWindowStatus.textContent = message;
         }

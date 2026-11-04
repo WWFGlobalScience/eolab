@@ -37,6 +37,18 @@ function csvField(value) {
  */
 function spreadsheetText(text) { return /^[=+@\-\t\r\n]/.test(text) ? "'" + text : text; }
 
+/** Compare immutable polygon-area or original-source selection identities.
+ * Labels and feature counts do not identify a predicate.
+ * @param {Object|null|undefined} left Catalog-selection or polygon-area descriptor.
+ * @param {Object|null|undefined} right Catalog-selection or polygon-area descriptor.
+ * @return {boolean} Whether both descriptors select the same polygons.
+ * @throws {TypeError} If a catalog selection violates its descriptor contract.
+ */
+function vectorAreasEqual(left, right) {
+    return left?.kind === "polygonArea" ? left.polygonArea.id === right?.polygonArea?.id
+        : left?.kind === "catalogSelection" && vectorSelectionsEqual(left.catalogSelection, right?.catalogSelection);
+}
+
 /** Own raster choices, formulas and presentation settings for Raster series. */
 export class RasterSeriesController {
     /**
@@ -65,6 +77,14 @@ export class RasterSeriesController {
         this.selectedAreaLabel = "";
         this.vectorArea = null;
         this.vectorAreaLabel = "";
+        /** @type {{area:Object,label:string}|null} Latest selection ignored while preserving captured work. */
+        this.pendingVectorArea = null;
+        /** @type {Set<object>} In-flight map filter updates that must not replace captured polygons. */
+        this.vectorFilterHolds = new Set();
+        /** @type {Set<"map"|"vector">} Passive preparations preserving captured polygon inputs. */
+        this.preservedVectorPreparations = new Set();
+        /** @type {Map<"map"|"vector",number>} Last start sequence from each existing selection producer. */
+        this.vectorPreparationSequences = new Map();
         this.sources = [];
         this.selectedKeys = new Set();
         /** @type {Map<string, boolean>} Explicit checklist choices for retained rasters. */
@@ -176,49 +196,96 @@ export class RasterSeriesController {
         this.updateAreaInputs();
     }
 
-    /** Accept polygon features without replacing a hidden background calculation.
+    /** Adopt polygon features, or explain a newer filter while captured work is hidden.
+     * Captured background inputs remain unchanged until an explicit area choice.
      * @param {Object} info Catalog selection or owned polygon-area reference and display label.
      * @return {void}
      */
     setVectorSamplingArea(info) {
-        const keepCalculation = this.areaStatistics.hasCapturedInputs && !this.active;
-        if (keepCalculation) { this.render(); return; }
-        this.vectorArea = info.polygonArea ? {kind: "polygonArea", polygonArea: info.polygonArea}
+        const keepCalculation = this.keepCapturedVectorInputs;
+        const area = info.polygonArea ? {kind: "polygonArea", polygonArea: info.polygonArea}
             : {kind: "catalogSelection", catalogSelection: info.selection};
+        if (keepCalculation) {
+            this.pendingVectorArea = {area, label: info.label};
+            this.render(); return;
+        }
+        this.pendingVectorArea = null;
+        this.vectorArea = area;
         this.vectorAreaLabel = info.label;
         this.areaChoice = "vector";
         this.updateAreaInputs();
     }
 
-    /** Clear stale polygon inputs while the chosen Vector area is being read.
-     * Hidden background calculations retain their captured inputs.
-     * @param {{phase:string}} selection Public selection progress.
+    /** Retain a map filter's passive origin until composition finishes committing it.
+     * The policy applies to polygon calculations captured now or before the reply;
+     * it does not affect whole-raster or box inputs. Call the returned release in
+     * the filter operation's finally block, including after failure or cancellation.
+     * @return {()=>void} Release this operation's hold, including after failure or cancellation.
+     */
+    preserveCapturedVectorArea() {
+        const hold = {};
+        this.vectorFilterHolds.add(hold);
+        return () => { this.vectorFilterHolds.delete(hold); };
+    }
+
+    /** Whether an incoming map/vector update must leave captured inputs unchanged.
+     * A passive read retains the policy established when it began, even if this
+     * panel is reopened before its filter or area response arrives.
+     * @return {boolean} Captured inputs must be retained for this update.
+     */
+    get keepCapturedVectorInputs() {
+        const polygon = ["catalogSelection", "polygonArea"].includes(this.getSelectedArea()?.kind);
+        return this.areaStatistics.hasCapturedInputs && (!this.active || polygon &&
+            (this.preservedVectorPreparations.size > 0 || this.vectorFilterHolds.size > 0));
+    }
+
+    /** Apply a producer's explicit area choice or retain a passive preparation's captured inputs.
+     * Map preparations affect selectedArea and are passive for statistics. Vector
+     * choices affect this panel's vectorArea; a new explicit sequence supersedes
+     * passive preparations. In-flight map filters retain their own origin until
+     * they settle. Repeated progress renders are not new intent.
+     * @param {{phase:string,explicit:boolean,sequence:number}} selection Preparation state, user intent and the producer's existing cancellation sequence.
+     * @param {"map"|"vector"} [channel="vector"] Existing area-input owner supplied by composition.
      * @return {void}
      */
-    setVectorSelectionState(selection) {
-        if (this.areaChoice === "vector" && selection.phase === "reading") {
-            const keepCalculation = this.areaStatistics.hasCapturedInputs && !this.active;
-            if (keepCalculation) { this.render(); return; }
+    setVectorSelectionState(selection, channel = "vector") {
+        const newSequence = selection.sequence !== this.vectorPreparationSequences.get(channel);
+        if (newSequence && (selection.phase === "reading" || selection.explicit)) {
+            this.vectorPreparationSequences.set(channel, selection.sequence);
+            if (channel === "vector" && selection.explicit) {
+                this.preservedVectorPreparations.clear();
+                this.pendingVectorArea = null;
+                if (this.areaChoice === "vector") {
+                    this.vectorArea = null; this.vectorAreaLabel = "";
+                    this.updateAreaInputs();
+                    return;
+                }
+            } else if (selection.phase === "reading" && this.keepCapturedVectorInputs &&
+                ["catalogSelection", "polygonArea"].includes(this.getSelectedArea()?.kind)) {
+                this.preservedVectorPreparations.add(channel);
+            }
+        }
+        if (selection.phase !== "reading") { this.preservedVectorPreparations.delete(channel); return; }
+        if (channel === "vector" && this.areaChoice === "vector") {
+            if (this.keepCapturedVectorInputs) { this.render(); return; }
             this.vectorArea = null;
             this.updateAreaInputs();
         }
     }
 
-    /** Release changed polygon inputs, preserving captured work in a hidden panel.
-     * Active calculations using the invalidated area are cancelled.
+    /** Release changed polygons through the caller's existing area-input channel.
+     * Captured passive updates survive foreground changes; other active inputs
+     * using the invalidated area are cancelled.
      * @param {Object} area Catalog-selection or polygon-area descriptor being invalidated.
+     * @param {"all"|"map"} [channel="all"] Map updates invalidate selectedArea only; the statistics owner also invalidates vectorArea.
      * @return {void}
      */
-    invalidateArea(area) {
-        const keepCalculation = this.areaStatistics.hasCapturedInputs && !this.active;
+    invalidateArea(area, channel = "all") {
+        const keepCalculation = this.keepCapturedVectorInputs;
+        if (vectorAreasEqual(area, this.pendingVectorArea?.area)) this.pendingVectorArea = null;
         if (keepCalculation) { this.render(); return; }
-        /** Compare the invalidated vector input with a captured calculation area.
-         * @param {Object|null} candidate Captured area. @return {boolean} Same selection identity.
-         */
-        const matches = candidate => area.kind === "polygonArea" ? candidate?.polygonArea?.id === area.polygonArea.id
-            : vectorSelectionsEqual(candidate?.catalogSelection, area.catalogSelection);
-        if (matches(this.vectorArea)) this.vectorArea = null;
-        if (matches(this.selectedArea)) this.selectedArea = null;
+        if (channel !== "map" && vectorAreasEqual(area, this.vectorArea)) this.vectorArea = null;
+        if (vectorAreasEqual(area, this.selectedArea)) this.selectedArea = null;
         this.updateAreaInputs();
     }
 
@@ -415,13 +482,17 @@ export class RasterSeriesController {
 
     /** Adopt a committed map area without forgetting this calculation's area during map refresh.
      * A null map snapshot means no new selection. Explicit source invalidation
-     * clears affected polygon areas through invalidateArea(). Hidden work retains its inputs.
+     * clears affected polygon areas through invalidateArea(). Hidden work and
+     * passive polygon preparations retain their captured inputs through foreground changes.
      * @param {Object|null} area Newly selected Processing area, or null when the map has no selection to publish.
      * @param {string} [label="Current sampling area"] Area description. @return {void}
      */
     setArea(area, label = "Current sampling area") {
-        const keepCalculation = this.areaStatistics.hasCapturedInputs && !this.active;
-        if (area === null || keepCalculation) { this.render(); return; }
+        const keepCalculation = this.keepCapturedVectorInputs;
+        if (area === null || keepCalculation) {
+            if (keepCalculation && this.areaChoice === "selection" && ["catalogSelection", "polygonArea"].includes(area?.kind)) this.pendingVectorArea = {area, label};
+            this.render(); return;
+        }
         this.selectedArea = area; this.selectedAreaLabel = label;
         this.updateAreaInputs();
     }
@@ -444,6 +515,26 @@ export class RasterSeriesController {
         return JSON.stringify(identities[0]) !== JSON.stringify(identities[1]);
     }
 
+    /** Whether a prepared source/predicate differs from this calculation's captured polygons.
+     * @return {boolean} The latest polygon filter needs an explicit area choice.
+     */
+    get hasPendingVectorArea() {
+        const pending = this.pendingVectorArea, selected = this.getSelectedArea();
+        return !!pending && ["catalogSelection", "polygonArea"].includes(selected?.kind) && !vectorAreasEqual(pending.area, selected);
+    }
+
+    /** Explain a newer polygon filter without relabeling captured calculation inputs.
+     * @return {string} Guidance for explicitly adopting the latest filter, or empty when unchanged.
+     */
+    get pendingVectorAreaMessage() {
+        if (!this.hasPendingVectorArea) return "";
+        const pending = this.pendingVectorArea;
+        const label = this.areaChoice === "vector" ? this.vectorAreaLabel : this.selectedAreaLabel;
+        const action = this.areaChoice === "vector" ? "Use current polygon filter to update these statistics."
+            : "Choose polygon layer, then select the layer and filter for these statistics.";
+        return `These statistics use the previous filter: ${label}. The polygon layer now selects ${pending.label}. ${action}`;
+    }
+
     /** Supply the area calculator with chosen original sources, independent of chart order. @return {void} */
     updateAreaInputs() {
         const area = this.getSelectedArea();
@@ -459,11 +550,15 @@ export class RasterSeriesController {
             area, label, this.formulas, this.position);
     }
 
-    /** Choose an area source and ask composition to start or cancel polygon selection.
-     * Choosing Vector again retries selection without reusing the previous polygons.
+    /** Commit an explicit area choice and start or cancel polygon selection through composition.
+     * This intent replaces captured inputs even while a filter editor hides this panel.
+     * Replacement calculations start when the panel is active. Choosing Vector again
+     * retries selection without reusing the previous polygons.
      * @param {"selection"|"vector"|"whole"} choice Area source. @return {void}
      */
     chooseArea(choice) {
+        this.preservedVectorPreparations.clear();
+        this.pendingVectorArea = null;
         this.areaChoice = choice;
         if (choice === "vector") this.vectorArea = null;
         if (choice === "selection" && !["selectedArea", "samplingBox"].includes(this.selectedArea?.kind)) {
@@ -473,6 +568,7 @@ export class RasterSeriesController {
         this.render();
         this.onAreaChoice(choice);
         this.updateAreaInputs();
+        this.preservedVectorPreparations.clear();
     }
 
     /** Add one editable formula, up to the backend's five-calculation limit.
@@ -576,13 +672,14 @@ export class RasterSeriesController {
         this.view.render({
             active: this.active, area: { formulas: this.formulas, sources: area.sources, areaChoice: this.areaChoice,
                 area: this.getSelectedArea(), areaLabel: this.areaChoice === "vector" ? this.vectorAreaLabel : this.selectedAreaLabel,
-                results: area.results,
+                results: area.results, hasPendingVectorArea: this.hasPendingVectorArea,
                 recoverable: area.needsRecovery, hasErrors: area.hasErrors }, statistics, plots: this.plots,
             sources: this.sourceChoices(),
             rows, previousRows: showingPrevious ? statistics.flatMap(statistic => statistic.previousRows) : null,
             showingPrevious, busy: area.busy, chartType: this.chartType, direction: this.direction,
             message: area.results.size + " of " + sources.length + " rasters complete. " + area.message +
-                (this.hasPendingInputs ? " Results use the previous inputs." : ""),
+                (this.hasPendingInputs ? " Results use the previous inputs." : "") +
+                (this.pendingVectorAreaMessage ? " " + this.pendingVectorAreaMessage : ""),
             canDownload: area.results.size > 0 && !area.busy,
         });
     }
@@ -608,11 +705,12 @@ export class RasterSeriesController {
             variableBound: this.sources.some(source => source.key === this.temporal.viewKey), selectionError: this.temporalSelectionError()},
             area: {formulas: this.formulas, sources: [], areaChoice: this.areaChoice, area: this.getSelectedArea(),
                 areaLabel: this.areaChoice === "vector" ? this.vectorAreaLabel : this.selectedAreaLabel,
-                results: area.results, recoverable: area.needsRecovery, hasErrors: area.hasErrors},
+                results: area.results, hasPendingVectorArea: this.hasPendingVectorArea, recoverable: area.needsRecovery, hasErrors: area.hasErrors},
             statistics, plots: this.plots, sources: this.sourceChoices(), rows: showingPrevious ? [] : observations.flatMap((_, index) => statistics.map(statistic => statistic.rows[index])),
             previousRows: showingPrevious ? statistics.flatMap(statistic => statistic.previousRows) : null,
             showingPrevious, busy: area.busy, workProgress: area.temporalWork, chartType: this.chartType, direction: this.direction,
-            message: this.temporalSelectionError() || area.message,
+            message: (this.temporalSelectionError() || area.message) +
+                (this.pendingVectorAreaMessage ? " " + this.pendingVectorAreaMessage : ""),
             canDownload: !!result && !area.busy});
     }
 
