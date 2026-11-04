@@ -86,8 +86,9 @@ export class RasterGridView {
         });
         this.unit.textContent = value.unit ? `Unit: ${value.unit}.` : "Pixel sizes use the output projection's coordinate units.";
         const choice = value.choices.find(option => option.key === value.sourceKey);
-        this.description.textContent = `Every raster uses this grid over the Analysis area. Grid origin: ${value.origin.join(", ")}${value.unit ? ` ${value.unit}` : ""}.` +
-            (["auto", "source"].includes(value.mode) && choice?.grid.approximate ? " This pixel size is an approximation at the source's center, not a uniform conversion across the source." : "");
+        this.description.textContent = ["auto", "source"].includes(value.mode) && choice?.grid.approximate
+            ? "This pixel size is an approximation at the source's center, not a uniform conversion across the source." : "";
+        this.description.hidden = !this.description.textContent;
         let error = "";
         try { captureRasterPreparation(value, draft); } catch (problem) { error = problem.message; }
         this.status.textContent = value.loading ? "Loading pixel-size choices…" : value.error ?

@@ -284,8 +284,7 @@ export class ModelsView {
         }
         const runLabel = temporal ? "Run analysis" : "Run model";
         const run = this.button(runLabel, () => {}, "models-primary"); run.type = "submit";
-        const hint = this.element("p", `${runLabel} uses the choices shown here. You can keep using the map while it runs. To stop it, choose Cancel run.`, "models-help");
-        fields.append(hint, run); form.append(fields);
+        fields.append(run); form.append(fields);
         form.addEventListener("submit", event => { event.preventDefault(); this.handlers.onSubmit(); });
         const details = this.recipeDetails();
         this.elements.setup.replaceChildren(form, details.root);
@@ -298,11 +297,11 @@ export class ModelsView {
      */
     getVectorFilterHost(name) { return this.setup.inputs[name].filterHost; }
 
-    /** Create the secondary YAML actions without expanding permanent setup chrome.
-     * @return {Object} Details wrapper and download controls.
+    /** Build a collapsed recipe disclosure with YAML preview and download actions.
+     * @return {{root:HTMLDetailsElement,preview:HTMLButtonElement,model:HTMLAnchorElement,run:HTMLAnchorElement,message:HTMLParagraphElement}} Stable disclosure and YAML action controls.
      */
     recipeDetails() {
-        const root = this.element("details", "", "models-details"); root.append(this.element("summary", "Recipe & downloads"));
+        const root = this.element("details", "", "models-details"); root.append(this.element("summary", "Click to inspect the EOlab model recipe"));
         const actions = this.element("div", "", "models-actions");
         const preview = this.button("View Model YAML", this.handlers.onYaml, "models-action");
         const model = this.element("a", "Download Model YAML"); model.download = "";
