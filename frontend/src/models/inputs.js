@@ -195,8 +195,8 @@ export function modelViewportArea(bounds) {
  * @return {boolean} Whether this field accepts the area kind.
  */
 export function modelSupportsArea(type, area) {
-    const supportedAreaKinds = type === "clip_area" ? ["selectedArea", "catalogSelection"] :
-        type === "summary_area" ? ["selectedArea", "catalogSelection", "wholeRaster", "polygonArea"] :
+    const supportedAreaKinds = type === "clip_area" ? ["selectedArea", "samplingBox", "catalogSelection"] :
+        type === "summary_area" ? ["selectedArea", "samplingBox", "catalogSelection", "wholeRaster", "polygonArea"] :
             ["mask_source", "habitat_references"].includes(type) ? ["catalogSelection"] : [];
     return supportedAreaKinds.includes(area?.kind);
 }
@@ -241,7 +241,7 @@ export function createModelDraft(model, context, id) {
         } else if (["summary_area", "clip_area", "mask_source", "habitat_references"].includes(input.type)) {
             const explicitSelection = ["mask_source", "habitat_references"].includes(input.type);
             let area = explicitSelection ? null : context.area ? modelAreaInput(context.area) : {kind: "wholeRaster"};
-            let areaMode = explicitSelection ? "vector" : ({wholeRaster: "whole", selectedArea: "samplingArea", polygonArea: "mapPolygons"})[area.kind] ?? "captured";
+            let areaMode = explicitSelection ? "vector" : ({wholeRaster: "whole", selectedArea: "samplingArea", samplingBox: "samplingArea", polygonArea: "mapPolygons"})[area.kind] ?? "captured";
             let selectionError = "";
             if (!explicitSelection && (!modelSupportsArea(input.type, area) || usesTemporal && !context.area ||
                 modelHasInput(model, "habitat_stack") && area.kind === "wholeRaster")) {
@@ -298,7 +298,7 @@ export function captureModelSubmission(draft, requestId, utcOffsetMinutes = -new
                 if (area.kind === "catalogSelection" && state.areaMode !== "captured" &&
                     !state.vectors.some(source => modelSourceKey(source) === modelSourceKey(area.selection)))
                     throw new Error("Add the selected vector layer to Map layers before running this model.");
-                if (area.kind === "selectedArea") modelAreaInput(area);
+                if (["selectedArea", "samplingBox"].includes(area.kind)) modelAreaInput(area);
                 else if (area.kind === "catalogSelection") modelAreaInput({kind: area.kind, catalogSelection: area.selection});
                 else if (area.kind === "polygonArea") modelAreaInput({kind: area.kind, polygonArea: area.reference});
                 inputs[name] = references ? {kind: "vector", selection: structuredClone(area.selection)} : structuredClone(area);

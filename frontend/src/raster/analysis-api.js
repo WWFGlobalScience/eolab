@@ -120,7 +120,7 @@ export async function sampleRasterPixel(
  * Load bounded band-1 statistics for one original raster and sampling area.
  *
  * @param {Object} item Catalog Item or original-source descriptor.
- * @param {Object} samplingArea Whole raster, selected bounds or filtered catalog/uploaded polygons.
+ * @param {Object} samplingArea Whole raster, rectangle, geodesic box or filtered catalog/uploaded polygons.
  * @param {AbortSignal} signal Cancellation signal for stale UI intent.
  * @param {typeof globalThis.fetch} [fetchImplementation=globalThis.fetch]
  * Browser fetch implementation.
@@ -140,6 +140,9 @@ export async function loadRasterStatistics(
     const requestDocument = analysisSourceBody(item);
     if (normalizedArea.kind === "selectedArea") {
         requestDocument.selectedBounds = normalizedArea.selectedBounds;
+    }
+    if (normalizedArea.kind === "samplingBox") {
+        requestDocument.samplingBox = normalizedArea.samplingBox;
     } else if (normalizedArea.kind === "catalogSelection") {
         requestDocument.catalogSelection = normalizedArea.catalogSelection;
     }
@@ -177,7 +180,7 @@ export async function loadRasterStatistics(
  *
  * @param {Object} xItem Raster source assigned to the X reference grid.
  * @param {Object} yItem Raster source aligned to X, possibly the same source.
- * @param {Object} samplingArea Whole overlap, selected bounds or filtered catalog/uploaded polygons.
+ * @param {Object} samplingArea Whole overlap, rectangle, geodesic box or filtered catalog/uploaded polygons.
  * @param {AbortSignal} signal Cancellation signal for stale pair intent.
  * @param {typeof globalThis.fetch} [fetchImplementation=globalThis.fetch]
  * Browser fetch implementation.
@@ -199,6 +202,7 @@ export async function loadRasterPairedStatistics(
     if (normalizedArea.kind === "selectedArea") {
         requestDocument.selectedBounds = normalizedArea.selectedBounds;
     }
+    if (normalizedArea.kind === "samplingBox") requestDocument.samplingBox = normalizedArea.samplingBox;
     if (normalizedArea.kind === "catalogSelection") requestDocument.catalogSelection = normalizedArea.catalogSelection;
     const response = await fetchImplementation.call(
         globalThis,

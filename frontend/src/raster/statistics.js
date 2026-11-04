@@ -6,6 +6,7 @@
  * estimates values from histogram percentiles. It performs no I/O or rendering.
  */
 import { validateRasterSelectedBounds } from "./geometry.js";
+import { normalizeSamplingBox, samplingBoxesEqual } from "../sampling-box.js";
 import { validateCategoricalDistribution } from "./categorical-statistics.js";
 
 /** Default histogram percentiles used to derive raster color thresholds. */
@@ -53,6 +54,9 @@ export function validateRasterStatistics(statistics) {
         throw rasterStatisticsContractError("band identity");
     }
     const catalogSelection = statistics.catalogSelection ?? null;
+    const samplingBox = statistics.samplingBox ?? null;
+    if ((statistics.scope === "samplingBox") !== (samplingBox !== null)) throw rasterStatisticsContractError("sampling-box scope");
+    if (samplingBox) normalizeSamplingBox(samplingBox);
     const hasValidCatalogSelectionId =
         catalogSelection !== null && !!normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection });
     if (
@@ -70,6 +74,8 @@ export function validateRasterStatistics(statistics) {
         if (statistics.selectedBounds !== null || !hasValidCatalogSelectionId) {
             throw rasterStatisticsContractError("catalog-selection scope");
         }
+    } else if (statistics.scope === "samplingBox") {
+        if (statistics.selectedBounds !== null || catalogSelection !== null) throw rasterStatisticsContractError("sampling-box scope");
     } else if (statistics.scope !== "wholeRaster") {
         throw rasterStatisticsContractError("statistics scope");
     }
@@ -225,6 +231,10 @@ export function validateRasterStatisticsForSelection(
             }
         }
     }
+    if (normalizedArea.kind === "samplingBox" && (validatedStatistics.scope !== "samplingBox" ||
+        !samplingBoxesEqual(validatedStatistics.samplingBox, normalizedArea.samplingBox))) {
+        throw rasterStatisticsContractError("sampling-box response identity");
+    }
     if (
         normalizedArea.kind === "catalogSelection" &&
         (
@@ -258,6 +268,8 @@ export function rasterStatisticsMatchesSelection(
     if (normalizedArea.kind === "wholeRaster") {
         return statistics.scope === "wholeRaster";
     }
+    if (normalizedArea.kind === "samplingBox") return statistics.scope === "samplingBox" &&
+        samplingBoxesEqual(statistics.samplingBox, normalizedArea.samplingBox);
     return (
         statistics.scope === "selectedArea" &&
         ["west", "south", "east", "north"].every(

@@ -374,3 +374,21 @@ test("pixel analysis preserves catalog-source failures", async () => {
     return true;
   });
 });
+
+
+test("sampling-box analysis captures center/size and rejects stale or rectangular results", async () => {
+  const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+  const response = {...RASTER_STATISTICS, scope: "samplingBox", samplingBox: area.samplingBox};
+  let body;
+  const result = await loadRasterStatistics(MOUNTED_GEOTIFF_ITEM, area, undefined, async (_url, options) => {
+    body = JSON.parse(options.body);
+    return new Response(JSON.stringify(response));
+  });
+  assert.deepEqual(body, {collectionId: MOUNTED_GEOTIFF_ITEM.collection, itemId: MOUNTED_GEOTIFF_ITEM.id, samplingBox: area.samplingBox});
+  assert.deepEqual(result.samplingBox, area.samplingBox);
+  for (const stale of [{...response, samplingBox: {...area.samplingBox, sideLengthKm: 601}},
+      {...response, selectedBounds: SELECTED_BOUNDS}, SELECTED_RASTER_STATISTICS]) {
+    await assert.rejects(loadRasterStatistics(MOUNTED_GEOTIFF_ITEM, area, undefined,
+      async () => new Response(JSON.stringify(stale))));
+  }
+});

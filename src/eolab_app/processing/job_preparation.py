@@ -22,7 +22,15 @@ def prepare_aggregate_job(
         specification=data,
         summary={
             **{key: data[key] for key in ("sources", "calculations", "grid")},
-            "area": {"kind": spec.area.kind, "bounds": spec.area.bounds},
+            "area": {
+                "kind": spec.area.kind,
+                "bounds": spec.area.bounds,
+                **(
+                    {"samplingBox": spec.area.samplingBox.model_dump(mode="json")}
+                    if spec.area.samplingBox
+                    else {}
+                ),
+            },
         },
         reserved_bytes=0,
         operation=spec.operation,
@@ -43,7 +51,15 @@ def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
         summary={
             "source": spec.source.model_dump(by_alias=True),
             "grid": spec.grid.model_dump(mode="json"),
-            "area": {"kind": spec.area.kind, "bounds": list(spec.area.bounds)},
+            "area": {
+                "kind": spec.area.kind,
+                "bounds": list(spec.area.bounds),
+                **(
+                    {"samplingBox": spec.area.samplingBox.model_dump(mode="json")}
+                    if spec.area.samplingBox
+                    else {}
+                ),
+            },
         },
         reserved_bytes=0,
         operation=spec.operation,

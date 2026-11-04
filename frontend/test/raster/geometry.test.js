@@ -1,14 +1,21 @@
+import { samplingBoxBounds } from "../../src/sampling-box.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildRasterSampleWindowBounds,
+  buildRasterSampleWindowArea,
   DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM,
   MAXIMUM_RASTER_SAMPLE_WINDOW_SIZE_KM,
   isCanonicalWgs84Position,
   validateRasterSampleWindowSize,
   validateRasterSelectedBounds,
 } from "../../src/raster/geometry.js";
+
+/** Derive the read-window envelope without treating it as membership geometry.
+ * @param {Object} center WGS 84 center. @param {number} size Box side in kilometers.
+ * @return {Object} Complete geodesic envelope.
+ */
+function boxEnvelope(center,size) { return samplingBoxBounds(buildRasterSampleWindowArea(center,size).samplingBox); }
 
 test("canonical WGS 84 positions stay inside the single map world", () => {
   assert.equal(
@@ -35,11 +42,11 @@ test("canonical WGS 84 positions stay inside the single map world", () => {
 });
 
 test("sample windows use ground distance instead of projected map metres", () => {
-  const equatorial = buildRasterSampleWindowBounds(
+  const equatorial = boxEnvelope(
     { longitude: 0, latitude: 0 },
     DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM,
   );
-  const highLatitude = buildRasterSampleWindowBounds(
+  const highLatitude = boxEnvelope(
     { longitude: 0, latitude: 60 },
     DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM,
   );
@@ -59,18 +66,18 @@ test("sample window contract rejects invalid sizes and unsupported crossings", (
     assert.throws(() => validateRasterSampleWindowSize(value), /between 1 and/);
   }
   assert.throws(
-    () => buildRasterSampleWindowBounds(
+    () => boxEnvelope(
       { longitude: 179.5, latitude: 0 },
       200,
     ),
-    /pole or date line/,
+    /pole|date line/,
   );
   assert.throws(
-    () => buildRasterSampleWindowBounds(
+    () => boxEnvelope(
       { longitude: 0, latitude: 89.5 },
       200,
     ),
-    /pole or date line/,
+    /pole|date line/,
   );
 });
 
@@ -78,7 +85,7 @@ test("continental boxes grow beyond 300 km while retaining the non-wrapping cont
   let previous = null;
   for (const size of [301, 1000, 5000, 10000, MAXIMUM_RASTER_SAMPLE_WINDOW_SIZE_KM]) {
     assert.equal(validateRasterSampleWindowSize(size), size);
-    const bounds = buildRasterSampleWindowBounds({ longitude: 0, latitude: 0 }, size);
+    const bounds = boxEnvelope({ longitude: 0, latitude: 0 }, size);
     assert.ok(bounds.west > -180 && bounds.east < 180);
     assert.ok(bounds.south > -90 && bounds.north < 90);
     assert.ok(bounds.west < 0 && bounds.east > 0);
@@ -89,10 +96,10 @@ test("continental boxes grow beyond 300 km while retaining the non-wrapping cont
     }
     previous = bounds;
   }
-  const india = buildRasterSampleWindowBounds({ longitude: 78, latitude: 22 }, 5000);
+  const india = boxEnvelope({ longitude: 78, latitude: 22 }, 5000);
   assert.ok(india.east - india.west > 40);
   assert.ok(india.north - india.south > 40);
   for (const center of [{longitude: 170, latitude: 0}, {longitude: 0, latitude: 70}]) {
-    assert.throws(() => buildRasterSampleWindowBounds(center, 5000), /Whole raster/);
+    assert.throws(() => boxEnvelope(center, 5000), /pole|date line/);
   }
 });

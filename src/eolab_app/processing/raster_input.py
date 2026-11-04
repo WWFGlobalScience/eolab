@@ -4,6 +4,7 @@ from eolab_app.bounded_vector import (
     PolygonRasterizer,
     ProjectedGeometryMemoryError,
 )
+from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.catalog_selection import ResolvedCatalogSelection
 import math
 from typing import Any
@@ -18,6 +19,7 @@ from eolab_app.raster.reader import RasterData
 from eolab_app.raster.bounded_window import (
     NoRasterBoundsOverlapError,
     selected_raster_area_for_wgs84_bounds,
+    selected_raster_area_for_sampling_box,
     selected_raster_area_for_wgs84_polygons,
 )
 from eolab_app.raster.models import SelectedRasterArea, CanonicalWgs84Bounds
@@ -73,13 +75,15 @@ def select_area(
     resolved: ResolvedCatalogSelection | None = None,
     *,
     max_retained_polygon_bytes: int | None = 0,
+    sampling_box: Wgs84SamplingBox | None = None,
 ) -> SelectedRasterArea:
     """Locate a selected area on the raster grid and prepare its polygon-mask source.
 
     Args:
         dataset: Validated open native raster.
         kind: Explicit box, catalog descriptor, or owned polygon input.
-        bounds: Canonical WGS84 rectangle.
+        bounds: Canonical WGS84 envelope retained with the area.
+        sampling_box: Validated descriptor when kind is samplingBox; no stored ring.
         geometries: Immutable polygon selection polygons.
         max_coordinates: Transformation coordinate ceiling, or None for no ceiling.
         resolved: Reauthorized original vector source for catalog selections only.
@@ -108,6 +112,10 @@ def select_area(
             )
             return SelectedRasterArea(
                 source_window=reader.source_window, projected_geometries=reader
+            )
+        if kind == "samplingBox":
+            return selected_raster_area_for_sampling_box(
+                dataset, sampling_box, max_coordinates
             )
         if kind == "bounds":
             return selected_raster_area_for_wgs84_bounds(dataset, bounds)

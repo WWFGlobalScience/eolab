@@ -152,6 +152,7 @@ def get_raster_window_and_mask_source(
         None,
         area.resolved,
         max_retained_polygon_bytes=max_retained_polygon_bytes,
+        sampling_box=area.samplingBox,
     )
     return selected.source_window, selected.projected_geometries
 

@@ -6,6 +6,7 @@ import json
 
 from pydantic import ValidationError
 
+from eolab_app.sampling_box import sampling_box_bounds
 from eolab_app.processing.aggregate_models import (
     AggregateSpec,
     AggregateValue,
@@ -58,6 +59,12 @@ def calculation_result_cache_keys(
             raise ValueError("Catalog identity or a published checksum is required")
         if calculation.polygonArea is not None:
             area = {"kind": "polygons", "geometryHash": calculation.polygonArea.sha256}
+        elif calculation.samplingBox is not None:
+            area = AggregateArea(
+                kind="samplingBox",
+                bounds=sampling_box_bounds(calculation.samplingBox),
+                samplingBox=calculation.samplingBox,
+            ).model_dump(mode="json", by_alias=True)
         elif calculation.catalogSelection is not None:
             area = {
                 "kind": "catalogSelection",

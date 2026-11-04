@@ -10,6 +10,7 @@ from eolab_app.catalog_selection import VectorSelection
 from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.clip_models import ClipGrid
 from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.raster.models import Wgs84Bounds
 from eolab_app.raster.source_models import RasterSourceReference
 
@@ -183,6 +184,7 @@ class HabitatRequest(HabitatSchema):
     preparation: HabitatPreparation
     settings: HabitatSettings
     selectedBounds: Wgs84Bounds | None = None
+    samplingBox: Wgs84SamplingBox | None = None
     catalogSelection: VectorSelection | None = None
     polygonArea: PolygonAreaReference | None = None
     wholeRaster: Literal[True] | None = None
@@ -249,6 +251,7 @@ class HabitatRequest(HabitatSchema):
                 value is not None
                 for value in (
                     self.selectedBounds,
+                    self.samplingBox,
                     self.catalogSelection,
                     self.polygonArea,
                     self.wholeRaster,

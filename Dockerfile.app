@@ -33,6 +33,7 @@ COPY frontend/ ./
 COPY tests/fixtures/saved-map-v1.json /build/tests/fixtures/saved-map-v1.json
 COPY tests/fixtures/saved-map-v2.json /build/tests/fixtures/saved-map-v2.json
 COPY tests/fixtures/saved-map-v3-categorical.json /build/tests/fixtures/saved-map-v3-categorical.json
+COPY tests/fixtures/sampling-box-geodesics.json /build/tests/fixtures/sampling-box-geodesics.json
 RUN npm run build \
     && (node --version; npm --version) > /frontend-build-versions.txt
 

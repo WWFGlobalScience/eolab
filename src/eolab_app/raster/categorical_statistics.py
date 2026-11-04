@@ -29,14 +29,17 @@ from eolab_app.raster.source_contract import (
     require_raster_analysis_georeferencing,
     require_signed_raster_dependencies,
 )
+from eolab_app.raster.bounded_window import selected_raster_area_for_sampling_box
 from eolab_app.raster.statistics import (
     selected_raster_area_for_wgs84_bounds,
     selected_raster_area_for_catalog_selection,
+    RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
     summarize_raster_sample,
 )
 from eolab_app.sampling_area import (
     RasterSamplingArea,
     SelectedBoundsSamplingArea,
+    SamplingBoxArea,
     CatalogSelectionSamplingArea,
     WholeRasterSamplingArea,
 )
@@ -201,6 +204,12 @@ def read_raster_categorical_statistics(
         if isinstance(sampling_area, SelectedBoundsSamplingArea):
             selected_area = selected_raster_area_for_wgs84_bounds(
                 dataset, sampling_area.bounds
+            )
+        elif isinstance(sampling_area, SamplingBoxArea):
+            selected_area = selected_raster_area_for_sampling_box(
+                dataset,
+                sampling_area.box,
+                RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
             )
         elif isinstance(sampling_area, CatalogSelectionSamplingArea):
             selected_area = selected_raster_area_for_catalog_selection(

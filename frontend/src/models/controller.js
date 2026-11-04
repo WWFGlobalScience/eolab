@@ -438,8 +438,8 @@ export class ModelsController {
                     input.area = modelViewportArea(context.viewportBounds);
                     input.areaDescription = "Visible map area";
                 } else {
-                    const kind = input.areaMode === "samplingArea" ? "selectedArea" : "polygonArea";
-                    if (context.area?.kind !== kind) throw new Error(input.areaMode === "samplingArea"
+                    const kinds = input.areaMode === "samplingArea" ? ["selectedArea", "samplingBox"] : ["polygonArea"];
+                    if (!kinds.includes(context.area?.kind)) throw new Error(input.areaMode === "samplingArea"
                         ? "Click the map to choose a sampling area for this analysis."
                         : "Select polygons on the map to choose an area for this analysis.");
                     input.area = modelAreaInput(context.area);

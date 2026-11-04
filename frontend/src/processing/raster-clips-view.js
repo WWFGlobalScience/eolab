@@ -106,7 +106,7 @@ export class RasterClipsView {
         e.new.hidden = review;
         this.onContextChange({ source: review ? e["source-name"].textContent : this.sourceName(current, state.sources),
             scope: review ? e["area-description"].textContent : describeClipArea(current.area),
-            usesSamplingBox: review && !locked && area?.kind === "selectedArea" });
+            usesSamplingBox: review && !locked && ["selectedArea", "samplingBox"].includes(area?.kind) });
         e.create.disabled = locked || !source || !area;
         e.create.textContent = state.submitting ? "Submitting download…" : "Prepare download";
         e.message.textContent = state.message;

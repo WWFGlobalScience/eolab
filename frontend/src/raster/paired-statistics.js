@@ -1,6 +1,7 @@
 /** Domain validation and lookup helpers for paired raster statistics. */
 import { vectorSelectionsEqual, normalizeRasterSamplingArea } from "../selected-area.js";
 import { validateRasterSelectedBounds } from "./geometry.js";
+import { normalizeSamplingBox, samplingBoxesEqual } from "../sampling-box.js";
 import { estimateHistogramPercentile } from "./statistics.js";
 
 export const RASTER_PAIRED_HISTOGRAM_BIN_COUNT = 32;
@@ -31,12 +32,12 @@ export function estimateRasterPairedHistogramPercentile(statistics, axis, percen
 /**
  * Normalize the paired statistics sampling-area union.
  *
- * @param {Object} samplingArea Whole overlap or selected WGS 84 bounds.
+ * @param {Object} samplingArea Whole overlap, WGS 84 rectangle, geodesic box or vector selection.
  * @return {Readonly<Object>} Immutable normalized sampling-area value.
- * @throws {TypeError} If fields fall outside the paired public contract.
+ * @throws {TypeError|RangeError} If fields or a box boundary fall outside the paired public contract.
  */
 export function normalizeRasterPairedSamplingArea(samplingArea) {
-    if (samplingArea?.kind === "catalogSelection") return normalizeRasterSamplingArea(samplingArea);
+    if (["catalogSelection", "samplingBox"].includes(samplingArea?.kind)) return normalizeRasterSamplingArea(samplingArea);
     if (
         samplingArea?.kind === "wholeOverlap" &&
         Object.keys(samplingArea).length === 1
@@ -103,7 +104,7 @@ export function validateRasterPairedStatistics(statistics) {
         throw pairedContractError("response data");
     }
     if (
-        !["wholeOverlap", "selectedArea", "catalogSelection"].includes(statistics.scope) ||
+        !["wholeOverlap", "selectedArea", "catalogSelection", "samplingBox"].includes(statistics.scope) ||
         statistics.referenceGrid !== "x" ||
         statistics.resampling !== "nearest" ||
         !["sampleGrid", "exactReferenceGrid"].includes(
@@ -116,6 +117,8 @@ export function validateRasterPairedStatistics(statistics) {
     }
     if ((statistics.scope === "catalogSelection") !== (statistics.catalogSelection != null)) throw pairedContractError("catalog selection scope");
     if (statistics.scope === "catalogSelection") normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection: statistics.catalogSelection });
+    if ((statistics.scope === "samplingBox") !== (statistics.samplingBox != null)) throw pairedContractError("sampling-box scope");
+    if (statistics.samplingBox) normalizeSamplingBox(statistics.samplingBox);
     const hasBounds = statistics.selectedBounds !== null;
     if ((statistics.scope === "selectedArea") !== hasBounds) {
         throw pairedContractError("scope");
@@ -225,6 +228,10 @@ export function validateRasterPairedStatisticsForSelection(
     const area = normalizeRasterPairedSamplingArea(samplingArea);
     if (area.kind === "catalogSelection") {
         if (validated.scope !== "catalogSelection" || !vectorSelectionsEqual(validated.catalogSelection, area.catalogSelection)) throw pairedContractError("catalog selection identity");
+        return validated;
+    }
+    if (area.kind === "samplingBox") {
+        if (validated.scope !== "samplingBox" || !samplingBoxesEqual(validated.samplingBox,area.samplingBox)) throw pairedContractError("sampling-box response identity");
         return validated;
     }
     if (area.kind === "wholeOverlap") {

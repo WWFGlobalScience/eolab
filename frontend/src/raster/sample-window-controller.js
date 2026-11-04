@@ -2,35 +2,37 @@
  * Interaction controller for the map's raster sample window.
  *
  * This module owns a passive pointer preview, one-shot map-position selection,
- * and rectangle cleanup. Geometry and Leaflet conversion are delegated, and
- * selecting a window only emits validated bounds to its caller.
+ * and outline cleanup. Neutral geodesic geometry and Leaflet conversion are
+ * delegated. Selection emits its read-window envelope and original center;
+ * captured consumers use the center/size descriptor, never the envelope as its area.
  */
 import {
-    buildRasterSampleWindowBounds,
+    buildRasterSampleWindowArea,
     DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM,
     isCanonicalWgs84Position,
     RASTER_SAMPLE_WINDOW_EDGE_GUIDANCE,
     RASTER_SAMPLE_WINDOW_MAP_BOUNDS_GUIDANCE,
-    RasterSampleWindowBoundaryError,
     validateRasterSampleWindowSize
 } from "./geometry.js";
+import { SamplingBoxBoundaryError, samplingBoxBounds, samplingBoxesEqual } from "../sampling-box.js";
 import { rasterSampleBoundsToLeaflet } from "./leaflet.js";
 
 /**
- * Create a preview or committed rectangle layer.
+ * Create a preview or committed sampling outline.
  *
  * @callback RasterSampleLayerFactory
  * @param {Array<Array<number>>} bounds Leaflet southwest/northeast corners.
- * @param {"preview"|"selection"} kind Requested rectangle presentation.
- * @return {{addTo: (map: Object) => Object, setBounds: (bounds: Array<Array<number>>) => void}}
- * Leaflet-compatible rectangle layer.
+ * @param {"preview"|"selection"} kind Requested layer presentation.
+ * @param {import("../sampling-box.js").SamplingBox|null} samplingBox Optional geodesic geometry.
+ * @return {{addTo: (map: Object) => Object, setSampleWindow: (bounds: Array<Array<number>>, samplingBox: Object|null) => void}}
+ * Leaflet-compatible polygon layer.
  */
 
 /**
  * Receive a committed raster sample window.
  *
  * @callback RasterSampleSelectionHandler
- * @param {Object} bounds Canonical WGS 84 selected bounds.
+ * @param {Object} bounds Canonical WGS 84 read-window envelope.
  * @param {Readonly<{longitude:number,latitude:number}>} center Original click,
  * retained by the caller with its bounds for subsequent resize and restore.
  * @return {void}
@@ -50,7 +52,7 @@ export class RasterSampleWindowController {
      * Create a raster sample-window interaction controller.
      *
      * @param {Object} leafletMap Leaflet-compatible evented map.
-     * @param {RasterSampleLayerFactory} layerFactory Creates rectangles.
+     * @param {RasterSampleLayerFactory} layerFactory Creates geodesic or rectangular outlines.
      * @param {RasterSampleSelectionHandler} onSelect Receives committed bounds.
      * @param {RasterSampleGuidanceHandler} onGuidance Receives guidance text.
      */
@@ -61,9 +63,11 @@ export class RasterSampleWindowController {
         this.onGuidance = onGuidance;
         this.windowSizeKm = DEFAULT_RASTER_SAMPLE_WINDOW_SIZE_KM;
         this.previewLayer = null;
+        this.previewBox = null;
         this.selectionLayer = null;
         this.selectionBounds = null;
-        this.activityBounds = null;
+        this.selectionBox = null;
+        this.activityArea = null;
     }
 
     /**
@@ -89,7 +93,7 @@ export class RasterSampleWindowController {
     }
 
     /**
-     * Resize an existing rectangle without notifying calculation consumers.
+     * Resize an existing sampling box without notifying calculation consumers.
      *
      * @param {{lng:number,lat:number}} position Retained selection center.
      * @return {Object|null} Displayed canonical bounds, or null without a
@@ -100,7 +104,7 @@ export class RasterSampleWindowController {
         const sampleWindow = this.#boundsAt(position);
         if (sampleWindow === null) return null;
         this.clearPreview();
-        this.restoreSelection(sampleWindow.bounds);
+        this.restoreSelection(sampleWindow.bounds, sampleWindow.samplingBox);
         return sampleWindow.bounds;
     }
 
@@ -119,11 +123,12 @@ export class RasterSampleWindowController {
         if (this.previewLayer === null) {
             this.previewLayer = this.layerFactory(
                 sampleWindow.leafletBounds,
-                "preview"
+                "preview", sampleWindow.samplingBox
             ).addTo(this.leafletMap);
         } else {
-            this.previewLayer.setBounds(sampleWindow.leafletBounds);
+            this.previewLayer.setSampleWindow(sampleWindow.leafletBounds, sampleWindow.samplingBox);
         }
+        this.previewBox = sampleWindow.samplingBox;
         return true;
     }
 
@@ -132,6 +137,7 @@ export class RasterSampleWindowController {
         if (this.previewLayer !== null) {
             this.leafletMap.removeLayer(this.previewLayer);
             this.previewLayer = null;
+            this.previewBox = null;
         }
     }
 
@@ -146,36 +152,54 @@ export class RasterSampleWindowController {
             this.selectionLayer = null;
         }
         this.selectionBounds = null;
+        this.selectionBox = null;
     }
 
     /**
      * Restore a retained selection without issuing another statistics request.
      *
-     * @param {Object} bounds Canonical WGS 84 selected bounds.
+     * @param {Object} bounds Canonical read-window envelope.
+     * @param {import("../sampling-box.js").SamplingBox|null} [samplingBox=null] Captured geodesic box; null preserves a rectangular input.
      * @return {void}
      */
-    restoreSelection(bounds) {
+    restoreSelection(bounds, samplingBox = null) {
         const leafletBounds = rasterSampleBoundsToLeaflet(bounds);
         if (this.selectionLayer === null) {
-            this.selectionLayer = this.layerFactory(leafletBounds, "selection").addTo(this.leafletMap);
+            this.selectionLayer = this.layerFactory(leafletBounds, "selection", samplingBox).addTo(this.leafletMap);
         } else {
-            this.selectionLayer.setBounds(leafletBounds);
+            this.selectionLayer.setSampleWindow(leafletBounds, samplingBox);
         }
         this.selectionBounds = bounds;
+        this.selectionBox = samplingBox;
         this.renderActivity();
     }
 
-    /** Mark activity only on the matching committed box. @param {Object|null} bounds Active request area. @return {void} */
-    setActivityBounds(bounds) {
-        this.activityBounds = bounds;
+    /** Mark activity only on the matching captured area. @param {Object|null} area Active request descriptor. @return {void} */
+    setActivityArea(area) {
+        this.activityArea = area;
         this.renderActivity();
     }
 
     /** Synchronize passive SVG feedback without altering sampling. @return {void} */
     renderActivity() {
-        const matches = this.activityBounds && this.selectionBounds &&
-            ["west", "south", "east", "north"].every(key => this.activityBounds[key] === this.selectionBounds[key]);
+        const matches = this.activityArea?.kind === "samplingBox"
+            ? samplingBoxesEqual(this.activityArea.samplingBox, this.selectionBox)
+            : this.activityArea?.kind === "selectedArea" && !this.selectionBox && this.selectionBounds &&
+                ["west", "south", "east", "north"].every(key =>
+                    this.activityArea.selectedBounds[key] === this.selectionBounds[key]);
         this.selectionLayer?.getElement?.()?.classList.toggle("is-calculating", !!matches);
+    }
+
+    /** Redraw retained geometry for a changed map zoom without notifying consumers.
+     * @return {void}
+     */
+    refreshGeometry() {
+        if (this.selectionLayer) {
+            this.selectionLayer.setSampleWindow(rasterSampleBoundsToLeaflet(this.selectionBounds), this.selectionBox);
+        }
+        if (this.previewLayer && this.previewBox) {
+            this.previewLayer.setSampleWindow(rasterSampleBoundsToLeaflet(samplingBoxBounds(this.previewBox)), this.previewBox);
+        }
     }
 
     /**
@@ -189,16 +213,17 @@ export class RasterSampleWindowController {
         this.onGuidance("");
     }
 
-    /** @return {Object|null} Currently displayed canonical WGS 84 bounds. */
-    get selectedBounds() {
-        return this.selectionBounds;
+    /** Return the captured area without storing display vertices. @return {Object|null} Immutable box or rectangle descriptor. */
+    get selectedArea() {
+        return this.selectionBox ? Object.freeze({kind: "samplingBox", samplingBox: this.selectionBox})
+            : this.selectionBounds ? Object.freeze({kind: "selectedArea", selectedBounds: this.selectionBounds}) : null;
     }
 
     /**
-     * Build API and single-world bounds at one Leaflet position.
+     * Build a captured geodesic box and its single-world read-window envelope.
      *
      * @param {{lng: number, lat: number}} position Leaflet map position.
-     * @return {{bounds:Object,leafletBounds:Array}|null} Sampling window, or
+     * @return {{bounds:Object,samplingBox:import("../sampling-box.js").SamplingBox,leafletBounds:number[][]}|null} Sampling window, or
      * null outside the map or when the window crosses a pole or date line.
      * @throws {RangeError} If the configured size is invalid.
      */
@@ -213,17 +238,15 @@ export class RasterSampleWindowController {
             return null;
         }
         try {
-            const bounds = buildRasterSampleWindowBounds(
-                center,
-                this.windowSizeKm
-            );
+            const {samplingBox} = buildRasterSampleWindowArea(center, this.windowSizeKm);
+            const bounds = samplingBoxBounds(samplingBox);
             this.onGuidance("");
             return {
-                bounds,
+                bounds, samplingBox,
                 leafletBounds: rasterSampleBoundsToLeaflet(bounds),
             };
         } catch (error) {
-            if (!(error instanceof RasterSampleWindowBoundaryError)) {
+            if (!(error instanceof SamplingBoxBoundaryError)) {
                 throw error;
             }
             this.clearPreview();
@@ -244,7 +267,7 @@ export class RasterSampleWindowController {
         if (sampleWindow === null) {
             return null;
         }
-        this.restoreSelection(sampleWindow.bounds);
+        this.restoreSelection(sampleWindow.bounds, sampleWindow.samplingBox);
         this.onSelect(sampleWindow.bounds, Object.freeze({
             longitude: position.lng,
             latitude: position.lat,

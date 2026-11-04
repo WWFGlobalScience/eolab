@@ -8,12 +8,18 @@ from rasterio.crs import CRS
 from rasterio.warp import transform
 from rasterio.windows import Window
 
+from eolab_app.sampling_box import (
+    Wgs84SamplingBox,
+    sampling_box_bounds,
+    tessellate_sampling_box,
+)
 from eolab_app.raster.models import CanonicalWgs84Bounds, SelectedRasterArea
 from eolab_app.raster.reader import RasterDataset
 from eolab_app.raster.temporal import TemporalRasterDataset
 
 BOUNDED_WGS84_DENSIFY_POINTS = 21
 BOUNDED_SOURCE_WINDOW_PADDING_PIXELS = 1
+SAMPLING_BOX_MAXIMUM_ERROR_PIXELS = 0.01
 
 
 class NoRasterBoundsOverlapError(ValueError):
@@ -230,6 +236,74 @@ def selected_raster_area_for_wgs84_bounds(
         dataset,
         ({"type": "Polygon", "coordinates": [projected_ring]},),
         2 * len(projected_ring),
+    )
+    return SelectedRasterArea(
+        source_window=_source_window_for_projected_geometries(dataset, geometries),
+        projected_geometries=geometries,
+    )
+
+
+def selected_raster_area_for_sampling_box(
+    dataset: RasterDataset,
+    sampling_box: Wgs84SamplingBox,
+    maximum_coordinates: int | None,
+    coordinate_transform: Callable[..., tuple[list[float], list[float]]] = transform,
+) -> SelectedRasterArea:
+    """Project a geodesic box within one hundredth of a native pixel.
+
+    The inverse affine measures error in actual raster pixels, including rotated
+    or anisotropic grids. Existing polygon inclusion and window mechanisms then
+    receive this read-local ring; no geometry is stored with the descriptor.
+
+    Args:
+        dataset: Open georeferenced raster with its admitted grid.
+        sampling_box: Boundary-validated center and kilometer side length.
+        maximum_coordinates: Interactive projection capacity, or None for Processing.
+        coordinate_transform: Injectable WGS84-to-source CRS transformation.
+
+    Returns:
+        Projected polygon and its clipped, padded native-pixel window.
+
+    Raises:
+        NoRasterBoundsOverlapError: If the polygon misses the raster.
+        ValueError: If projection, convergence or coordinate capacity fails.
+    """
+    prepare_raster_for_wgs84_bounds(dataset, sampling_box_bounds(sampling_box))
+    inverse = ~dataset.transform
+    projected_positions: dict[tuple[float, float], tuple[float, float]] = {}
+
+    def project_pixels(
+        positions: tuple[tuple[float, float], ...],
+    ) -> tuple[tuple[float, float], ...]:
+        """Return source-pixel positions for measuring geodesic chord error.
+
+        Args:
+            positions: WGS84 positions selected by adaptive subdivision.
+
+        Returns:
+            Floating native columns and rows in the same order.
+        """
+        x, y = coordinate_transform(
+            "EPSG:4326",
+            dataset.crs,
+            [point[0] for point in positions],
+            [point[1] for point in positions],
+        )
+        projected = tuple(zip(x, y, strict=True))
+        projected_positions.update(zip(positions, projected, strict=True))
+        return tuple(inverse * point for point in projected)
+
+    ring = tessellate_sampling_box(
+        sampling_box,
+        project_pixels,
+        maximum_error_pixels=SAMPLING_BOX_MAXIMUM_ERROR_PIXELS,
+        maximum_coordinates=maximum_coordinates,
+    )
+    projected_ring = tuple(projected_positions[point] for point in ring)
+    geometries = _periodic_polygon_copies(
+        dataset,
+        ({"type": "Polygon", "coordinates": [projected_ring]},),
+        maximum_coordinates,
     )
     return SelectedRasterArea(
         source_window=_source_window_for_projected_geometries(dataset, geometries),

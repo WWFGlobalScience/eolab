@@ -8,6 +8,7 @@ import rasterio
 from rasterio.transform import array_bounds, xy
 from rasterio.warp import transform
 from rasterio.windows import Window, transform as window_transform
+from eolab_app.sampling_box import Wgs84SamplingBox, sampling_box_bounds
 from eolab_app.sampling_area import CatalogSelectionSamplingArea
 from eolab_app.raster.geographic_bounds import (
     normalize_wgs84_bounds,
@@ -20,6 +21,7 @@ from eolab_app.raster.bounded_window import (
     NoRasterBoundsOverlapError,
     get_longitude_wrap_width,
     selected_raster_area_for_wgs84_bounds,
+    selected_raster_area_for_sampling_box,
 )
 from eolab_app.raster.models import (
     CanonicalWgs84Bounds,
@@ -51,6 +53,7 @@ from eolab_app.raster.source_contract import (
 from eolab_app.raster.statistics import (
     NoValidRasterSamplesError,
     selected_raster_area_for_catalog_selection,
+    RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
     RASTER_STATISTICS_SELECTION_ALL_TOUCHED,
 )
 
@@ -288,6 +291,7 @@ def read_raster_paired_statistics(
     selected_bounds: CanonicalWgs84Bounds | None,
     cancellation_requested: RasterReadCancellationCheck | None = None,
     catalog_selection: CatalogSelectionSamplingArea | None = None,
+    sampling_box: Wgs84SamplingBox | None = None,
 ) -> RasterPairedStatistics:
     """Read bounded paired values on X and align Y with nearest neighbor.
 
@@ -303,6 +307,7 @@ def read_raster_paired_statistics(
         y_source: Authorized file or observation to align with the reference grid.
         selected_bounds: Optional canonical WGS 84 sampling rectangle.
         catalog_selection: Optional immutable polygon selection; exclusive of bounds.
+        sampling_box: Optional geodesic box, exclusive of bounds and vector selections.
         cancellation_requested: Optional thread-safe check that returns true when the read is cancelled.
 
     Returns:
@@ -341,6 +346,8 @@ def read_raster_paired_statistics(
             )
         if selected_bounds is not None:
             overlap_inputs = (*overlap_inputs, selected_bounds)
+        elif sampling_box is not None:
+            overlap_inputs = (*overlap_inputs, sampling_box_bounds(sampling_box))
         overlap_bounds = _intersect_bounds(*overlap_inputs)
         x_area = selected_raster_area_for_wgs84_bounds(
             x_dataset,
@@ -351,7 +358,15 @@ def read_raster_paired_statistics(
                 x_dataset, catalog_selection, cancellation_requested
             )
             if catalog_selection
-            else None
+            else (
+                selected_raster_area_for_sampling_box(
+                    x_dataset,
+                    sampling_box,
+                    RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
+                )
+                if sampling_box is not None
+                else None
+            )
         )
         x_window = x_area.source_window
         x_plan = plan_source_window_sample_grid(x_dataset, x_window)
@@ -468,12 +483,17 @@ def read_raster_paired_statistics(
         scope=(
             "catalogSelection"
             if catalog_selection
-            else "selectedArea" if selected_bounds is not None else "wholeOverlap"
+            else (
+                "samplingBox"
+                if sampling_box is not None
+                else "selectedArea" if selected_bounds is not None else "wholeOverlap"
+            )
         ),
         catalogSelection=(
             catalog_selection.resolved.selection if catalog_selection else None
         ),
         selectedBounds=selected_bounds_model,
+        samplingBox=sampling_box,
         sourceWidth=source_width,
         sourceHeight=source_height,
         sourcePixelCount=source_width * source_height,

@@ -1,3 +1,5 @@
+import { samplingBoxBounds, tessellateSamplingBox } from "../../src/sampling-box.js";
+import { rasterSamplingAreaBounds } from "../../src/selected-area.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -103,6 +105,7 @@ function createFakeMap() {
         getCenter() {
             return { lng: 0, lat: 0 };
         },
+        project(position) { return {x:position[1],y:position[0]}; },
         on(type, handler) {
             if (!handlers.has(type)) {
                 handlers.set(type, new Set());
@@ -158,6 +161,9 @@ function createFakeLayer(details = {}) {
         },
         setBounds(bounds) {
             this.boundsHistory.push(bounds);
+        },
+        setLatLngs(positions) {
+            this.boundsHistory.push(positions);
         },
         setParams(parameters) {
             Object.assign(this.wmsParams, parameters);
@@ -222,7 +228,7 @@ function createFakeLeaflet() {
                     return layer;
                 },
             },
-            rectangle(bounds, options) {
+            polygon(bounds, options) {
                 const layer = createFakeLayer({
                     bounds,
                     kind: options.fill === false ? "preview" : "selection",
@@ -493,15 +499,15 @@ function createRasterItem(suffix) {
  * Build recognizable statistics for one layer and optional selected area.
  *
  * @param {Object} item Catalog Item owning the statistics.
- * @param {Object|null} [selectedBounds=null] Optional selected-area bounds.
+ * @param {Object|null} [area=null] Captured area or explicit rectangular bounds.
  * @return {Object} Valid statistics with test-only layer identity.
  */
-function createLayerStatistics(item, selectedBounds = null) {
+function createLayerStatistics(item, area = null) {
+    const selected = area?.kind ? area : area ? {kind:"selectedArea",selectedBounds:area} : {kind:"wholeRaster"};
     return {
-        ...RASTER_STATISTICS,
-        itemId: item.id,
-        scope: selectedBounds === null ? "wholeRaster" : "selectedArea",
-        selectedBounds,
+        ...RASTER_STATISTICS, itemId:item.id, scope:selected.kind,
+        selectedBounds:selected.kind === "selectedArea" ? selected.selectedBounds : null,
+        ...(selected.kind === "samplingBox" ? {samplingBox:selected.samplingBox} : {}),
     };
 }
 
@@ -523,17 +529,7 @@ function createCategoryStatistics(item, bounds, codes) {
     return result;
 }
 
-/**
- * Return rectangular bounds from one normalized test sampling area.
- *
- * @param {Object} samplingArea Whole, rectangular, or catalog-vector area.
- * @return {Object|null} Selected rectangle or null for another scope.
- */
-function selectedBoundsFromArea(samplingArea) {
-    return samplingArea.kind === "selectedArea"
-        ? samplingArea.selectedBounds
-        : null;
-}
+
 
 /**
  * Allow pending async controller continuations to update their views.
@@ -565,7 +561,7 @@ test("histogram rescaling is opt-in, coalesced during input, and isolated to one
     let catalog;
     let reads = 0;
     const h = visibleLayerFixture(async (item, area) => {
-        reads++; return createLayerStatistics(item, selectedBoundsFromArea(area));
+        reads++; return createLayerStatistics(item, area);
     }, {clock}, {}, {restoreRemovedLayer: (snapshot, isCurrent) =>
         catalog.restoreRemovedLayer(snapshot, async () => item, isCurrent)});
     catalog = new CatalogVisualizationCoordinator(h.viewer, h.mapLayers, {});
@@ -623,10 +619,10 @@ test("automatic rescaling waits for accepted replacement samples and releases re
         const obsolete = requests.at(-1);
         h.viewer.exploreAt({lng: 15, lat: 38});
         assert.equal(obsolete.signal.aborted, true);
-        obsolete.resolve(createLayerStatistics(obsolete.item, obsolete.area.selectedBounds));
+        obsolete.resolve(createLayerStatistics(obsolete.item, obsolete.area));
         await flushPromises();
         assert.equal(clock.pending.size, 0, "A late cancelled result cannot rescale");
-        const current = requests.at(-1), statistics = createLayerStatistics(current.item, current.area.selectedBounds);
+        const current = requests.at(-1), statistics = createLayerStatistics(current.item, current.area);
         current.resolve(statistics); await flushPromises();
         assert.equal(clock.pending.size, 1, "The enabled view follows its accepted new sample");
         clock.flush();
@@ -677,7 +673,7 @@ test("rescaling reports rendering failures and keeps existing constant-histogram
  * @return {Object} Viewer, map, views, layers, and cleanup helper.
  */
 function visibleLayerFixture(
-    loadStatistics = async (item, area, _signal, _fetch, codes) => createCategoryStatistics(item, selectedBoundsFromArea(area), codes),
+    loadStatistics = async (item, area, _signal, _fetch, codes) => createCategoryStatistics(item, area, codes),
     dependencies = {},
     configuration = {},
     layerConfiguration = {},
@@ -714,12 +710,12 @@ test("composed box selection and resize publish geometry without a histogram ras
     try {
         h.viewer.selectSamplingBox();
         const initial = h.viewer.getSelectedArea();
-        assert.equal(initial.kind, "selectedArea");
+        assert.equal(initial.kind, "samplingBox");
         assert.deepEqual(areas.at(-1), initial);
         h.controlsView.handlers.onSampleWindowRangeInput("100");
         clock.flush();
         const resized = h.viewer.getSelectedArea();
-        assert.ok(resized.selectedBounds.east < initial.selectedBounds.east);
+        assert.ok(resized.samplingBox.sideLengthKm < initial.samplingBox.sideLengthKm);
         assert.deepEqual(areas.at(-1), resized);
         assert.equal(reads.length, 0);
         assert.equal(h.mapLayers.retainedRecords.length, 0);
@@ -760,7 +756,7 @@ function editCategoricalAppearance(harness, key, style = categoricalAppearance()
 test("inspection summaries describe bounded raster participation and asynchronous results", async () => {
     const snapshots = [];
     const h = visibleLayerFixture(async (item, area) =>
-        createLayerStatistics(item, selectedBoundsFromArea(area)), {}, {
+        createLayerStatistics(item, area), {}, {
         onHistogramChange: snapshot => snapshots.push(snapshot),
     });
     for (let index = 0; index < 17; index += 1) {
@@ -825,7 +821,7 @@ test("download intents preserve distinct 1D and 2D boxes without waiting for sta
     assert.equal(h.viewer.getSelectedArea(), null);
     h.viewer.exploreAt({ lng: 78, lat: 22 });
     const oneD = h.viewer.getSelectedArea();
-    assert.ok(Object.isFrozen(oneD.selectedBounds));
+    assert.ok(Object.isFrozen(oneD.samplingBox));
     h.controlsView.handlers.onDownloadHistogram(h.layerStackView.activeKey);
     assert.deepEqual(downloads.at(-1).area, oneD);
     h.controlsView.handlers.onBivariateModeChange("bivariate");
@@ -872,7 +868,7 @@ for (const outcome of ["success", "read error", "no matches", "no polygon layer"
         const read = createDeferred(), requests = [], events = [], snapshots = [];
         const h = visibleLayerFixture(async (item, area) => {
             requests.push(area);
-            return createLayerStatistics(item, selectedBoundsFromArea(area));
+            return createLayerStatistics(item, area);
         }, {}, {
             onSamplingAreaChange: area => events.push({area}),
             onHistogramChange: value => snapshots.push(value),
@@ -944,11 +940,11 @@ for (const mode of ["overlay", "bivariate"]) {
         const read = createDeferred();
         let signal;
         const h = visibleLayerFixture(async (item, area, cancellation) => {
-            if (area.kind === "selectedArea") { signal = cancellation; return read.promise; }
+            if (area.kind === "samplingBox") { signal = cancellation; return read.promise; }
             return createLayerStatistics(item);
         }, {
             loadPairedStatistics: async (_x, _y, area, cancellation) => {
-                if (area.kind === "selectedArea") { signal = cancellation; return read.promise; }
+                if (area.kind === "samplingBox") { signal = cancellation; return read.promise; }
                 return pairedStatistics();
             },
         });
@@ -974,7 +970,7 @@ for (const method of ["whole", "box"]) {
     test(`choosing ${method} cancels pending vector adoption without a late switch back`, async () => {
         let sampling, complete, signal;
         const choices = [];
-        const h = visibleLayerFixture(async (item, area) => createLayerStatistics(item, selectedBoundsFromArea(area)), {}, {
+        const h = visibleLayerFixture(async (item, area) => createLayerStatistics(item, area), {}, {
             onSamplingMethodChange: choice => {
                 choices.push(choice);
                 if (choice === "vector") void sampling.use();
@@ -1016,7 +1012,7 @@ for (const mode of ["overlay", "bivariate"]) {
             let timerId = 0, histogramRequests = 0, pixelRequests = 0;
             const h = visibleLayerFixture(async (item, area) => {
                 requests.push(area);
-                return createLayerStatistics(item, selectedBoundsFromArea(area));
+                return createLayerStatistics(item, area);
             }, {
                 clock: {
                     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
@@ -1086,7 +1082,7 @@ for (const mode of ["overlay", "bivariate"]) {
         let timerId = 0;
         const h = visibleLayerFixture(async (item, area) => {
             requests.push(area);
-            return createLayerStatistics(item, selectedBoundsFromArea(area));
+            return createLayerStatistics(item, area);
         }, {
             clock: {
                 setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, delay}); return id; },
@@ -1125,8 +1121,8 @@ for (const mode of ["overlay", "bivariate"]) {
             timers.clear(); pending.callback();
             await flushPromises();
             const selected = h.viewer.getSelectedArea();
-            assert.ok(selected.selectedBounds.east - selected.selectedBounds.west > 40);
-            assert.deepEqual(requests.at(-1).selectedBounds, selected.selectedBounds);
+            assert.ok(rasterSamplingAreaBounds(selected).east - rasterSamplingAreaBounds(selected).west > 40);
+            assert.deepEqual(requests.at(-1), selected);
             assert.match(h.controlsView.samplingAreaLabel, /5000 km/);
             h.viewer.activateAnalysis(h.mapLayers.snapshots()[1].item);
             assert.ok(Number.isFinite(Number(range.value)));
@@ -1178,7 +1174,7 @@ test("categorical style keeps a previous whole distribution separate from a fail
     assert.equal(preview().scopeLabel, "Previous histogram · Whole raster");
     assert.match(preview().feedback.message, /Sampling box\b.*: Calculating/i);
     assert.equal(preview().feedback.isBusy, true);
-    const selectedRead = reads.find(read => read.item === item && read.area.kind === "selectedArea");
+    const selectedRead = reads.find(read => read.item === item && read.area.kind === "samplingBox");
     selectedRead.pending.reject(new Error("The selected area does not overlap the raster")); await flushPromises();
     h.viewer.closeStyle(); h.viewer.openStyle(key);
     assert.equal(preview().scopeLabel, "Previous histogram · Whole raster");
@@ -1214,7 +1210,7 @@ test("categorical style scopes successful polygons and labels a cancelled replac
     h.controlsView.handlers.onUseMapWindow(); await flushPromises(); h.viewer.openStyle(key);
     assert.equal(preview().scopeLabel, "Previous histogram · Selected polygons · countries");
     const mapRead = reads.at(-1);
-    mapRead.pending.resolve(createCategoryStatistics(item, mapRead.area.selectedBounds, mapRead.codes)); await flushPromises();
+    mapRead.pending.resolve(createCategoryStatistics(item, mapRead.area, mapRead.codes)); await flushPromises();
     assert.match(preview().scopeLabel, /^Sampling box\b/i);
     assert.equal(preview().feedback.message, ""); assert.equal(preview().feedback.isBusy, false);
     h.viewer.exploreAt({ lng: 15, lat: 38 }); await flushPromises();
@@ -1225,7 +1221,7 @@ test("categorical style scopes successful polygons and labels a cancelled replac
     assert.equal(preview().feedback.isBusy, false);
     assert.equal(preview().scopeLabel, "Previous histogram · Sampling box");
     assert.match(preview().feedback.message, /Sampling box\b.*:/i);
-    replacement.pending.resolve(createCategoryStatistics(item, replacement.area.selectedBounds, replacement.codes)); await flushPromises();
+    replacement.pending.resolve(createCategoryStatistics(item, replacement.area, replacement.codes)); await flushPromises();
     assert.equal(preview().scopeLabel, "Previous histogram · Sampling box", "Late cancelled reply cannot relabel the preview");
     h.destroy();
 });
@@ -1241,7 +1237,7 @@ test("style category changes preserve map scope and never display unmatched cach
     const key = h.mapLayers.retainedRecords[0].entry.key;
     editCategoricalAppearance(h, key); await flushPromises();
     h.viewer.exploreAt({ lng: 14, lat: 37.5 }); await flushPromises();
-    reads[0].pending.resolve(createCategoryStatistics(item, reads[0].area.selectedBounds, reads[0].codes)); await flushPromises();
+    reads[0].pending.resolve(createCategoryStatistics(item, reads[0].area, reads[0].codes)); await flushPromises();
     h.viewer.openStyle(key);
     const changed = categoricalAppearance(); changed.categories[0].value = 42;
     editCategoricalAppearance(h, key, changed);
@@ -1249,7 +1245,7 @@ test("style category changes preserve map scope and never display unmatched cach
     assert.match(h.controlsView.styleHistogramState.scopeLabel, /^Sampling box\b/i);
     assert.equal(h.controlsView.styleHistogramState.isBusy, true);
     const read = reads.at(-1);
-    read.pending.resolve(createCategoryStatistics(item, read.area.selectedBounds, read.codes)); await flushPromises();
+    read.pending.resolve(createCategoryStatistics(item, read.area, read.codes)); await flushPromises();
     const count = reads.length;
     changed.categories[0] = { ...changed.categories[0], label: "Renamed forest", color: "#112233", opacity: 0.2 };
     editCategoricalAppearance(h, key, changed); await flushPromises();
@@ -1358,7 +1354,7 @@ test("views sharing one Catalog Item keep separate styles and histogram categori
     const requestedCodes = [];
     const h = visibleLayerFixture(async (item, area, _signal, _fetch, codes) => {
         requestedCodes.push(codes);
-        return createCategoryStatistics(item, selectedBoundsFromArea(area), codes);
+        return createCategoryStatistics(item, area, codes);
     });
     const item = createRasterItem("same-source");
     const first = await h.viewer.stage(item, { key: "local:view:first", visible: true, opacity: 1 });
@@ -1622,7 +1618,7 @@ test("late active and inactive whole-raster statistics cannot replace categorica
     const second = createRasterItem("categorical-late-second");
     const results = new Map([[first.id, createDeferred()], [second.id, createDeferred()]]);
     const h = visibleLayerFixture((item, area, _signal, _fetch, codes) => codes
-        ? Promise.resolve(createCategoryStatistics(item, selectedBoundsFromArea(area), codes))
+        ? Promise.resolve(createCategoryStatistics(item, area, codes))
         : results.get(item.id).promise);
     await h.viewer.show(first);
     await h.viewer.show(second);
@@ -1907,7 +1903,7 @@ test("hidden raster category edits remain independent of active analysis and vis
     const reads = [];
     const h = visibleLayerFixture(async (item, area) => {
         reads.push({ item, area });
-        return createLayerStatistics(item, selectedBoundsFromArea(area));
+        return createLayerStatistics(item, area);
     });
     await h.viewer.show(createRasterItem("categorical-hidden"));
     await h.viewer.show(createRasterItem("categorical-visible"));
@@ -1941,7 +1937,7 @@ test("categorical guards prevent 2D ramps while numerical statistics remain avai
             pendingCategoricalStatistics !== null) {
             return pendingCategoricalStatistics.promise;
         }
-        return createCategoryStatistics(item, selectedBoundsFromArea(area), codes);
+        return createCategoryStatistics(item, area, codes);
     }, {
         samplePixel: async (item) => {
             pixelReads.push(item.id);
@@ -1968,7 +1964,7 @@ test("categorical guards prevent 2D ramps while numerical statistics remain avai
     await flushPromises();
     assert.equal(statisticsReads.length, readsBefore + 2);
     assert.deepEqual(pixelReads, []);
-    assert.equal(categorical.state.analysis.rasterStatistics.scope, "selectedArea");
+    assert.equal(categorical.state.analysis.rasterStatistics.scope, "samplingBox");
     const summary = h.controlsView.layerHistograms.find((entry) => entry.key === categorical.entry.key);
     assert.equal(summary.state, "ready");
     assert.equal(summary.counts, null);
@@ -2109,10 +2105,10 @@ test('two uncached 1D histograms are submitted independently and both complete',
     assert.equal(reads.length, 4);
     assert.equal(inflight, 2);
     assert.deepEqual(h.controlsView.layerHistograms.map(s => s.state), ['loading', 'loading']);
-    reads[2].result.resolve(createLayerStatistics(reads[2].item, reads[2].area.selectedBounds));
+    reads[2].result.resolve(createLayerStatistics(reads[2].item, reads[2].area));
     await flushPromises();
     assert.equal(reads.length, 4);
-    reads[3].result.resolve(createLayerStatistics(reads[3].item, reads[3].area.selectedBounds));
+    reads[3].result.resolve(createLayerStatistics(reads[3].item, reads[3].area));
     await flushPromises();
     assert.deepEqual(h.controlsView.layerHistograms.map(s => s.state), ['ready', 'ready']);
     assert.equal(inflight, 0);
@@ -2138,14 +2134,14 @@ test('rapid samples abort obsolete and hidden-layer requests and ignore late res
     const [, bottom] = h.mapLayers.snapshots();
     h.mapLayers.setVisible(bottom.key, false);
     assert.equal(reads.filter(read => !read.signal.aborted).length, 1);
-    for (const read of reads) read.result.resolve(createLayerStatistics(read.item, read.area.selectedBounds));
+    for (const read of reads) read.result.resolve(createLayerStatistics(read.item, read.area));
     await flushPromises();
     assert.deepEqual(h.controlsView.layerHistograms.map(s => s.state), ['ready']);
-    assert.ok(h.controlsView.layerHistograms[0].statistics.selectedBounds.west > -74);
+    assert.ok(h.controlsView.layerHistograms[0].statistics.samplingBox.center.longitude === -72);
     h.viewer.exploreAt({ lng: -70, lat: 45 });
     h.destroy();
     assert.equal(reads[4].signal.aborted, true);
-    reads[4].result.resolve(createLayerStatistics(reads[4].item, reads[4].area.selectedBounds));
+    reads[4].result.resolve(createLayerStatistics(reads[4].item, reads[4].area));
     await flushPromises();
     assert.equal(reads.length, 5);
 });
@@ -2167,11 +2163,11 @@ test('mode changes cancel 1D requests and submit 2D without a browser queue', as
     assert.equal(reads.length, 2);
     assert.ok(reads.every(read => read.signal.aborted));
     assert.equal(pairedCalls, 1);
-    for (const read of reads) read.result.resolve(createLayerStatistics(read.item, read.area.selectedBounds));
+    for (const read of reads) read.result.resolve(createLayerStatistics(read.item, read.area));
     await flushPromises();
     h.controlsView.handlers.onBivariateModeChange('overlay');
     assert.equal(reads.length, 4);
-    for (const read of reads.slice(2)) read.result.resolve(createLayerStatistics(read.item, read.area.selectedBounds));
+    for (const read of reads.slice(2)) read.result.resolve(createLayerStatistics(read.item, read.area));
     await flushPromises();
     assert.deepEqual(h.controlsView.layerHistograms.map(s => s.state), ['ready', 'ready']);
     h.destroy();
@@ -2181,7 +2177,7 @@ test('one-shot map exploration replaces its footprint without a hidden pause mod
     const requests = [];
     const h = visibleLayerFixture(async (item, area) => {
         requests.push({ item, area });
-        return createLayerStatistics(item, selectedBoundsFromArea(area));
+        return createLayerStatistics(item, area);
     });
     await h.viewer.show(createRasterItem('first'));
     await h.viewer.show(createRasterItem('second'));
@@ -2191,19 +2187,20 @@ test('one-shot map exploration replaces its footprint without a hidden pause mod
     const statistics = h.controlsView.displayedStatistics;
     const footprint = [...h.leafletMap.layers].find(layer => layer.kind === 'selection');
     assert.ok(footprint);
-    assert.equal(statistics.scope, 'selectedArea');
+    assert.equal(statistics.scope, 'samplingBox');
     const bounds = [...footprint.boundsHistory];
     const count = requests.length;
     h.leafletMap.emit('moveend', {});
     h.leafletMap.emit('zoomend', {});
     assert.equal(requests.length, count);
-    assert.deepEqual(footprint.boundsHistory, bounds);
+    assert.deepEqual(footprint.boundsHistory.at(-1), bounds.at(-1));
+    const redrawnCount=footprint.boundsHistory.length;
     h.viewer.exploreAt({ lng: 4, lat: 4 });
     await flushPromises();
     assert.ok(requests.length > count);
     assert.equal(h.leafletMap.layers.has(footprint), true);
-    assert.equal(footprint.boundsHistory.length, bounds.length + 1);
-    assert.notDeepEqual(h.controlsView.displayedStatistics.selectedBounds, statistics.selectedBounds);
+    assert.equal(footprint.boundsHistory.length, redrawnCount + 1);
+    assert.notDeepEqual(h.controlsView.displayedStatistics.samplingBox, statistics.samplingBox);
     h.destroy();
 });
 
@@ -2300,7 +2297,7 @@ test('three visible rasters render and receive ordinary histograms', async () =>
             id: item.id.replace(/^geotiff-/, ''),
             area: area.kind,
         });
-        return createLayerStatistics(item, selectedBoundsFromArea(area));
+        return createLayerStatistics(item, area);
     }, {
         samplePixel: async (item) => {
             pointRequests.push(item.id.replace(/^geotiff-/, ''));
@@ -3286,8 +3283,9 @@ test("renderer-independent analysis supports exact windows without publication",
                     ? EXACT_RASTER_STATISTICS
                     : {
                         ...EXACT_RASTER_STATISTICS,
-                        scope: "selectedArea",
-                        selectedBounds: samplingArea.selectedBounds,
+                        scope: samplingArea.kind,
+                        selectedBounds: samplingArea.selectedBounds ?? null,
+                        ...(samplingArea.kind === "samplingBox" ? {samplingBox:samplingArea.samplingBox} : {}),
                     };
             },
             samplePixel: async (item, point) => {
@@ -3320,7 +3318,7 @@ test("renderer-independent analysis supports exact windows without publication",
     await flushPromises();
     assert.deepEqual(pixelRequests, []);
     assert.equal(controlsView.histogramWidgetOpenCount, 1);
-    assert.equal(statisticsRequests.at(-1).samplingArea.kind, "selectedArea");
+    assert.equal(statisticsRequests.at(-1).samplingArea.kind, "samplingBox");
     assert.match(controlsView.statisticsStatus, /Selected-area exact/);
 
     controlsView.setPaletteName("viridis");
@@ -3454,13 +3452,13 @@ test("WMS handoff keeps the selected area and rejects an obsolete detached resul
         assert.equal(wmsLayers.length, 1);
         assert.equal(controlsView.renderingControlsAvailable, true);
 
-        const obsolete = { ...createLayerStatistics(item, area.selectedBounds), sampleMinimum: -999 };
+        const obsolete = { ...createLayerStatistics(item, area), sampleMinimum: -999 };
         detachedRead.pending.resolve(obsolete);
         await flushPromises();
         assert.equal(controlsView.renderedStatistics.includes(obsolete), false);
         assert.equal(controlsView.histogramPercentileContext.canRescale, false);
 
-        const current = createLayerStatistics(item, area.selectedBounds);
+        const current = createLayerStatistics(item, area);
         retainedRead.pending.resolve(current);
         await flushPromises();
         assert.equal(controlsView.displayedStatistics, current);
@@ -3493,7 +3491,7 @@ test("a pending WMS publication cannot steal newer Catalog analysis", async () =
             loadStatistics: async (item, samplingArea) =>
                 createLayerStatistics(
                     item,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 ),
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -3541,7 +3539,7 @@ test("reaffirming Catalog analysis invalidates a pending WMS activation", async 
             loadStatistics: async (requestedItem, samplingArea) =>
                 createLayerStatistics(
                     requestedItem,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 ),
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -3586,7 +3584,7 @@ test("clearing analysis invalidates a pending renderer activation", async () => 
             loadStatistics: async (requestedItem, samplingArea) =>
                 createLayerStatistics(
                     requestedItem,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 ),
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -3758,7 +3756,7 @@ for (const wholeState of ["ready", "error"]) {
             if (area.kind === "wholeRaster" && wholeState === "error") {
                 throw new Error("Whole-raster read exceeds the bounded-work limit");
             }
-            return createLayerStatistics(item, selectedBoundsFromArea(area));
+            return createLayerStatistics(item, area);
         });
         await h.viewer.show(createRasterItem(`whole-restore-${wholeState}`));
         await flushPromises();
@@ -3778,7 +3776,7 @@ for (const wholeState of ["ready", "error"]) {
             ? "Whole-raster read exceeds the bounded-work limit" : "");
         if (wholeState === "error") assert.equal(summary.counts, null);
         await flushPromises();
-        assert.deepEqual(requests, ["wholeRaster", "selectedArea"], "restoring cached state does not read again");
+        assert.deepEqual(requests, ["wholeRaster", "samplingBox"], "restoring cached state does not read again");
         h.destroy();
     });
 }
@@ -4022,7 +4020,7 @@ test("raster analysis summaries select a labeled retained histogram", async () =
                 );
                 return createLayerStatistics(
                     item,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 );
             },
             samplePixel: async () => ({ inBounds: true, value: 1 }),
@@ -4080,15 +4078,15 @@ test("a restored whole-raster statistics error retries the active layer", async 
                 bbox: [-180, -90, 180, 90],
             }),
             loadStatistics: async (item, samplingArea, signal) => {
-                const selectedBounds = selectedBoundsFromArea(samplingArea);
-                statisticsRequests.push({ item, selectedBounds, signal });
+                const selectedBounds = rasterSamplingAreaBounds(samplingArea);
+                statisticsRequests.push({ item, selectedBounds, samplingArea, signal });
                 const firstAttemptCount = statisticsRequests.filter(
                     (request) => request.item === first
                 ).length;
                 if (item === first && firstAttemptCount === 1) {
                     throw new Error("First histogram failed");
                 }
-                return createLayerStatistics(item, selectedBounds);
+                return createLayerStatistics(item, samplingArea);
             },
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -4137,10 +4135,10 @@ test("selected-area failure survives a layer switch and retries its original are
         publishRaster: async item => ({ layerName: `eolab:${item.id}`, bbox: [-180, -90, 180, 90] }),
         loadStatistics: async (item, area, signal) => {
             reads.push({ item, area, signal });
-            if (item === first && area.kind === "selectedArea" && failSelected) {
+            if (item === first && area.kind === "samplingBox" && failSelected) {
                 throw new Error("Selected-area read failed");
             }
-            return createLayerStatistics(item, selectedBoundsFromArea(area));
+            return createLayerStatistics(item, area);
         },
         samplePixel: async () => ({ inBounds: true, value: 1 }),
     });
@@ -4151,7 +4149,7 @@ test("selected-area failure survives a layer switch and retries its original are
         await flushPromises();
         const failedRead = reads.at(-1);
         assert.equal(failedRead.item, first);
-        assert.equal(failedRead.area.kind, "selectedArea");
+        assert.equal(failedRead.area.kind, "samplingBox");
         assert.match(controlsView.statisticsStatus, /Selected-area read failed/);
         assert.equal(controlsView.statisticsRetryVisible, true);
 
@@ -4163,7 +4161,7 @@ test("selected-area failure survives a layer switch and retries its original are
         assert.equal(reads.length, beforeRestore, "Restoring an error does not silently retry");
         assert.match(controlsView.statisticsStatus, /Selected-area read failed/);
         assert.equal(controlsView.statisticsRetryVisible, true);
-        assert.deepEqual(viewer.getSelectedArea().selectedBounds, failedRead.area.selectedBounds);
+        assert.deepEqual(viewer.getSelectedArea().samplingBox, failedRead.area.samplingBox);
 
         failSelected = false;
         controlsView.handlers.onRetryStatistics();
@@ -4174,8 +4172,8 @@ test("selected-area failure survives a layer switch and retries its original are
         for (const read of retriedReads) assert.deepEqual(read.area, failedRead.area);
         assert.equal(activeRetries[0].signal.aborted, false);
         assert.equal(controlsView.displayedStatistics.itemId, first.id);
-        assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
-        assert.deepEqual(controlsView.displayedStatistics.selectedBounds, failedRead.area.selectedBounds);
+        assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
+        assert.deepEqual(controlsView.displayedStatistics.samplingBox, failedRead.area.samplingBox);
         assert.equal(controlsView.statisticsRetryVisible, false);
         assert.doesNotMatch(controlsView.statisticsStatus, /read failed/);
     } finally {
@@ -4350,9 +4348,9 @@ test("manual activation outranks an earlier deferred publication", async () => {
                 };
             },
             loadStatistics: async (item, samplingArea, signal) => {
-                const selectedBounds = selectedBoundsFromArea(samplingArea);
+                const selectedBounds = rasterSamplingAreaBounds(samplingArea);
                 statisticsRequests.push({ item, signal, selectedBounds });
-                return createLayerStatistics(item, selectedBounds);
+                return createLayerStatistics(item, samplingArea);
             },
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -4410,9 +4408,9 @@ test("hidden WMS renderers do not gate active Catalog analysis", async () => {
                 bbox: [-180, -90, 180, 90],
             }),
             loadStatistics: (item, samplingArea, signal) => {
-                const selectedBounds = selectedBoundsFromArea(samplingArea);
+                const selectedBounds = rasterSamplingAreaBounds(samplingArea);
                 if (item.id !== "geotiff-hidden-work-third") {
-                    return Promise.resolve(createLayerStatistics(item, selectedBounds));
+                    return Promise.resolve(createLayerStatistics(item, samplingArea));
                 }
                 const deferred = createDeferred();
                 signal.addEventListener("abort", () => deferred.reject(signal.reason), { once: true });
@@ -4420,6 +4418,7 @@ test("hidden WMS renderers do not gate active Catalog analysis", async () => {
                     deferred,
                     item,
                     selectedBounds,
+                    samplingArea,
                     signal,
                 });
                 return deferred.promise;
@@ -4472,14 +4471,14 @@ test("hidden WMS renderers do not gate active Catalog analysis", async () => {
     assert.equal(selectedThirdRequest.signal.aborted, false);
 
     selectedThirdRequest.deferred.resolve(
-        createLayerStatistics(third, selectedThirdRequest.selectedBounds)
+        createLayerStatistics(third, selectedThirdRequest.samplingArea)
     );
     await flushPromises();
     assert.equal(controlsView.displayedStatistics.itemId, third.id);
-    assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
+    assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
     wholeThirdRequest.deferred.resolve(createLayerStatistics(third));
     await flushPromises();
-    assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
+    assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
 
     layerStackView.handlers.onVisibility(thirdKey, true);
     const thirdRequests = statisticsRequests.filter(
@@ -4527,9 +4526,9 @@ test("map box resizes immediately while committing only the final debounced area
                 bbox: [-180, -90, 180, 90],
             }),
             loadStatistics: async (item, samplingArea) => {
-                const selectedBounds = selectedBoundsFromArea(samplingArea);
-                statisticsRequests.push({ item, selectedBounds });
-                return createLayerStatistics(item, selectedBounds);
+                const selectedBounds = rasterSamplingAreaBounds(samplingArea);
+                statisticsRequests.push({ item, selectedBounds, samplingArea });
+                return createLayerStatistics(item, samplingArea);
             },
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -4551,10 +4550,7 @@ test("map box resizes immediately while committing only the final debounced area
         (centeredRequest.selectedBounds.west + centeredRequest.selectedBounds.east) / 2,
         0
     );
-    assert.equal(
-        (centeredRequest.selectedBounds.south + centeredRequest.selectedBounds.north) / 2,
-        0
-    );
+    assert.deepEqual(centeredRequest.samplingArea.samplingBox.center, {longitude:0,latitude:0});
     assert.match(controlsView.samplingAreaLabel, /Sampling box · 200 × 200 km/);
 
     const rectangle = rectangleLayers.find(layer => layer.kind === "selection");
@@ -4569,11 +4565,10 @@ test("map box resizes immediately while committing only the final debounced area
     assert.equal(rectangleLayers.length, 1, "reuse the selected rectangle");
     assert.equal(statisticsRequests.length, before);
     assert.equal(committed.length, committedBefore);
-    assert.deepEqual(viewer.getSelectedArea().selectedBounds, centeredRequest.selectedBounds);
+    assert.deepEqual(viewer.getSelectedArea(), centeredRequest.samplingArea);
     assert.equal(presentations.at(-1).state, "loading");
     assert.match(presentations.at(-1).message, /results show the previous area/);
-    assert.equal((finalGeometry[0][1] + finalGeometry[1][1]) / 2, 0);
-    assert.ok(Math.abs((finalGeometry[0][0] + finalGeometry[1][0]) / 2) < 1e-12);
+    assert.deepEqual(viewer.getSelectedArea().samplingBox.center, {longitude:0,latitude:0});
     assert.equal(timers.size, 1);
     const pending = [...timers.values()][0];
     assert.equal(
@@ -4600,7 +4595,7 @@ for (const transition of ["whole", "vector", "close", "center", "invalid", "orig
         let timerId = 0;
         const h = visibleLayerFixture(async (item, area) => {
             requests.push(area);
-            return createLayerStatistics(item, selectedBoundsFromArea(area));
+            return createLayerStatistics(item, area);
         }, {clock: {
             setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
             clearTimeout(id) { timers.delete(id); },
@@ -4631,9 +4626,10 @@ for (const transition of ["whole", "vector", "close", "center", "invalid", "orig
             const area = h.viewer.getSelectedArea();
             if (transition === "center") assert.notDeepEqual(area, original);
             else assert.deepEqual(area, original);
-            const bounds = area.selectedBounds;
+            const bounds = rasterSamplingAreaBounds(area);
             const rectangle = [...h.leafletMap.layers].find(layer => layer.kind === "selection");
-            assert.deepEqual(rectangle.boundsHistory.at(-1), [[bounds.south, bounds.west], [bounds.north, bounds.east]]);
+            assert.deepEqual(rectangle.boundsHistory.at(-1), tessellateSamplingBox(area.samplingBox,points=>points)
+                .map(([longitude,latitude])=>[latitude,longitude]));
         }
         h.destroy();
     });
@@ -4655,17 +4651,17 @@ test("late histogram results stay scoped to the old area during a resize", async
     h.viewer.exploreAt({lng: -75, lat: 40});
     await flushPromises();
     h.controlsView.handlers.onSampleWindowNumberInput("75");
-    requests[0].deferred.resolve(createLayerStatistics(requests[0].item, requests[0].area.selectedBounds));
+    requests[0].deferred.resolve(createLayerStatistics(requests[0].item, requests[0].area));
     await flushPromises();
-    assert.deepEqual(h.controlsView.displayedStatistics.selectedBounds, requests[0].area.selectedBounds);
+    assert.deepEqual(h.controlsView.displayedStatistics.samplingBox, requests[0].area.samplingBox);
     assert.equal(presentations.at(-1).state, "loading");
     assert.match(presentations.at(-1).message, /results show the previous area/);
     const commit = [...timers.values()][0]; timers.clear(); commit();
     await flushPromises();
     assert.equal(requests.length, 2);
-    requests[1].deferred.resolve(createLayerStatistics(requests[1].item, requests[1].area.selectedBounds));
+    requests[1].deferred.resolve(createLayerStatistics(requests[1].item, requests[1].area));
     await flushPromises();
-    assert.deepEqual(h.controlsView.displayedStatistics.selectedBounds, h.viewer.getSelectedArea().selectedBounds);
+    assert.deepEqual(h.controlsView.displayedStatistics.samplingBox, h.viewer.getSelectedArea().samplingBox);
     assert.equal(presentations.at(-1).state, "ready");
     assert.equal(h.controlsView.layerHistograms[0].canRescale, true);
     h.controlsView.handlers.onSampleWindowNumberInput("100");
@@ -4732,7 +4728,7 @@ test("histogram clicks use visible coverage without requesting unused pixel valu
     const areaRequests = [], clickRequests = [];
     const h = visibleLayerFixture(async (item, area) => {
         if (area.kind !== 'wholeRaster') areaRequests.push({ item, area });
-        return createLayerStatistics(item, selectedBoundsFromArea(area));
+        return createLayerStatistics(item, area);
     }, {
         publishRaster: async item => ({
             layerName: 'eolab:' + item.id,
@@ -4794,9 +4790,9 @@ test("explicit sampling refreshes every raster layer to one shared area", async 
                 bbox: [-180, -90, 180, 90],
             }),
             loadStatistics: async (item, samplingArea, signal) => {
-                const selectedBounds = selectedBoundsFromArea(samplingArea);
-                statisticsRequests.push({ item, selectedBounds, signal });
-                return createLayerStatistics(item, selectedBounds);
+                const selectedBounds = rasterSamplingAreaBounds(samplingArea);
+                statisticsRequests.push({ item, selectedBounds, samplingArea, signal });
+                return createLayerStatistics(item, samplingArea);
             },
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -4822,7 +4818,7 @@ test("explicit sampling refreshes every raster layer to one shared area", async 
     );
     assert.ok(firstSelectionLayer);
     assert.equal(controlsView.displayedStatistics.itemId, first.id);
-    assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
+    assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
     await viewer.show(second);
     await flushPromises();
     controlsView.handlers.onSampleWindowNumberInput("80");
@@ -4849,10 +4845,10 @@ test("explicit sampling refreshes every raster layer to one shared area", async 
 
     assert.equal(controlsView.sampleWindowSizeKm, 80);
     assert.equal(controlsView.displayedStatistics.itemId, first.id);
-    assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
+    assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
     assert.deepEqual(
-        controlsView.displayedStatistics.selectedBounds,
-        sharedFirstRequest.selectedBounds
+        controlsView.displayedStatistics.samplingBox,
+        sharedFirstRequest.samplingArea.samplingBox
     );
     assert.equal(
         statisticsRequests.filter(
@@ -4867,16 +4863,8 @@ test("explicit sampling refreshes every raster layer to one shared area", async 
     assert.equal(attachedSelections.length, 1);
     assert.deepEqual(
         attachedSelections[0].boundsHistory.at(-1),
-        [
-            [
-                sharedFirstRequest.selectedBounds.south,
-                sharedFirstRequest.selectedBounds.west,
-            ],
-            [
-                sharedFirstRequest.selectedBounds.north,
-                sharedFirstRequest.selectedBounds.east,
-            ],
-        ]
+        tessellateSamplingBox(sharedFirstRequest.samplingArea.samplingBox,points=>points)
+            .map(([longitude,latitude])=>[latitude,longitude])
     );
     assert.equal(leafletMap.layers.has(firstSelectionLayer), false);
     viewer.destroy();
@@ -4906,7 +4894,7 @@ test("removing an active WMS renderer preserves analysis before adjacent restore
                 statisticsRequests.push({ item, samplingArea });
                 return createLayerStatistics(
                     item,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 );
             },
             samplePixel: async () => ({ inBounds: true, value: 1 }),
@@ -4929,7 +4917,7 @@ test("removing an active WMS renderer preserves analysis before adjacent restore
 
     viewer.exploreAt({ lng: -73, lat: 42 });
     await flushPromises();
-    assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
+    assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
     controlsView.setPaletteName("viridis");
     controlsView.handlers.onPaletteChange();
     const thirdRequestCount = statisticsRequests.filter(
@@ -4941,7 +4929,7 @@ test("removing an active WMS renderer preserves analysis before adjacent restore
     assert.match(controlsView.activeLayer.label, /remove-third/);
     assert.equal(controlsView.activeLayer.label, "remove-third.tif");
     assert.equal(controlsView.displayedStatistics.itemId, third.id);
-    assert.equal(controlsView.displayedStatistics.scope, "selectedArea");
+    assert.equal(controlsView.displayedStatistics.scope, "samplingBox");
     assert.equal(controlsView.paletteName, "viridis");
     assert.equal(
         statisticsRequests.filter(({ item }) => item === third).length,
@@ -5002,7 +4990,7 @@ test("tile failures remain associated with their owning raster layer", async () 
             loadStatistics: async (item, samplingArea) =>
                 createLayerStatistics(
                     item,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 ),
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -5063,7 +5051,7 @@ test("a removed layer's late tile failure cannot mark its replacement", async ()
             loadStatistics: async (requestedItem, samplingArea) =>
                 createLayerStatistics(
                     requestedItem,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 ),
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -5116,7 +5104,7 @@ test("a failed publication preserves existing layers and can be retried", async 
             loadStatistics: async (item, samplingArea) =>
                 createLayerStatistics(
                     item,
-                    selectedBoundsFromArea(samplingArea)
+                    samplingArea
                 ),
             samplePixel: async () => ({ inBounds: true, value: 1 }),
             viewport: { innerWidth: 1280, innerHeight: 720 },
@@ -5191,7 +5179,7 @@ test("hide all cancels pending histograms and drops late results; show all resto
     assert.ok(reads.every(read => read.signal.aborted));
     assert.deepEqual(h.controlsView.layerHistograms, []);
     assert.equal(h.controlsView.controlsVisible, false);
-    for (const read of reads) read.result.resolve(createLayerStatistics(read.item, read.area.selectedBounds));
+    for (const read of reads) read.result.resolve(createLayerStatistics(read.item, read.area));
     await flushPromises();
     assert.equal(reads.length, 2, "No additional requests for hidden layers");
     assert.deepEqual(h.controlsView.layerHistograms, [], "Late results cannot reopen hidden histograms");
@@ -5199,7 +5187,7 @@ test("hide all cancels pending histograms and drops late results; show all resto
     await flushPromises();
     for (let i = 2; i <= 3; i++) {
         assert.equal(reads.length, 4);
-        reads[i].result.resolve(createLayerStatistics(reads[i].item, reads[i].area.selectedBounds));
+        reads[i].result.resolve(createLayerStatistics(reads[i].item, reads[i].area));
         await flushPromises();
     }
     assert.deepEqual(h.controlsView.layerHistograms.map(s => s.state), ["ready", "ready"]);
@@ -5382,7 +5370,7 @@ test("private sources use the same style, histogram, percentile, pixel and paire
     let removed = 0;
     const h = visibleLayerFixture(async (source, area, _signal, _fetch, codes) => {
         reads.push({source, area, codes});
-        return createCategoryStatistics(source, selectedBoundsFromArea(area), codes);
+        return createCategoryStatistics(source, area, codes);
     }, {clock, publishRaster: async item => ({layerName: item.source ? `eolab:model_${item.source.jobId}_${item.source.artifactId}` : "eolab:catalog", bbox: item.bbox ?? [77,20,79,24]}), sampleCursorPixel: async source => {pixels.push(source); return {inBounds: true, value: 0};},
         loadPairedStatistics: async (x, y) => {paired.push([x,y]); return pairedStatistics();}});
     const source = {kind: "runArtifact", jobId: "a".repeat(32), artifactId: "b".repeat(32)};
@@ -5668,8 +5656,8 @@ test("temporal source changes cancel old statistics and exact pixels before acce
         assert.ok(obsoleteStatistics.every(request => request.signal.aborted));
         assert.equal(oldPixel.signal.aborted, true);
         assert.equal(current.item.source.time, "2020-01-01T02:00:00Z");
-        current.resolve({...createLayerStatistics(current.item, selectedBoundsFromArea(current.area)), mean: 222});
-        for (const request of obsoleteStatistics) request.resolve({...createLayerStatistics(request.item, selectedBoundsFromArea(request.area)), mean: 111});
+        current.resolve({...createLayerStatistics(current.item, current.area), mean: 222});
+        for (const request of obsoleteStatistics) request.resolve({...createLayerStatistics(request.item, request.area), mean: 111});
         oldPixel.resolve({inBounds: true, value: 111});
         await flushPromises();
         assert.equal(record.state.analysis.rasterStatistics.mean, 222);

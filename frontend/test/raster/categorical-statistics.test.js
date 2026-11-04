@@ -71,3 +71,17 @@ test("all 256 categories expand with aggregated remainder and preserved keyboard
     toggle.dispatchEvent(new Event("click"));
     assert.equal(list.children.length, 13);
 });
+
+
+test("categorical sampling-box analysis preserves geometry and category identities together", async () => {
+    const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+    let body;
+    const response = {...RASTER_STATISTICS, scope: "samplingBox", samplingBox: area.samplingBox, categoricalDistribution: distribution};
+    const result = await loadRasterStatistics(MOUNTED_GEOTIFF_ITEM, area, undefined, async (_url, options) => {
+        body = JSON.parse(options.body); return new Response(JSON.stringify(response));
+    }, [41, 0]);
+    assert.deepEqual(body.samplingBox, area.samplingBox);
+    assert.deepEqual(body.categoryValues, [0, 41]);
+    assert.equal(Object.hasOwn(body, "selectedBounds"), false);
+    assert.deepEqual(result.categoricalDistribution, distribution);
+});

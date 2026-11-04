@@ -11,6 +11,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict
 
 from eolab_app.bounded_vector import summary_process
+from eolab_app.sampling_box import sampling_box_bounds
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateArtifact,
@@ -199,6 +200,12 @@ async def prepare_summary(
             area = queued.polygonArea
         elif request.wholeRaster:
             area = AggregateArea(kind="wholeRaster")
+        elif request.samplingBox is not None:
+            area = AggregateArea(
+                kind="samplingBox",
+                bounds=sampling_box_bounds(request.samplingBox),
+                samplingBox=request.samplingBox,
+            )
         elif request.selectedBounds:
             bounds = request.selectedBounds
             area = AggregateArea(
@@ -278,7 +285,13 @@ async def prepare_clip(
         if authorized.source_signature is not None
         else None
     )
-    if request.selectedBounds:
+    if request.samplingBox is not None:
+        area = ClipArea(
+            kind="samplingBox",
+            bounds=sampling_box_bounds(request.samplingBox),
+            samplingBox=request.samplingBox,
+        )
+    elif request.selectedBounds:
         area = ClipArea(kind="bounds", bounds=request.selectedBounds.canonical_tuple())
     else:
         if context.areas is None:
@@ -380,6 +393,7 @@ def bind_area_arguments(area: dict[str, Any]) -> dict[str, Any]:
     """
     fields = {
         "selectedArea": ("selectedBounds", "selectedBounds"),
+        "samplingBox": ("samplingBox", "samplingBox"),
         "catalogSelection": ("catalogSelection", "selection"),
         "polygonArea": ("polygonArea", "reference"),
     }
@@ -470,7 +484,13 @@ def build_summary_submission(
     """
     queued = UnpreparedCalculation(request=request, polygonArea=polygons)
     bounds = request.selectedBounds
-    if bounds:
+    if request.samplingBox is not None:
+        area = {
+            "kind": "samplingBox",
+            "bounds": sampling_box_bounds(request.samplingBox),
+            "samplingBox": request.samplingBox.model_dump(mode="json"),
+        }
+    elif bounds:
         area = {"kind": "bounds", "bounds": bounds.canonical_tuple()}
     elif polygons:
         area = {"kind": "polygons", "bounds": polygons.bounds}
@@ -519,8 +539,21 @@ def build_clip_submission(request: ClipJobRequest, polygons: None) -> PreparedJo
             "source": get_clip_source(request).model_dump(by_alias=True),
             "grid": None,
             "area": {
-                "kind": "bounds" if bounds else "catalogSelection",
-                "bounds": bounds.canonical_tuple() if bounds else None,
+                "kind": (
+                    "samplingBox"
+                    if inputs.samplingBox
+                    else "bounds" if bounds else "catalogSelection"
+                ),
+                "bounds": (
+                    sampling_box_bounds(inputs.samplingBox)
+                    if inputs.samplingBox
+                    else bounds.canonical_tuple() if bounds else None
+                ),
+                **(
+                    {"samplingBox": inputs.samplingBox.model_dump(mode="json")}
+                    if inputs.samplingBox
+                    else {}
+                ),
             },
         },
         reserved_bytes=0,

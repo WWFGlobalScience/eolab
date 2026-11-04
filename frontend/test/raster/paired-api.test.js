@@ -87,3 +87,20 @@ test("paired statistics retain the uploaded polygon filter and browser owner", a
   assert.equal(request.options.credentials, "same-origin");
   assert.equal(request.options.cache, "no-store");
 });
+
+
+test("paired sampling-box analysis keeps the same descriptor and rejects mismatched geometry", async () => {
+  const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+  const response = {...pairedResponse(), scope: "samplingBox", samplingBox: area.samplingBox};
+  let body;
+  await loadRasterPairedStatistics(X_ITEM, Y_ITEM, area, undefined, async (_url, options) => {
+    body = JSON.parse(options.body);
+    return new Response(JSON.stringify(response));
+  });
+  assert.deepEqual(body, {xRaster: {collectionId: X_ITEM.collection, itemId: X_ITEM.id},
+    yRaster: {collectionId: Y_ITEM.collection, itemId: Y_ITEM.id}, samplingBox: area.samplingBox});
+  await assert.rejects(loadRasterPairedStatistics(X_ITEM, Y_ITEM, area, undefined,
+    async () => new Response(JSON.stringify({...response, samplingBox: {...area.samplingBox, sideLengthKm: 601}}))));
+  await assert.rejects(loadRasterPairedStatistics(X_ITEM, Y_ITEM, area, undefined,
+    async () => new Response(JSON.stringify(pairedResponse()))));
+});

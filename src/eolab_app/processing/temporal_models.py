@@ -17,6 +17,7 @@ from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.models import Artifact
 from eolab_app.processing.temporal_grid import TemporalReadGrid
 from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.raster.models import Wgs84Bounds
 from eolab_app.raster.source_models import TemporalIntervalSelection
 
@@ -93,6 +94,7 @@ class TemporalMapRequest(BaseModel):
     reduction: TemporalReduction
     precipitation: PrecipitationConversion
     selectedBounds: Wgs84Bounds | None = None
+    samplingBox: Wgs84SamplingBox | None = None
     catalogSelection: VectorSelection | None = None
     polygonArea: PolygonAreaReference | None = None
     wholeRaster: Literal[True] | None = None
@@ -123,6 +125,7 @@ class TemporalMapRequest(BaseModel):
                 area is not None
                 for area in (
                     request.selectedBounds,
+                    request.samplingBox,
                     request.catalogSelection,
                     request.polygonArea,
                     request.wholeRaster,

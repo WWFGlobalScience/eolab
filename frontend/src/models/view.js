@@ -27,6 +27,7 @@ function formatModelRunCreatedTime(job) {
 export function describeModelArea(area) {
     if (!area) return "No analysis area selected.";
     if (area.kind === "wholeRaster") return "Whole raster";
+    if (area.kind === "samplingBox") return `Sampling box · ${area.samplingBox.sideLengthKm} × ${area.samplingBox.sideLengthKm} km · center ${area.samplingBox.center.latitude.toFixed(4)}°, ${area.samplingBox.center.longitude.toFixed(4)}°`;
     if (area.kind === "selectedArea") {
         const b = Object.fromEntries(Object.entries(area.selectedBounds).map(([key, value]) =>
             [key, Number.isFinite(value) ? value.toFixed(4) : "—"]));

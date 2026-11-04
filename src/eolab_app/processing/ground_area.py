@@ -17,6 +17,8 @@ import shapely
 from shapely.geometry import Polygon, box, shape
 from shapely.geometry.base import BaseGeometry
 
+from eolab_app.sampling_box import sampling_box_bounds, tessellate_sampling_box
+from eolab_app.raster.bounded_window import prepare_raster_for_wgs84_bounds
 from eolab_app.processing.aggregate_models import (
     AggregateArea,
     GroundAreaPlan,
@@ -196,6 +198,10 @@ class PixelAreaCalculator:
         Raises:
             ProcessingError: For unsupported CRS/topology or excessive work.
         """
+        if area.kind == "samplingBox":
+            prepare_raster_for_wgs84_bounds(
+                dataset, sampling_box_bounds(area.samplingBox)
+            )
         self.transform = dataset.transform
         self.catalog_source = area.resolved if area.kind == "catalogSelection" else None
         self.dataset = dataset
@@ -292,10 +298,45 @@ class PixelAreaCalculator:
                 )
             self.window = Window(x0, y0, x1 - x0, y1 - y0)
         elif area.kind != "wholeRaster":
+            box_ring = None
+            if area.kind == "samplingBox":
+
+                def project_box_accuracy(
+                    positions: tuple[tuple[float, float], ...],
+                ) -> tuple[tuple[float, ...], ...]:
+                    """Measure geodesic edge error in both native pixels and ground metres.
+
+                    Args:
+                        positions: WGS84 vertices selected by adaptive subdivision.
+
+                    Returns:
+                        Scaled pixel and equal-area coordinate pairs. A quarter-unit
+                        chord error satisfies both existing numerical tolerances.
+                    """
+                    points = np.asarray(positions)
+                    native = pixels(points)
+                    equal_area = project_points(points, wgs_area)
+                    return tuple(
+                        tuple(row)
+                        for row in np.column_stack(
+                            (
+                                native * (0.25 / WINDOW_TOLERANCE_PIXELS),
+                                equal_area * (0.25 / limits.area_edge_tolerance_metres),
+                            )
+                        )
+                    )
+
+                box_ring = np.asarray(
+                    tessellate_sampling_box(area.samplingBox, project_box_accuracy)
+                )
             originals = (
-                [box(*area.bounds)]
-                if area.kind == "bounds"
-                else [shape(item) for item in area.geometries]
+                [Polygon(box_ring)]
+                if box_ring is not None
+                else (
+                    [box(*area.bounds)]
+                    if area.kind == "bounds"
+                    else [shape(item) for item in area.geometries]
+                )
             )
             if not originals or any(
                 g.geom_type not in {"Polygon", "MultiPolygon"}
@@ -307,7 +348,11 @@ class PixelAreaCalculator:
                     "invalid_area",
                     "Ground-area selection must contain valid polygons with positive area.",
                 )
-            if area.kind == "bounds" and self.rectilinear:
+            if box_ring is not None:
+                self.geometry = Polygon(project_points(box_ring, wgs_area))
+                native_points = pixels(box_ring)
+                pixel_bounds = (*native_points.min(axis=0), *native_points.max(axis=0))
+            elif area.kind == "bounds" and self.rectilinear:
                 coordinates = np.asarray(originals[0].exterior.coords)
                 pixel_points = pixels(coordinates)
                 projected = project_points(coordinates, wgs_area)

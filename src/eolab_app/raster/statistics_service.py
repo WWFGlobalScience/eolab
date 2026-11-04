@@ -70,6 +70,7 @@ from eolab_app.raster.statistics import (
 from eolab_app.sampling_area import (
     RasterSamplingArea,
     SelectedBoundsSamplingArea,
+    SamplingBoxArea,
     CatalogSelectionSamplingArea,
     WholeRasterSamplingArea,
 )
@@ -92,7 +93,7 @@ class _CategoricalStatisticsReader(Protocol):
 
         Args:
             data: Authorized original file or selected temporal observation.
-            sampling_area: Resolved whole, bounds or Catalog selection.
+            sampling_area: Resolved whole-raster, rectangle, geodesic box or Catalog selection.
             cancellation_requested: Last-waiter cancellation predicate.
             category_values: Canonically sorted numeric classification codes.
 
@@ -601,7 +602,7 @@ class RasterStatisticsService:
             selected_bounds: Optional canonical WGS 84 sampling rectangle.
             cache_key: Ordered identities, signatures, bounds, and policy.
             cancellation_requested: Thread-safe last-waiter signal.
-            sampling_area: Authorized immutable selection or rectangular sampling area.
+            sampling_area: Authorized vector selection, rectangle or geodesic box descriptor.
 
         Returns:
             Newly computed bounded paired statistics.
@@ -622,7 +623,11 @@ class RasterStatisticsService:
                 options = (
                     {"catalog_selection": sampling_area}
                     if isinstance(sampling_area, CatalogSelectionSamplingArea)
-                    else {}
+                    else (
+                        {"sampling_box": sampling_area.box}
+                        if isinstance(sampling_area, SamplingBoxArea)
+                        else {}
+                    )
                 )
                 private = authorized_x.private or authorized_y.private
                 execute = read_private_raster if private else asyncio.to_thread
@@ -700,7 +705,7 @@ class RasterStatisticsService:
         Args:
             authorized_raster: Original source retained by its access scope.
             cache_key: Source, area, algorithm, and parameter cache identity.
-            sampling_area: Resolved whole, rectangle, or catalog-selection area.
+            sampling_area: Resolved whole-raster, rectangle, geodesic box or catalog-selection area.
             cancellation_requested: Thread-safe last-waiter signal.
             category_values: Sorted numeric classification codes, or None for
                 the unchanged continuous distribution.
@@ -795,14 +800,14 @@ class RasterStatisticsService:
         ),
         upload_owner: str | None,
     ) -> RasterSamplingArea:
-        """Resolve the requested whole-raster, rectangular or vector-feature area.
+        """Resolve the requested whole-raster, rectangle, geodesic box or vector area.
 
         Args:
             request: Validated raster identity and exclusive sampling fields.
             upload_owner: Browser identity used to authorize an uploaded selection.
 
         Returns:
-            Whole-raster, rectangular, or authorized vector selection area.
+            Whole-raster, rectangular, geodesic-box or authorized vector selection area.
 
         Raises:
             SelectionUnavailableError: If the selection reader or source is unavailable.
@@ -810,6 +815,8 @@ class RasterStatisticsService:
         """
         if request.selected_bounds is not None:
             return SelectedBoundsSamplingArea(request.selected_bounds.canonical_tuple())
+        if request.sampling_box is not None:
+            return SamplingBoxArea(request.sampling_box)
         if request.catalog_selection is None:
             return WholeRasterSamplingArea()
         if self._catalog_selection_reader is None:

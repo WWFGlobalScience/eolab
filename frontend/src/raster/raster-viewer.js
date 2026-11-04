@@ -6,6 +6,7 @@
  * their shared lifecycle and stale-work rules while delegating domain logic,
  * HTTP access, DOM presentation, and Leaflet construction to focused modules.
  */
+import { samplingBoxBounds } from "../sampling-box.js";
 import { rasterSourceKey, rasterSourceReference } from "../raster-source.js";
 import { publishRasterSource } from "./api.js";
 import { loadTemporalTimes } from "./temporal-api.js";
@@ -85,7 +86,7 @@ import { RasterControlsView } from "./controls-view.js";
  * @property {Object|null} wholeRasterStatistics Last successful whole-raster result.
  * @property {"idle"|"loading"|"ready"|"error"} wholeRasterStatisticsState Request status.
  * @property {Error|null} wholeRasterStatisticsError Current whole-raster failure.
- * @property {Readonly<Object>|null} selectedRasterBounds Selected WGS84 map bounds.
+ * @property {Readonly<Object>|null} selectedRasterBounds Read-window envelope; a box retains its separate center and size.
  * @property {Readonly<Object>|null} selectedCatalogSelection Catalog predicate and label.
  * @property {Readonly<{longitude:number,latitude:number}>|null} selectedRasterCenter Original click.
  * @property {number|null} selectedRasterWindowSizeKm Selected map-window side length.
@@ -170,6 +171,10 @@ function canRetryRasterStatistics(error) {
  * @property {(item: Object) => void} remove Remove one Item from the stack.
  * @property {(key?:string|null,mode?:string)=>Readonly<Object>|null} getSelectedArea
  * Read an immutable explicit selection, independently of statistics readiness.
+ * @property {()=>Readonly<Object>|null} selectSamplingBox Capture a geodesic box at the map center,
+ * returning null when its pole/date-line boundary is unsupported.
+ * @property {(area:Object|null)=>void} setSamplingActivity Mark the matching committed box or rectangle
+ * while a calculation uses it, without changing the selected geometry.
  * @property {(item:Object,selection?:Object,presentation?:Object)=>Promise<Object|null>} showTemporal Retain an independent temporal view.
  * @property {()=>Promise<void>} refreshTemporalLayers Reload retained temporal availability after server refresh.
  * @property {(item:Object)=>string|null} temporalLayerKey First retained view of this Catalog dataset.
@@ -186,7 +191,7 @@ function canRetryRasterStatistics(error) {
  * @typedef {Object} RasterViewerConfiguration
  * @property {string} wmsUrl Browser-facing GeoServer WMS endpoint.
  * @property {Object} leafletMap Initialized Leaflet-compatible map.
- * @property {Object} leaflet Leaflet namespace with WMS and rectangle factories.
+ * @property {Object} leaflet Leaflet namespace with WMS and polygon factories.
  * @property {(message: string, item: Object) => void} onTileError Reports a
  * layer-specific tile error.
  * @property {(item:Object)=>void} [onTemporalInfo] Open Catalog details for a retained temporal dataset.
@@ -392,6 +397,8 @@ export function initializeRasterViewer(
             wholeRasterStatistics: null,
             wholeRasterStatisticsState: "idle",
             wholeRasterStatisticsError: null,
+            // Bounds only screen/read candidate sources; box membership uses its
+            // captured center and size, independently of the display outline.
             selectedRasterBounds: null,
             selectedCatalogSelection: selection,
             selectedRasterCenter: null,
@@ -725,14 +732,15 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Create one passive preview or committed sample-window rectangle.
+     * Create one passive preview or committed sampling outline.
      *
      * @param {Array} bounds Leaflet rectangle bounds.
-     * @param {"preview"|"selection"} layerKind Rectangle purpose.
-     * @return {Object} Leaflet-compatible rectangle layer.
+     * @param {"preview"|"selection"} layerKind Layer purpose.
+     * @param {import("../sampling-box.js").SamplingBox|null} samplingBox Captured geodesic geometry.
+     * @return {Object} Leaflet polygon with display-only geometry updates.
      */
-    function createSampleWindowLayer(bounds, layerKind) {
-        return createRasterSampleWindowLayer(leaflet, bounds, layerKind);
+    function createSampleWindowLayer(bounds, layerKind, samplingBox) {
+        return createRasterSampleWindowLayer(leaflet, bounds, layerKind, samplingBox, leafletMap);
     }
 
     const pointSamplesController = new RasterPointSamplesController(
@@ -1447,17 +1455,17 @@ export function initializeRasterViewer(
             session.analysis.selectedRasterStatisticsError = null;
             return;
         }
-        session.analysis.selectedRasterBounds = samplingArea.kind === "selectedArea"
-            ? samplingArea.selectedBounds
-            : null;
+        session.analysis.selectedRasterBounds = samplingArea.kind === "samplingBox"
+            ? samplingBoxBounds(samplingArea.samplingBox)
+            : samplingArea.kind === "selectedArea" ? samplingArea.selectedBounds : null;
         session.analysis.selectedCatalogSelection = samplingArea.kind === "catalogSelection"
             ? rasterAnalysis.selectedCatalogSelection
             : null;
-        session.analysis.selectedRasterCenter = samplingArea.kind === "selectedArea"
-            ? rasterAnalysis.selectedRasterCenter
+        session.analysis.selectedRasterCenter = samplingArea.kind === "samplingBox"
+            ? samplingArea.samplingBox.center
             : null;
-        session.analysis.selectedRasterWindowSizeKm = samplingArea.kind === "selectedArea"
-            ? rasterAnalysis.selectedRasterWindowSizeKm
+        session.analysis.selectedRasterWindowSizeKm = samplingArea.kind === "samplingBox"
+            ? samplingArea.samplingBox.sideLengthKm
             : null;
         session.analysis.selectedRasterStatistics = null;
         session.analysis.selectedRasterStatisticsState = "idle";
@@ -1469,7 +1477,7 @@ export function initializeRasterViewer(
      * Mark one raster's requested scope as loading without discarding prior data.
      *
      * @param {RasterAnalysisState} analysis Authoritative per-raster state.
-     * @param {"wholeRaster"|"selectedArea"|"catalogSelection"} scope Requested scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"} scope Requested scope.
      * @return {void}
      */
     function markRasterStatisticsLoading(analysis, scope) {
@@ -1487,7 +1495,7 @@ export function initializeRasterViewer(
      *
      * @param {RasterAnalysisState} analysis Authoritative per-raster state.
      * @param {Object} statistics Validated current response.
-     * @param {"wholeRaster"|"selectedArea"|"catalogSelection"} scope Response scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"} scope Response scope.
      * @return {void}
      */
     function storeRasterStatisticsResult(analysis, statistics, scope) {
@@ -1507,7 +1515,7 @@ export function initializeRasterViewer(
      *
      * @param {RasterAnalysisState} analysis Authoritative per-raster state.
      * @param {Error} error Current non-abort request failure.
-     * @param {"wholeRaster"|"selectedArea"|"catalogSelection"} scope Failed scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"} scope Failed scope.
      * @return {void}
      */
     function storeRasterStatisticsError(analysis, error, scope) {
@@ -1663,10 +1671,33 @@ export function initializeRasterViewer(
         }
     }
 
+    /** Build a captured box or retain an explicit rectangle's existing meaning.
+     * @param {Object|null} bounds Geographic read-window envelope.
+     * @param {Readonly<{longitude:number,latitude:number}>|null} center Original box center, absent for a rectangle.
+     * @param {number|null} size Captured box side length, absent for a rectangle.
+     * @return {Readonly<Object>|null} Normalized descriptor, or null without a selection.
+     */
+    function samplingAreaForWindow(bounds, center, size) {
+        if (bounds === null) return null;
+        return normalizeRasterSamplingArea(center !== null && size !== null
+            ? {kind: "samplingBox", samplingBox: {center, sideLengthKm: size}}
+            : {kind: "selectedArea", selectedBounds: bounds});
+    }
+
+    /** Restore the presented descriptor without replacing a box by its envelope.
+     * @param {Object} bounds Geographic read-window envelope to display.
+     * @return {void}
+     */
+    function restoreRasterSampleWindow(bounds) {
+        const [, size, center] = getPresentedSampleWindow();
+        rasterSampleWindowController.restoreSelection(bounds,
+            center !== null && size !== null ? {center, sideLengthKm: size} : null);
+    }
+
     /**
      * Return the normalized area selected by the parent viewer.
      *
-     * @return {Readonly<Object>} Strict whole/bounds/polygon selection sampling-area union.
+     * @return {Readonly<Object>} Strict whole-raster, rectangle, geodesic-box or vector-selection area.
      */
     function currentRasterSamplingArea() {
         if (rasterAnalysis.selectedCatalogSelection !== null) {
@@ -1676,10 +1707,8 @@ export function initializeRasterViewer(
             });
         }
         if (rasterAnalysis.selectedRasterBounds !== null) {
-            return normalizeRasterSamplingArea({
-                kind: "selectedArea",
-                selectedBounds: rasterAnalysis.selectedRasterBounds
-            });
+            return samplingAreaForWindow(rasterAnalysis.selectedRasterBounds,
+                rasterAnalysis.selectedRasterCenter,rasterAnalysis.selectedRasterWindowSizeKm);
         }
         return WHOLE_RASTER_SAMPLING_AREA;
     }
@@ -1689,16 +1718,14 @@ export function initializeRasterViewer(
      * Whole-raster/overlap sampling deliberately has no clip selection.
      * @param {string|null} [key=null] Optional 1D session key.
      * @param {"presented"|"1d"|"2d"} [mode="presented"] Selection owner.
-     * @return {Readonly<Object>|null} Frozen box/polygon selection selection or no explicit area.
+     * @return {Readonly<Object>|null} Frozen rectangle, geodesic box or vector descriptor, or no explicit area.
      */
     function getSelectedArea(key = null, mode = "presented") {
         if (pendingVectorSelection) return null;
         if (invalidVectorSamplingId && (bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection)?.id === invalidVectorSamplingId) return null;
         if (mode === "2d" || (mode === "presented" && bivariateMode.active)) {
             if (bivariateCatalogSelection) return normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection: bivariateCatalogSelection.selection });
-            return bivariateSelectedBounds === null ? null : normalizeRasterSamplingArea({
-                kind: "selectedArea", selectedBounds: bivariateSelectedBounds,
-            });
+            return samplingAreaForWindow(bivariateSelectedBounds,bivariateSelectedCenter,bivariateSelectedWindowSizeKm);
         }
         const analysis = key === null || key === activeLayerKey
             ? rasterAnalysis : getBivariateCandidateSession(key)?.analysis;
@@ -1706,9 +1733,7 @@ export function initializeRasterViewer(
         if (analysis.selectedCatalogSelection) return normalizeRasterSamplingArea({
             kind: "catalogSelection", catalogSelection: analysis.selectedCatalogSelection.selection,
         });
-        return analysis.selectedRasterBounds === null ? null : normalizeRasterSamplingArea({
-            kind: "selectedArea", selectedBounds: analysis.selectedRasterBounds,
-        });
+        return samplingAreaForWindow(analysis.selectedRasterBounds,analysis.selectedRasterCenter,analysis.selectedRasterWindowSizeKm);
     }
 
     /** Forward a 1D calculation intent. @param {string} key Source key. @return {void} */
@@ -1908,12 +1933,8 @@ export function initializeRasterViewer(
      */
     function currentBivariateSamplingArea() {
         if (bivariateCatalogSelection) return normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection: bivariateCatalogSelection.selection });
-        return bivariateSelectedBounds === null
-            ? WHOLE_RASTER_OVERLAP_SAMPLING_AREA
-            : normalizeRasterSamplingArea({
-                kind: "selectedArea",
-                selectedBounds: bivariateSelectedBounds,
-            });
+        return samplingAreaForWindow(bivariateSelectedBounds,bivariateSelectedCenter,bivariateSelectedWindowSizeKm)
+            ?? WHOLE_RASTER_OVERLAP_SAMPLING_AREA;
     }
 
     /**
@@ -2125,7 +2146,7 @@ export function initializeRasterViewer(
         renderRasterSamplingAreaControls();
         rasterSampleWindowController.clearSelection();
         if (!pendingVectorSelection && rasterAnalysis.selectedRasterBounds !== null) {
-            rasterSampleWindowController.restoreSelection(
+            restoreRasterSampleWindow(
                 rasterAnalysis.selectedRasterBounds
             );
         }
@@ -2645,7 +2666,7 @@ export function initializeRasterViewer(
         if (presentedBounds === null) {
             rasterSampleWindowController.clearSelection();
         } else {
-            rasterSampleWindowController.restoreSelection(
+            restoreRasterSampleWindow(
                 presentedBounds
             );
         }
@@ -2702,7 +2723,7 @@ export function initializeRasterViewer(
         if (presentedBounds === null) {
             rasterSampleWindowController.clearSelection();
         } else {
-            rasterSampleWindowController.restoreSelection(
+            restoreRasterSampleWindow(
                 presentedBounds
             );
         }
@@ -2797,7 +2818,7 @@ export function initializeRasterViewer(
             controlsView.setControlsVisible(true);
             const [presentedBounds] = getPresentedSampleWindow();
             if (presentedBounds !== null) {
-                rasterSampleWindowController.restoreSelection(presentedBounds);
+                restoreRasterSampleWindow(presentedBounds);
             }
             renderRasterSamplingAreaControls();
             renderRasterSampleWindowGuidance("");
@@ -2837,7 +2858,7 @@ export function initializeRasterViewer(
         if (presentation.state === "ready" && statistics === presentation.statistics) return presentation.scope;
         const scope = statistics.scope === "catalogSelection"
             ? `Selected polygons · ${statistics.catalogSelection.layerName}`
-            : statistics.scope === "selectedArea" ? "Sampling box" : "Whole raster";
+            : ["selectedArea", "samplingBox"].includes(statistics.scope) ? "Sampling box" : "Whole raster";
         return `Previous histogram · ${scope}`;
     }
 
@@ -3215,7 +3236,7 @@ export function initializeRasterViewer(
     /**
      * Present one bounded statistics request without blocking manual styling.
      *
-     * @param {"wholeRaster"|"selectedArea"} scope Statistics request scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"} scope Statistics request scope.
      * @return {void}
      */
     function renderRasterStatisticsLoading(scope) {
@@ -3223,7 +3244,7 @@ export function initializeRasterViewer(
         controlsView.setStatisticsBusy(true);
         controlsView.setStatisticsStatus(
             activeAppearanceIsCategorical() ? "Calculating categorical ground areas…" :
-            scope === "selectedArea"
+            ["selectedArea", "samplingBox"].includes(scope)
                 ? "Calculating a bounded histogram for the selected area..."
                 : "Calculating a bounded whole-raster histogram..."
         );
@@ -3305,7 +3326,7 @@ export function initializeRasterViewer(
             ? `Vector selection ${rasterAnalysis.selectedCatalogSelection?.filename ?? "area"}, ` +
               `layer ${rasterAnalysis.selectedCatalogSelection?.selectedDataset ?? "selected"}, ` +
               `${approximation} bounded histogram`
-            : statistics.scope === "selectedArea"
+            : ["selectedArea", "samplingBox"].includes(statistics.scope)
                 ? `Selected-area ${approximation} bounded histogram`
                 : `Whole-raster ${approximation} bounded histogram`;
         const provenance = usesSampleGrid
@@ -3343,7 +3364,7 @@ export function initializeRasterViewer(
      * Keep manual rendering usable after one statistics failure.
      *
      * @param {Error} error Statistics request failure.
-     * @param {"wholeRaster"|"selectedArea"} scope Failed request scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"} scope Failed request scope.
      * @return {void}
      */
     function renderRasterStatisticsError(error, scope) {
@@ -3355,7 +3376,7 @@ export function initializeRasterViewer(
             canRetryRasterStatistics(error)
         );
         controlsView.setStatisticsStatus(
-            `${scope === "selectedArea" ? "Selected-area" : "Whole-raster"} ` +
+            `${["selectedArea", "samplingBox"].includes(scope) ? "Selected-area" : "Whole-raster"} ` +
             `histogram unavailable: ${error.message} ` +
             "Manual appearance controls remain available."
         );
@@ -3720,7 +3741,7 @@ export function initializeRasterViewer(
         if (rasterSampleWindowResizeTimeout === null) return;
         cancelRasterSampleWindowResize();
         const [bounds, size] = getPresentedSampleWindow();
-        rasterSampleWindowController.restoreSelection(bounds);
+        restoreRasterSampleWindow(bounds);
         rasterSampleWindowController.setWindowSize(size);
         controlsView.setSampleWindowSize(size, MAXIMUM_RASTER_SAMPLE_WINDOW_SIZE_KM);
         renderRasterSampleWindowGuidance("");
@@ -3775,7 +3796,7 @@ export function initializeRasterViewer(
             const resizedBounds = rasterSampleWindowController.resizeSelectionAt({lng: center.longitude, lat: center.latitude});
             if (resizedBounds === null) {
                 cancelRasterSampleWindowResize();
-                rasterSampleWindowController.restoreSelection(presentedBounds);
+                restoreRasterSampleWindow(presentedBounds);
             } else {
                 controlsView.setSampleWindowStatus(
                     `Updating the selected map box to ${sideLengthKm} km × ` +
@@ -3785,7 +3806,7 @@ export function initializeRasterViewer(
             }
         } else {
             cancelRasterSampleWindowResize();
-            if (presentedBounds !== null) rasterSampleWindowController.restoreSelection(presentedBounds);
+            if (presentedBounds !== null) restoreRasterSampleWindow(presentedBounds);
             renderRasterSampleWindowGuidance("");
         }
         if (bivariateMode.active) updateBivariatePercentileValues();
@@ -4335,6 +4356,11 @@ export function initializeRasterViewer(
         cursorSamplesController.clear();
     }
 
+    /** Refine display-only geodesic segments for the map's new pixel scale.
+     * @return {void}
+     */
+    function handleMapZoomEnd() { rasterSampleWindowController.refreshGeometry(); }
+
     /** Resume dwell-based sampling after map movement completes. @return {void} */
     function handleMapDragEnd() {
         mapDragging = false;
@@ -4852,6 +4878,7 @@ export function initializeRasterViewer(
         leafletMap.off("dragend", handleMapDragEnd);
         leafletMap.off("movestart", handleMapDragStart);
         leafletMap.off("moveend", handleMapDragEnd);
+        leafletMap.off("zoomend", handleMapZoomEnd);
         leafletMap.off("resize", handleMapMouseLeave);
     }
 
@@ -4918,6 +4945,7 @@ export function initializeRasterViewer(
     leafletMap.on("dragend", handleMapDragEnd);
     leafletMap.on("movestart", handleMapDragStart);
     leafletMap.on("moveend", handleMapDragEnd);
+    leafletMap.on("zoomend", handleMapZoomEnd);
     leafletMap.on("resize", handleMapMouseLeave);
     mapContainer.addEventListener("mouseleave", handleMapMouseLeave);
 
@@ -4953,13 +4981,14 @@ export function initializeRasterViewer(
         getSelectedArea,
         // Composition reuses these same map-sampling actions from the floating
         // area form; Processing retains its own polygon selection lifecycle.
-        /** Select a map-centered rectangle without requiring a histogram source.
-         * @return {Object|null} Canonical WGS 84 bounds, or null near a pole/date line.
+        /** Select a map-centered geodesic box without requiring a histogram source.
+         * @return {Object|null} Captured samplingBox descriptor, or null near a pole/date line.
          */
-        selectSamplingBox: () => rasterSampleWindowController.selectAt(leafletMap.getCenter()),
+        selectSamplingBox: () => rasterSampleWindowController.selectAt(leafletMap.getCenter()) === null
+            ? null : rasterSampleWindowController.selectedArea,
         selectWholeRaster: handleClearSampleWindow,
         cancelSampleWindowResize,
-        setSamplingActivity: area => rasterSampleWindowController.setActivityBounds(area?.kind === "selectedArea" ? area.selectedBounds : null),
+        setSamplingActivity: area => rasterSampleWindowController.setActivityArea(area),
         destroy,
         /**
          * Return whether at least one raster layer is currently displayed.

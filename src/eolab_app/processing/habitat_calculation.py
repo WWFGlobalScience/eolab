@@ -24,6 +24,8 @@ from nhi_terrestrial_integrity_modeling.habitat_training import IntegrityConfigu
 from nhi_terrestrial_integrity_modeling.prepared_rasters import RasterBand
 from nhi_terrestrial_integrity_modeling.prepared_runner import run_habitat_condition
 
+from eolab_app.sampling_box import tessellate_sampling_box
+from rasterio.warp import transform
 from eolab_app.bounded_vector import polygon_features
 from eolab_app.catalog_selection import ResolvedCatalogSelection
 from eolab_app.execution.bounded_process import ProcessResultWriter
@@ -110,6 +112,7 @@ def read_habitat_area(
     area: AggregateArea,
     sources: HabitatSources,
     crs: CRS,
+    pixel_size: tuple[float, float],
 ) -> BaseGeometry:
     """Read the complete selected AOI in the requested calculation CRS.
 
@@ -117,6 +120,7 @@ def read_habitat_area(
         area: Captured box, polygon input, filtered vector or whole-raster area.
         sources: Authorized vectors and first-predictor path for a whole-raster AOI.
         crs: Requested calculation coordinate system.
+        pixel_size: Positive X/Y output cell sizes, used for box edge accuracy.
 
     Returns:
         Process-local AOI geometry for the upstream sampler and prediction mask.
@@ -146,6 +150,37 @@ def read_habitat_area(
             polygons = project_polygons_to_crs(dataset.crs, crs, (footprint,), None)
     elif area.kind == "catalogSelection":
         polygons = read_habitat_polygons(sources.vectors["area"], crs)
+    elif area.kind == "samplingBox":
+
+        def project_box_pixels(
+            positions: tuple[tuple[float, float], ...],
+        ) -> tuple[tuple[float, float], ...]:
+            """Return output-grid positions for geodesic chord refinement.
+
+            Args:
+                positions: Adaptive WGS84 boundary coordinates.
+
+            Returns:
+                Floating output columns and rows; translation is immaterial.
+            """
+            x, y = transform(
+                "EPSG:4326",
+                crs,
+                [point[0] for point in positions],
+                [point[1] for point in positions],
+            )
+            return tuple(
+                (a / pixel_size[0], b / pixel_size[1])
+                for a, b in zip(x, y, strict=True)
+            )
+
+        ring = tessellate_sampling_box(area.samplingBox, project_box_pixels)
+        x, y = transform(
+            "EPSG:4326", crs, [point[0] for point in ring], [point[1] for point in ring]
+        )
+        polygons = (
+            {"type": "Polygon", "coordinates": [tuple(zip(x, y, strict=True))]},
+        )
     else:
         geometries = (
             (mapping(box(*area.bounds)),) if area.kind == "bounds" else area.geometries
@@ -174,7 +209,7 @@ def prepare_habitat_inputs(
         RasterioError: If the first predictor cannot be opened.
     """
     crs = CRS.from_user_input(request.preparation.crs)
-    aoi = read_habitat_area(area, sources, crs)
+    aoi = read_habitat_area(area, sources, crs, request.preparation.pixelSize)
     target = calculate_raster_grid(
         aoi.bounds, crs, request.preparation.pixelSize, request.preparation.origin
     )
@@ -258,7 +293,9 @@ def calculate_habitat(
             width=prepared.grid.width,
             height=prepared.grid.height,
         )
-        aoi = read_habitat_area(prepared.area, sources, grid.crs)
+        aoi = read_habitat_area(
+            prepared.area, sources, grid.crs, request.preparation.pixelSize
+        )
         inputs = {
             name: (path, Resampling[request.preparation.resampling[name]])
             for name, path in sources.rasters.items()
