@@ -387,6 +387,7 @@ test("Habitat captures independent resampling and duplicates the exact chosen gr
     assert.match(grid.requirement.textContent, /requires EPSG:6933/);
     assert.equal(Number(grid.pixelX.value), 25000); assert.equal(Number(grid.pixelY.value), 50000);
     assert.match(grid.unit.textContent, /metre/); assert.match(grid.description.textContent, /approximation/);
+    assert.equal(grid.description.hidden, false); assert.doesNotMatch(grid.description.textContent, /Grid origin|Every raster/);
     const count = lookups.length;
     edit(stack.predictors[0].resampling, "bilinear"); edit(stack.predictors[1].resampling, "mode");
     edit(stack.responses[0].resampling, "average"); edit(references.resampling, "nearest"); edit(mask.resampling, "cubic");
@@ -395,11 +396,15 @@ test("Habitat captures independent resampling and duplicates the exact chosen gr
     assert.equal(lookups.length, count, "Methods and variable names do not reload immutable grid metadata");
     edit(grid.resolution, modelSourceKey(h.context.rasters[1]));
     assert.equal(Number(grid.pixelX.value), 60); assert.equal(Number(grid.pixelY.value), 30);
+    assert.equal(grid.description.textContent, ""); assert.equal(grid.description.hidden, true);
     assert.deepEqual(h.controller.state.draft.inputs.preparation.origin, [17, 29]);
     edit(stack.predictors[1].source, modelSourceKey(h.context.rasters[4])); await settle();
     assert.equal(Number(grid.pixelX.value), 60); assert.deepEqual(h.controller.state.draft.inputs.preparation.origin, [17, 29]);
     assert.equal(stack.predictors[1].resampling.value, "mode");
-    edit(grid.resolution, "custom"); edit(grid.pixelX, "12.5", "input"); edit(grid.pixelY, "25.25", "input");
+    edit(grid.resolution, "custom"); edit(grid.pixelX, "0", "input");
+    assert.match(grid.status.textContent, /positive pixel/); assert.equal(h.view.setup.run.disabled, true);
+    edit(grid.pixelX, "12.5", "input"); edit(grid.pixelY, "25.25", "input");
+    assert.equal(grid.description.hidden, true); assert.match(grid.unit.textContent, /metre/);
     assert.equal(h.view.setup.run.disabled, false);
     await h.controller.submit();
     const expected = {crs: "EPSG:6933", pixelSize: [12.5, 25.25], origin: [0, 0],
