@@ -324,3 +324,52 @@ test("empty and failed filtered zooms keep the map unchanged and support retry w
     assert.equal(controls.zoomButton.hidden, true);
     controls.destroy();
 });
+
+test("map filter commit callbacks belong to one opening and only changed accepted rules", async () => {
+    const doc = new FakeRasterControlDocument(), notifications = [], replies = [];
+    let current = filter(), label = "Countries";
+    const context = Symbol("caller intent");
+    const controls = new VectorFilterControls({documentContext: doc,
+        getTarget: () => ({fields, filter: current, label, cancelPending() {},
+            apply: (candidate, applyContext) => new Promise((resolve, reject) => replies.push({candidate, applyContext, resolve, reject}))}),
+        inspection: {showFilter() {}, hideFilter() {}, updateLayerEditorName() {}},
+        setTimer: () => 1, clearTimer() {},
+    });
+    /** Open a new filter edit with its own intent callback. @return {void} */
+    const opening = () => controls.open("countries", null, {applyContext: context, onApplied: () => notifications.push(current)});
+    /** Send a complete draft to the controlled transport.
+     * @param {number} value Year threshold. @return {Object} Controllable accepted-filter reply.
+     */
+    const apply = value => {
+        const input = controls.rules.children[0].children[2];
+        input.value = String(value); input.dispatchEvent(new Event("input"));
+        controls.applyButton.dispatchEvent(new Event("click"));
+        return replies.at(-1);
+    };
+    opening();
+    controls.applyButton.dispatchEvent(new Event("click"));
+    assert.equal(replies.at(-1).applyContext, context, "the generic editor forwards opaque caller context unchanged");
+    replies.at(-1).resolve(current); await flush();
+    label = "Renamed countries"; controls.refresh();
+    assert.equal(notifications.length, 0, "unchanged rules and presentation refreshes are not calculation intents");
+
+    const changed = apply(2024); current = changed.candidate; changed.resolve(current); await flush();
+    assert.deepEqual(notifications, [filter(2024)]);
+    controls.applyButton.dispatchEvent(new Event("click")); replies.at(-1).resolve(undefined); await flush();
+    assert.equal(notifications.length, 1, "annotation-style void apply results still compare the authoritative accepted predicate");
+    apply(2025).reject(Error("Filter failed")); await flush();
+    assert.equal(notifications.length, 1);
+    assert.match(controls.status.textContent, /previous applied filter remains/);
+    apply(2026).resolve(null); await flush();
+    assert.equal(notifications.length, 1, "superseded or cancelled map filters cannot commit an intent");
+
+    const stale = apply(2027); controls.open("other-view");
+    stale.resolve(stale.candidate); await flush();
+    assert.equal(notifications.length, 1, "another opening owns its own commit callback");
+    opening(); const closed = apply(2028); controls.close();
+    current = closed.candidate; closed.resolve(current); await flush();
+    assert.equal(notifications.length, 1, "a closed editor does not replace a later foreground choice");
+    opening(); const destroyed = apply(2029); controls.destroy();
+    destroyed.resolve(destroyed.candidate); await flush();
+    assert.equal(notifications.length, 1);
+});

@@ -47,8 +47,7 @@ import { RasterStyleHistogramView } from "./style-histogram-view.js";
  * the coordinated two-axis palette.
  * @property {() => void} onBivariateSwapAxes Swaps deterministic X/Y roles.
  * @property {() => void} onRetryPairedStatistics Retries paired statistics.
- * @property {(axis:"x"|"y") => void} onBivariatePercentileInput Previews an axis range.
- * @property {(axis:"x"|"y") => void} onApplyBivariatePercentiles Applies an axis range.
+ * @property {(axis:"x"|"y") => void} onBivariatePercentileInput Updates paired percentiles and optional color matching.
  */
 
 /**
@@ -248,9 +247,9 @@ export class RasterControlsView {
     }
 
     /**
-     * Read draft histogram percentiles for one 2D axis.
+     * Read draft histogram percentiles and color matching for one 2D axis.
      * @param {"x"|"y"} axis Paired axis.
-     * @return {{lower:number,middle:number,upper:number}} Percentile positions.
+     * @return {import("./percentile-controls-view.js").HistogramPercentileSettings} Percentile positions and opt-in matching.
      */
     readBivariatePercentiles(axis) {
         return this.#bivariateView.readPercentiles(axis);
@@ -259,7 +258,7 @@ export class RasterControlsView {
     /**
      * Present a 2D axis's estimated values and application availability.
      * @param {"x"|"y"} axis Paired axis.
-     * @param {Object} state Formatted estimates, message, and validity.
+     * @param {Parameters<BivariateRasterControlsView["renderPercentiles"]>[1]} state Retained choices, estimates and current sample availability.
      * @return {void}
      */
     renderBivariatePercentiles(axis, state) {
@@ -380,13 +379,15 @@ export class RasterControlsView {
     }
 
     /**
-     * Replace the current sample-window guidance.
+     * Present sampling status with optional visible spatial guidance.
      *
-     * @param {string} message Sample-window guidance message.
+     * @param {string} message Guidance or ordinary selection announcement.
+     * @param {boolean} [showMessage=false] Show the message visually even when
+     * the numeric size is valid.
      * @return {void}
      */
-    setSampleWindowStatus(message) {
-        this.#samplingAreaView.setSampleWindowStatus(message);
+    setSampleWindowStatus(message, showMessage = false) {
+        this.#samplingAreaView.setSampleWindowStatus(message, showMessage);
     }
 
     /**

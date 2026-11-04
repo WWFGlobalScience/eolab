@@ -334,9 +334,8 @@ export class BivariateRasterControlsView {
                 name, requireRasterControl(documentContext, `#bivariate-${axis}-${name}-value`),
             ])),
             status: requireRasterControl(documentContext, `#bivariate-${axis}-range-status`),
-            apply: requireRasterControl(documentContext, `#apply-bivariate-${axis}-range`),
+            rescale: requireRasterControl(documentContext, `#match-bivariate-${axis}-percentiles`),
             onInput: () => this.handlers?.onBivariatePercentileInput(axis),
-            onApply: () => this.handlers?.onApplyBivariatePercentiles(axis),
         }]));
         this.cells = new Map();
         this.activeCell = null;
@@ -388,7 +387,7 @@ export class BivariateRasterControlsView {
             for (const input of Object.values(controls.inputs)) {
                 input.addEventListener("input", controls.onInput);
             }
-            controls.apply.addEventListener("click", controls.onApply);
+            controls.rescale.addEventListener("change", controls.onInput);
         }
     }
 
@@ -405,38 +404,44 @@ export class BivariateRasterControlsView {
             for (const input of Object.values(controls.inputs)) {
                 input.removeEventListener("input", controls.onInput);
             }
-            controls.apply.removeEventListener("click", controls.onApply);
+            controls.rescale.removeEventListener("change", controls.onInput);
         }
         this.handlers = null;
     }
 
     /**
-     * Read the draft percentile positions for an axis without applying them.
+     * Read one axis's draft percentiles and opt-in color matching choice.
      * @param {"x"|"y"} axis Paired axis.
-     * @return {{lower:number,middle:number,upper:number}} Slider percentages.
+     * @return {import("./percentile-controls-view.js").HistogramPercentileSettings} Slider percentages and matching choice.
      */
     readPercentiles(axis) {
-        return Object.fromEntries(Object.entries(this.rangeControls[axis].inputs)
-            .map(([name, input]) => [name, Number(input.value)]));
+        const controls = this.rangeControls[axis];
+        return { ...Object.fromEntries(Object.entries(controls.inputs)
+            .map(([name, input]) => [name, Number(input.value)])), rescale: controls.rescale.checked };
     }
 
     /**
      * Present estimates and availability supplied by the raster coordinator.
      * @param {"x"|"y"} axis Paired axis.
-     * @param {{values:Object|null,range:Object|null,message:string,applicable:boolean,invalid:boolean}} state
-     * Formatted estimates, exact candidate thresholds, sample scope or failure,
-     * and validity. Only applicable ranges may appear as draft markers.
+     * @param {{settings:import("./percentile-controls-view.js").HistogramPercentileSettings,values:{lower:string,middle:string,upper:string}|null,range:{minimum:number,midpoint:number,maximum:number}|null,message:string,applicable:boolean,invalid:boolean,available:boolean}} state
+     * Retained choices, formatted estimates, candidate thresholds and current sample availability.
+     * Only applicable ranges may appear as draft markers.
      * @return {void}
      */
     renderPercentiles(axis, state) {
         const controls = this.rangeControls[axis];
-        const percentiles = this.readPercentiles(axis);
+        const percentiles = state.settings;
         for (const name of ["lower", "middle", "upper"]) {
+            if (controls.inputs[name].value !== String(percentiles[name])) controls.inputs[name].value = String(percentiles[name]);
+            controls.inputs[name].disabled = !state.available;
             controls.inputs[name].setAttribute("aria-invalid", String(state.invalid));
-            controls.values[name].textContent = `${percentiles[name]}% ≈ ${state.values?.[name] ?? "—"}`;
+            const text = `${percentiles[name]}% ≈ ${state.values?.[name] ?? "—"}`;
+            controls.values[name].textContent = text;
+            controls.inputs[name].setAttribute("aria-valuetext", text);
         }
         controls.status.textContent = state.message;
-        controls.apply.disabled = !state.applicable;
+        controls.rescale.checked = percentiles.rescale;
+        controls.rescale.disabled = !percentiles.rescale && !state.applicable;
         this.rangePreviews[axis] = state.applicable ? state.range ?? null : null;
         this.#renderThresholdMarkers();
     }

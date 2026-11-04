@@ -177,3 +177,28 @@ test("composed area context keeps a foreground polygon workflow separate from hi
     view.setAreaContext(null);
     assert.equal(view.samplingAreaSummary.textContent, "Sample area · Whole raster");
 });
+
+test("spatial guidance is visible independently of numeric validity and clears on recovery", () => {
+    const document = new FakeRasterControlDocument();
+    const view = new RasterSamplingAreaControlsView(document);
+    view.disclosure.open = false;
+    view.setSampleWindowInvalid(false);
+    view.setSampleWindowStatus("Whole raster selected.");
+    assert.equal(view.sampleWindowStatus.classList.contains("visually-hidden"), true);
+
+    view.setSampleWindowStatus("This box reaches a pole or date line. Use a smaller box.", true);
+    assert.equal(view.sampleWindowStatus.classList.contains("visually-hidden"), false);
+    assert.equal(view.sampleWindowNumber.getAttribute("aria-invalid"), null);
+    view.setSampleWindowInvalid(false);
+    assert.equal(view.sampleWindowStatus.classList.contains("visually-hidden"), false);
+    assert.equal(view.disclosure.open, false);
+
+    view.setSampleWindowStatus("Selected map window.");
+    assert.equal(view.sampleWindowStatus.classList.contains("visually-hidden"), true);
+    view.setSampleWindowInvalid(true);
+    view.setSampleWindowStatus("Choose a whole-number size.");
+    assert.equal(view.sampleWindowStatus.classList.contains("visually-hidden"), false);
+    assert.equal(view.sampleWindowNumber.getAttribute("aria-invalid"), "true");
+    view.setSampleWindowInvalid(false);
+    assert.equal(view.sampleWindowStatus.classList.contains("visually-hidden"), true);
+});
