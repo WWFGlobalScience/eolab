@@ -57,7 +57,7 @@ export class ModelsView {
     constructor(documentContext = globalThis.document) {
         this.document = documentContext; this.listeners = []; this.runCards = new Map();
         this.deletionNotices = new Map();
-        this.elements = Object.fromEntries(["heading", "close", "library", "setup", "run", "runs", "error", "recovery", "recover", "query",
+        this.elements = Object.fromEntries(["heading", "setup-heading", "close", "library", "setup", "run", "runs", "error", "recovery", "recover", "query",
             "library-items", "library-status", "refresh", "runs-list", "runs-status", "more", "refresh-runs", "yaml", "deletions"]
             .map(name => [name, documentContext.querySelector(`#models-${name}`)]));
         this.navigation = Object.fromEntries(["library", "setup", "runs"].map(name => [name, documentContext.querySelector(`#models-nav-${name}`)]));
@@ -96,10 +96,14 @@ export class ModelsView {
         for (const [node, event, callback] of this.listeners) node.addEventListener(event, callback);
     }
 
-    /** Focus the panel heading after an explicit setup or run choice.
+    /** Focus the chosen model or run name, or the Models header on a list page.
+     * @param {"library"|"setup"|"runs"|"run"} [page=this.state.page] Destination, including a list transition before its render.
      * @return {void}
      */
-    focusHeading() { this.elements.heading.focus(); }
+    focusHeading(page = this.state.page) {
+        const heading = page === "setup" ? this.elements["setup-heading"] : page === "run" ? this.run.title : this.elements.heading;
+        heading.focus();
+    }
 
     /** Focus the safe choice when asking to delete a run. @return {void} */
     focusDeleteConfirmation() { this.run?.keep.focus(); }
@@ -154,18 +158,28 @@ export class ModelsView {
         const reason = this.element("p", "", "models-help"); reason.id = `models-${name}-source-reason`;
         source.setAttribute("aria-describedby", reason.id);
         fields.append(this.field(`models-${name}-raster`, input.label, source));
-        let resampling = null, resamplingField = null;
-        if (modelHasInput(this.state.draft.model, "raster_preparation")) {
-            resampling = this.element("select");
-            this.options(resampling, Object.entries(RESAMPLING_LABELS).map(([value, label]) => ({value, label})), "nearest");
-            resampling.addEventListener("change", () => onResampling(resampling.value));
-            resamplingField = this.field(`models-${name}-resampling`, "Resampling", resampling); fields.append(resamplingField);
-        }
+        const preparation = this.buildRasterResampling(fields, name, onResampling);
         fields.append(reason);
-        return {source, reason, resampling, resamplingField};
+        return {source, reason, ...preparation};
     }
 
-    /** Build an area, starting-mask or reference-site chooser with its own vector editor host.
+    /** Build the per-raster resampling choice when the model prepares a grid.
+     * @param {HTMLElement} fields Container for this raster's dependent controls.
+     * @param {string} name Input identity used for the accessible control label.
+     * @param {(method:string)=>void} onChange Update this raster's preparation method.
+     * @return {{resampling:HTMLSelectElement|null,resamplingField:HTMLLabelElement|null}} Optional stable controls.
+     */
+    buildRasterResampling(fields, name, onChange) {
+        if (!modelHasInput(this.state.draft.model, "raster_preparation")) return {resampling: null, resamplingField: null};
+        const resampling = this.element("select");
+        this.options(resampling, Object.entries(RESAMPLING_LABELS).map(([value, label]) => ({value, label})), "nearest");
+        resampling.addEventListener("change", () => onChange(resampling.value));
+        const resamplingField = this.field(`models-${name}-resampling`, "Resampling", resampling);
+        fields.append(resamplingField);
+        return {resampling, resamplingField};
+    }
+
+    /** Build a direct spatial-source chooser and its active raster or vector controls.
      * @param {HTMLElement} fields Owning setup fieldset.
      * @param {string} name Recipe input name.
      * @param {{type:string,label:string}} input Declared area, mask or reference input.
@@ -173,23 +187,34 @@ export class ModelsView {
      */
     buildSpatialInput(fields, name, input) {
         const references = input.type === "habitat_references";
-        const areaMode = this.element("select");
-        areaMode.addEventListener("change", () => this.handlers.onArea(name, areaMode.value));
-        fields.append(this.field(`models-${name}-area`, input.label, areaMode));
+        const group = this.element("div", "", references ? "models-spatial-input models-spatial-reference" : "models-spatial-input");
+        const source = this.element("select"); source.required = true;
+        source.addEventListener("change", () => {
+            const choice = source.value;
+            if (choice.startsWith("vector:")) {
+                this.handlers.onArea(name, "vector");
+                this.handlers.onVector(name, choice.slice(7));
+            } else if (choice.startsWith("raster:")) {
+                const raster = this.state.draft.sources.find(value => modelSourceKey(value) === choice.slice(7)) ?? null;
+                this.handlers.onArea(name, "raster");
+                this.handlers.onInput(name, {maskRaster: raster});
+            } else this.handlers.onArea(name, choice || "vector");
+        });
+        const sourceField = this.field(`models-${name}-source`, input.label, source);
+        sourceField.id = `models-${name}-source-label`;
+        group.setAttribute("role", "group"); group.setAttribute("aria-labelledby", sourceField.id);
+        group.append(sourceField); fields.append(group);
         const maskGroup = this.element("div", "", "models-vector");
-        const referenceRaster = references ? this.buildRasterInput(maskGroup, `${name}-mask`, {type: "raster", label: `${input.label}: raster layer`},
-            raster => this.handlers.onInput(name, {maskRaster: raster}), resampling => this.handlers.onInput(name, {resampling})) : null;
-        const maskRaster = referenceRaster?.source ?? this.element("select");
-        if (!references) maskRaster.addEventListener("change", () => this.handlers.onInput(name, {
-            maskRaster: this.state.draft.sources.find(value => value.kind !== "runArtifact" && modelSourceKey(value) === maskRaster.value) ?? null,
-        }));
-        if (references) maskGroup.append(this.element("p", "Cells equal to 1 identify reference sites. Other values and NoData are excluded. Only reference sites inside the analysis area are used. Nearest neighbor preserves mask values; interpolation can change which cells equal 1.", "models-help"));
-        else maskGroup.append(this.field(`models-${name}-starting-raster`, `${input.label}: raster layer`, maskRaster),
-            this.element("p", "Flow starts at valid cells greater than zero. Zero, negative and NoData cells are excluded. Choose a raster from Map layers.", "models-help"));
-        maskGroup.hidden = true; fields.append(maskGroup);
+        const preparation = references ? this.buildRasterResampling(maskGroup, name,
+            resampling => this.handlers.onInput(name, {resampling})) : {resampling: null, resamplingField: null};
+        const rasterReason = this.element("p", "", "models-help"); rasterReason.id = `models-${name}-raster-reason`;
+        const maskHint = this.element("p", references
+            ? "Cells equal to 1 identify reference sites. Other values and NoData are excluded. Only reference sites inside the analysis area are used. Nearest neighbor preserves mask values; interpolation can change which cells equal 1."
+            : "Flow starts in valid cells greater than zero. Zero, negative and NoData cells are excluded.", "models-help");
+        maskHint.id = `models-${name}-raster-help`;
+        maskGroup.append(rasterReason, maskHint);
+        maskGroup.hidden = true; group.append(maskGroup);
         const vectorGroup = this.element("div", "", "models-vector");
-        const vector = this.element("select"); vector.addEventListener("change", () => this.handlers.onVector(name, vector.value));
-        vectorGroup.append(this.field(`models-${name}-vector`, `${input.label}: vector layer`, vector));
         const selectionCard = this.element("section", "", "models-selection");
         selectionCard.setAttribute("aria-label", `${input.label}: selected features`);
         const selectionHeader = this.element("div", "", "models-selection-header");
@@ -206,9 +231,9 @@ export class ModelsView {
         vectorGroup.append(selectionCard, filterHost);
         const areaDescription = this.element("p", "", "models-help"); areaDescription.setAttribute("role", "status");
         const mapHelp = this.element("p", "", "models-help");
-        fields.append(vectorGroup, areaDescription, mapHelp);
-        if (input.type === "mask_source") fields.append(this.element("p", "All selected features or positive raster cells form one combined starting mask and one overall result. Changing map visibility does not change these choices.", "models-help"));
-        return {areaMode, maskGroup, maskRaster, referenceRaster, vectorGroup, vector, selectionCard, selectedCount, editFilter,
+        group.append(vectorGroup, areaDescription, mapHelp);
+        if (input.type === "mask_source") group.append(this.element("p", "All selected features or positive raster cells form one combined starting mask and one overall result. Changing map visibility does not change these choices.", "models-help"));
+        return {group, source, maskGroup, rasterReason, maskHint, ...preparation, vectorGroup, selectionCard, selectedCount, editFilter,
             filterDescription, vectorStatus, mapFilterStatus, filterHost, areaDescription, mapHelp};
     }
 
@@ -218,7 +243,7 @@ export class ModelsView {
      */
     buildSetup(draft) {
         const form = this.element("form", "", "models-form");
-        const fields = this.element("fieldset"); const legend = this.element("legend", draft.model.title); fields.append(legend);
+        const fields = this.element("fieldset"); fields.setAttribute("aria-labelledby", "models-setup-heading");
         const description = this.element("p", draft.model.description, "models-help"); fields.append(description);
         const label = this.element("input"); label.type = "text"; label.required = true;
         label.addEventListener("input", () => this.handlers.onEdit({label: label.value}));
@@ -311,7 +336,7 @@ export class ModelsView {
         return optional && !value.raster || Boolean(value.raster) && value.raster.available !== false;
     }
 
-    /** Refresh an area, mask or reference chooser from its independent selection state.
+    /** List eligible concrete spatial sources and show only the selected source's controls.
      * @param {Object} controls Stable controls for this spatial input.
      * @param {{type:string,label:string}} input Declared area, mask or reference input.
      * @param {Object} value This input's area, filter and selection feedback.
@@ -323,9 +348,9 @@ export class ModelsView {
         const references = input.type === "habitat_references";
         const usesRasterOrVector = input.type === "mask_source" || references;
         const runLabel = draft.temporal ? "Run analysis" : "Run model";
-        const areaChoices = usesRasterOrVector ? [{value: "vector", label: "Vector layer"}, {value: "raster", label: references ? "Raster cells equal to 1" : "Raster cells greater than zero"}] :
-            [{value: "viewport", label: "Visible map area"}, {value: "samplingArea", label: "Sampling area"}, {value: "vector", label: "Vector layer"}];
-        if (modelSupportsArea(input.type, {kind: "wholeRaster"}) && !getHabitatEarthEngineInput(draft)) areaChoices.unshift({value: "whole", label: "Entire raster"});
+        const areaChoices = [{value: "", label: references ? "Choose reference sites…" : input.type === "mask_source" ? "Choose a starting area…" : "Choose an area…"}];
+        if (!usesRasterOrVector) areaChoices.push({value: "viewport", label: "Visible map area"}, {value: "samplingArea", label: "Sampling box"});
+        if (modelSupportsArea(input.type, {kind: "wholeRaster"}) && !getHabitatEarthEngineInput(draft)) areaChoices.splice(1, 0, {value: "whole", label: "Whole raster"});
         if (value.capturedArea?.kind === "polygonArea" && value.areaOrigin === "map" && modelSupportsArea(input.type, value.capturedArea)) {
             areaChoices.push({value: "mapPolygons", label: "Polygons selected on map"});
         }
@@ -333,28 +358,37 @@ export class ModelsView {
             (value.areaOrigin === "run" || value.capturedArea.kind === "catalogSelection")) {
             areaChoices.push({value: "captured", label: value.areaOrigin === "run" ? "Area from original run" : "Selected features"});
         }
-        this.options(controls.areaMode, areaChoices, value.areaMode);
-        controls.maskGroup.hidden = !usesRasterOrVector || value.areaMode !== "raster";
-        let rasterReady = Boolean(value.maskRaster);
-        if (references) {
-            // The inactive raster choice must not participate in native form validation.
-            controls.maskRaster.required = value.areaMode === "raster";
-            rasterReady = this.renderRasterInput(controls.referenceRaster, {type: "raster"},
-                {raster: value.maskRaster, resampling: value.resampling, sourceReason: "Choose a raster from Map layers or a completed run."}, state);
-        } else this.options(controls.maskRaster, [{value: "", label: "Choose a starting raster…"}, ...draft.sources.filter(source => source.kind !== "runArtifact")
-            .map(source => ({value: modelSourceKey(source), label: source.label + (source.visible === false ? " (hidden on map)" : "")}))], value.maskRaster ? modelSourceKey(value.maskRaster) : "");
+        areaChoices.push(...value.vectors.map(source => ({value: `vector:${source.key}`, label: source.label, group: "Vector layers"})));
+        if (usesRasterOrVector) {
+            const rasters = draft.sources.filter(source => references || source.kind !== "runArtifact");
+            if (value.maskRaster && !rasters.some(source => modelSourceKey(source) === modelSourceKey(value.maskRaster))) rasters.push({...value.maskRaster, available: false});
+            areaChoices.push(...rasters.map(source => ({value: `raster:${modelSourceKey(source)}`,
+                label: (source.label ?? "Previously selected raster") + (source.available === false ? " (unavailable)" : source.visible === false ? " (hidden on map)" : ""),
+                group: source.kind === "runArtifact" ? "Completed runs" : "Raster layers", disabled: source.available === false})));
+        }
+        const selected = value.areaMode === "vector" ? value.vectorKey ? `vector:${value.vectorKey}` : ""
+            : value.areaMode === "raster" ? value.maskRaster ? `raster:${modelSourceKey(value.maskRaster)}` : "" : value.areaMode;
+        this.options(controls.source, areaChoices, selected);
+        const rasterActive = usesRasterOrVector && value.areaMode === "raster";
+        controls.maskGroup.hidden = !rasterActive;
+        controls.source.setAttribute("aria-describedby", rasterActive ? `${controls.rasterReason.id} ${controls.maskHint.id}` : "");
+        if (controls.resampling) {
+            controls.resampling.value = value.resampling;
+            controls.resampling.disabled = !rasterActive;
+        }
+        controls.rasterReason.textContent = value.maskRaster?.available === false ? "This raster is no longer available. Choose another input." : "";
+        const rasterReady = Boolean(value.maskRaster) && value.maskRaster.available !== false;
         controls.vectorGroup.hidden = value.areaMode !== "vector";
-        this.options(controls.vector, [{value: "", label: "Choose a vector layer…"}, ...value.vectors.map(source => ({value: source.key, label: source.label}))], value.vectorKey);
         controls.mapHelp.hidden = !["viewport", "samplingArea", "mapPolygons", "captured"].includes(value.areaMode);
         controls.mapHelp.textContent = ({
             viewport: `Uses the visible map area when you choose ${runLabel}. Pan or zoom to change it.`,
-            samplingArea: `Uses the sampling area shown in Histograms. Click the map to move the box. ${runLabel} uses its latest position and size.`,
+            samplingArea: `Uses the sampling box shown in Histograms. Click the map to move the box. ${runLabel} uses its latest position and size.`,
             mapPolygons: `Uses the polygons selected on the map when you choose ${runLabel}.`,
             captured: value.capturedArea?.kind !== "catalogSelection"
                 ? "Uses the exact area from the original run. Choose another area above to change it."
                 : value.areaOrigin === "run"
-                    ? "Uses the original area and filter. Choose Vector layer to use a map view's current filter."
-                    : "Uses the selected features. Choose Vector layer to follow a map view's current filter.",
+                    ? "Uses the original area and filter. Choose a vector layer above to use its current filter."
+                    : "Uses the selected features. Choose a vector layer above to follow its current filter.",
         })[value.areaMode] ?? "";
         const vectorSource = value.vectors.find(source => source.key === value.vectorKey);
         controls.selectionCard.hidden = !vectorSource;
@@ -368,7 +402,8 @@ export class ModelsView {
         controls.vectorStatus.textContent = value.selecting ? "You can edit the filter while this check runs." : value.selectionError || "";
         controls.mapFilterStatus.textContent = value.mapFilterMessage ?? "";
         controls.areaDescription.hidden = value.areaMode === "vector" && Boolean(vectorSource) || usesRasterOrVector && value.areaMode === "raster";
-        controls.areaDescription.textContent = value.selectionError || (value.areaMode === "vector" && !vectorSource ? "Choose a vector layer from Map layers." : "") ||
+        controls.areaDescription.textContent = value.selectionError || (value.areaMode === "vector" && !vectorSource
+            ? references ? "Choose reference sites above." : input.type === "mask_source" ? "Choose a starting area above." : "Choose an analysis area above." : "") ||
             `${describeModelArea(value.area)}${value.areaMode === "captured" ? ` · ${value.areaDescription}` : ""}`;
         const areaReady = usesRasterOrVector && value.areaMode === "raster" ? rasterReady : Boolean(value.area);
         return areaReady && !value.selecting && !value.filterEditing;
@@ -408,7 +443,7 @@ export class ModelsView {
      */
     buildRun(id) {
         const heading = this.element("div", "", "models-run-heading");
-        const title = this.element("h3", "", "models-name");
+        const title = this.element("h3", "", "models-name"); title.tabIndex = -1;
         const rename = this.button("", () => this.openRunNameEditor(), "models-action models-rename");
         rename.title = "Rename run"; rename.setAttribute("aria-label", "Rename run");
         const pencil = this.document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -628,7 +663,7 @@ export class ModelsView {
         }
     }
 
-    /** Update visible runs and controls, removing history cards no longer present.
+    /** Present the selected Models page while retaining drafts, controls and run cards.
      * @param {Object} state Controller snapshot.
      * @return {void}
      */
@@ -637,7 +672,8 @@ export class ModelsView {
         for (const page of ["library", "setup", "runs", "run"]) this.elements[page].hidden = state.page !== page;
         for (const [page, node] of Object.entries(this.navigation)) node.setAttribute("aria-pressed", String(state.page === page || page === "runs" && state.page === "run"));
         this.navigation.setup.disabled = !state.draft;
-        this.elements.heading.textContent = ({library: "Model library", setup: "Model setup", runs: "Model runs", run: "Model run"})[state.page];
+        this.elements["setup-heading"].hidden = state.page !== "setup";
+        this.elements["setup-heading"].textContent = state.draft?.model.title ?? "";
         const error = state.error || (state.page === "setup" ? "" : state.observationError) || "";
         this.elements.error.textContent = error; this.elements.error.hidden = !error;
         this.renderDeletions(state.deletions ?? []);

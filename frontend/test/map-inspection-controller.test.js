@@ -1124,5 +1124,20 @@ test("sampling widget retains disclosure and area through Models, tool switches 
     assert.equal(view.disclosure.open, false, "a user's collapsed state also survives panel changes");
     assert.equal(widget.hidden, false);
     view.unbind();
+
+test("Models keeps its tool entry while its own compact header provides the title", () => {
+    const h = fixture(), models = h.doc.querySelector("#models-panel"), tab = h.doc.querySelector("#map-inspection-tab-models");
+    h.controller.showModels();
+    assert.equal(h.dockTitle.hidden, true);
+    assert.equal(h.doc.querySelector("#map-inspection-context").hidden, true);
+    assert.equal(tab.hidden, false);
+    assert.equal(tab.getAttribute("aria-selected"), "true");
+    assert.equal(models.getAttribute("data-map-inspection-active"), "true");
+    h.controller.showStyle("Population");
+    assert.equal(h.dockTitle.hidden, false);
+    assert.equal(tab.hidden, false);
+    tab.dispatchEvent(new Event("click"));
+    assert.equal(h.controller.activeTool, "models");
+    assert.equal(h.dockTitle.hidden, true);
     h.controller.destroy();
 });

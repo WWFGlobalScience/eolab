@@ -67,7 +67,8 @@ test("explicit vector and values choices capture the YAML-named inputs and selec
     assert.equal(draft.inputs.people.raster.itemId, raster.itemId);
     assert.equal(draft.inputs.start.vectorInfo.matched, 1);
     assert.equal(h.view.setup.run.disabled, false);
-    assert.deepEqual(h.view.setup.inputs.start.areaMode.children.map(option => option.value), ["vector", "raster"]);
+    assert.deepEqual(h.view.setup.inputs.start.source.querySelectorAll("option").map(option => option.value),
+        ["", `vector:${h.context.vectors[0].key}`, `raster:${JSON.stringify([raster.collectionId, raster.itemId])}`]);
     await h.controller.openVectorFilter("start");
     const filter = {...selection.filter, rules: [{field: "NAME", operator: "eq", value: "Cuba"}]};
     await h.filters[0].apply(filter); h.filters[0].complete();
@@ -88,7 +89,7 @@ test("raster masks have positive-cell semantics, do not follow map clicks, and r
     const body = captureModelSubmission(h.controller.state.draft, "a".repeat(32));
     assert.deepEqual(body.inputs.start, {kind: "catalogRaster", source: {collectionId: raster.collectionId, itemId: "start"}});
     assert.equal(h.view.setup.inputs.start.maskGroup.hidden, false); assert.equal(h.view.setup.inputs.start.vectorGroup.hidden, true);
-    assert.match(h.view.setup.inputs.start.maskGroup.children[1].textContent, /valid cells greater than zero/);
+    assert.match(h.view.setup.inputs.start.maskHint.textContent, /valid cells greater than zero/);
     h.context.area = {kind: "selectedArea", selectedBounds: {west: 0, east: 1, south: 0, north: 1}}; h.controller.refreshMapArea();
     assert.deepEqual(captureModelSubmission(h.controller.state.draft, "b".repeat(32)).inputs, body.inputs);
     h.context.rasters.pop(); h.controller.refreshMapLayers();
@@ -126,7 +127,7 @@ test("duplicate preserves mask, values and formula without a hydrology check or 
         assert.deepEqual(captureModelSubmission(draft, "c".repeat(32)).inputs, h.requests[0].inputs);
         assert.equal(h.requests[0].inputs.start.selection.uploadId, h.context.vectors[0].uploadId);
         assert.equal(h.requests.length, 1);
-        assert.equal(h.view.setup.inputs.start.areaMode.value, "captured");
+        assert.equal(h.view.setup.inputs.start.source.value, "captured");
         assert.match(h.view.setup.inputs.start.areaDescription.textContent, /BASIN equals/);
         assert.equal(h.view.setup.run.disabled, false);
         assert.equal(h.controller.state.error, "");

@@ -804,7 +804,7 @@ export class MapInspectionController {
      * Raster destinations use stable native buttons; their owners handle opening.
      * Features share the compact result navigation. Raster statistics omits the
      * inactive Style tab while retaining its editor; other tools keep their tabs.
-     * Polygon editing names its selected layer in the panel without another task heading.
+     * Models and polygon editing use their panel headings without another task heading.
      * Opening or updating a tool never replaces its focused raster destination.
      * Hide the panel surface when no tool is active so the retained result header
      * cannot leave an invisible container intercepting map input below it.
@@ -819,7 +819,7 @@ export class MapInspectionController {
         const tool = this.activeTool === null ? null : this.#tool(this.activeTool);
         this.dockTitle.textContent = tool === null ? "Explore data" : `${tool.task} · ${tool.label}`;
         this.dockTitle.title = this.dockTitle.textContent;
-        this.dockTitle.hidden = ["histogram", "raster-series", "feature", "annotations"].includes(this.activeTool);
+        this.dockTitle.hidden = ["histogram", "raster-series", "feature", "annotations", "models"].includes(this.activeTool);
         const context = tool?.context ?? (this.activeTool === "feature"
             ? { source: "Visible vector layers", scope: this.clickLabel }
             : { source: "", scope: "" });
