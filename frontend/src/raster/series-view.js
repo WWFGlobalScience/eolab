@@ -314,7 +314,10 @@ export class RasterSeriesView {
         if (this.chartNote.hidden !== !showingPrevious) this.chartNote.hidden = !showingPrevious;
         const chartNote = showingPrevious ? "Previous results — calculating replacements." : "";
         if (this.chartNote.textContent !== chartNote) this.chartNote.textContent = chartNote;
-        if (!hidePlots) this.plotsView.renderPlots(state);
+        const pendingPlot = !hidePlots && this.plotsView.renderPlots(state);
+        if (this.plotProgress.classList.contains("is-summary") !== Boolean(pendingPlot)) {
+            this.plotProgress.classList.toggle("is-summary", Boolean(pendingPlot));
+        }
         this.renderValuesTable(state.rows);
         if (this.download.disabled !== !state.canDownload) this.download.disabled = !state.canDownload;
     }
