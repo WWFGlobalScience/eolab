@@ -46,7 +46,7 @@ export class HabitatAdminView {
         this.searchMore = this.button("Load more polygon layers", () => this.handlers.searchMore());
         selection.append(this.field("habitat-source", "Polygon layer", this.source), this.searchMore);
         this.name = this.element("input"); this.name.type = "text"; this.name.maxLength = 80;
-        selection.append(this.field("habitat-area-name", "Area name", this.name));
+        selection.append(this.field("habitat-area-name", "Area name (1–80 characters)", this.name));
         this.filterSummary = this.element("p");
         this.editFilter = this.button("Choose area conditions", () => this.openFilter());
         this.filterHost = this.element("div"); this.filterHost.id = "habitat-area-filter";
@@ -122,13 +122,19 @@ export class HabitatAdminView {
      */
     bind(handlers) { this.handlers = handlers; }
 
-    /** Reset the area predicate when the user chooses another original source.
+    /** Reset the predicate and suggest a valid name when the area name is blank.
+     * Use the last nonempty part of a Catalog label, limited to 80 Unicode characters.
+     * Preserve names already entered in the form and the original Catalog source identity.
      * @return {void}
      */
     changeSource() {
         this.filterControls?.destroy(); this.filterControls = null; this.filterHost.replaceChildren(); this.editingFilter = false;
         this.sourceKey = this.source.value; this.filter = structuredClone(EMPTY_VECTOR_FILTER);
-        if (!this.name.value.trim()) this.name.value = this.sources.find(source => source.key === this.sourceKey)?.label ?? "";
+        const source = this.sources.find(source => source.key === this.sourceKey);
+        if (!this.name.value.trim() && source) {
+            const label = source.label.split(/[\\/]/).map(part => part.trim()).filter(Boolean).at(-1) || "Area";
+            this.name.value = [...label].slice(0, 80).join("");
+        }
         this.updateAreaControls();
     }
 

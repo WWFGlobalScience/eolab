@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { HabitatAdminView } from "../../src/habitat-admin/view.js";
+import { HabitatAdminController } from "../../src/habitat-admin/controller.js";
 import { SummaryControlDocument } from "../../test-support/processing/summary-document.js";
 
 const markup = readFileSync(new URL("../../../src/eolab_app/annotation_sessions/admin.habitat.html", import.meta.url), "utf8");
@@ -50,6 +51,52 @@ function job(changes = {}) {
             {phase: "fetching_habitat_tiles", completed: 2, total: 6, unit: "tiles"},
         updatedAt: "2026-11-03T08:00:00Z", expiresAt: "2099-11-04T08:00:00Z", metadataExpiresAt: "2099-11-10T08:00:00Z", error: null, result: null, ...changes};
 }
+
+test("long Catalog labels can be added with their suggested names and original source identity", async t => {
+    const labels = [
+        ["corridor_precontext_resistance_shapefiles/India_CentralIndia_corridor_precontext_resistance.shp",
+            "India_CentralIndia_corridor_precontext_resistance.shp"],
+        [`project\\${"🌍".repeat(85)}.shp`, "🌍".repeat(80)],
+    ];
+    for (const [label, suggestedName] of labels) {
+        const h = fixture(), original = structuredClone(h.state.sources[0]); original.label = label;
+        original.selection.collectionId = "eolab-mounted-vectors";
+        const controller = new HabitatAdminController({view: h.view, documentContext: h.document,
+            windowContext: new EventTarget(), storage: null,
+            api: {getOptions: async () => ({...h.state.options, defaultYear: 2018}),
+                list: async () => ({jobs: [], nextCursor: null}),
+                searchAreas: async () => ({sources: [original], next: null}),
+                coverage: async () => assert.fail("Adding an area must not check coverage"),
+                submit: async () => assert.fail("Adding an area must not prepare inputs")}});
+        t.after(() => controller.destroy());
+        await controller.start(); await controller.search("");
+        h.view.source.value = original.key; h.view.source.dispatchEvent(new Event("change"));
+        assert.equal(h.view.name.value, suggestedName);
+        assert.match(h.view.name.parentNode.textContent, /Area name \(1–80 characters\)/);
+        assert.equal(h.view.addArea.disabled, false);
+        click(h.view.addArea);
+        assert.equal(controller.state.error, "");
+        assert.equal(controller.state.areas.length, 1);
+        assert.equal(controller.state.areas[0].name, suggestedName);
+        assert.deepEqual(controller.state.areas[0].selection, original.selection);
+        assert.equal(original.label, label);
+        assert.equal(h.view.source.children[1].textContent, label);
+        assert.equal(h.view.check.disabled, false); assert.equal(h.view.prepare.disabled, false);
+        controller.destroy();
+    }
+});
+
+test("choosing another Catalog layer preserves an entered area name", () => {
+    const h = fixture();
+    h.state.sources.push({...h.state.sources[0], key: "other", label: "Folder/Other polygons.shp"});
+    h.view.render(h.state);
+    h.view.name.value = "Central India corridor"; h.view.name.dispatchEvent(new Event("input"));
+    h.view.source.value = "other"; h.view.source.dispatchEvent(new Event("change"));
+    assert.equal(h.view.name.value, "Central India corridor");
+    click(h.view.addArea);
+    assert.deepEqual(h.actions.at(-1), ["addArea", "Central India corridor", "other", selection.filter]);
+    h.view.destroy();
+});
 
 test("area predicates and multiple years use explicit actions without checking or preparing", async () => {
     const h = fixture();
