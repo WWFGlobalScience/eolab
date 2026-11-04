@@ -33,6 +33,7 @@ COPY frontend/ ./
 COPY tests/fixtures/saved-map-v1.json /build/tests/fixtures/saved-map-v1.json
 COPY tests/fixtures/saved-map-v2.json /build/tests/fixtures/saved-map-v2.json
 COPY tests/fixtures/saved-map-v3-categorical.json /build/tests/fixtures/saved-map-v3-categorical.json
+COPY src/eolab_app/annotation_sessions/admin.habitat.html /build/src/eolab_app/annotation_sessions/admin.habitat.html
 RUN npm run build \
     && (node --version; npm --version) > /frontend-build-versions.txt
 

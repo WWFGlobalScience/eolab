@@ -133,6 +133,10 @@ test("Habitat starts with the original GEE configuration and linked datasets gro
     const links = stack.root.querySelectorAll("a");
     assert.equal(links[0].textContent, "NHI Terrestrial Integrity Modeling");
     assert.equal(links[0].href, "https://github.com/springinnovate/nhi-terrestrial-integrity-modeling");
+    const administration = links.find(link => link.textContent === "Manage cached inputs");
+    assert.equal(administration.href, "/admin-eolab/habitat");
+    assert.equal(administration.target, "_blank");
+    assert.equal(administration.rel, "noopener noreferrer");
     for (const [role, list] of Object.entries(stack.datasetLists)) {
         assert.deepEqual(list.children.map(item => ({label: item.children[0].textContent, url: item.children[0].href})),
             earthEngineOptions.datasets.filter(dataset => dataset.roles.includes(role)).map(({label, url}) => ({label, url})));

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Habitat cached inputs · EOLab administration</title>
+  <link rel="stylesheet" href="/admin-eolab/admin.css">
+  <script type="module" src="/assets/habitat-admin.js"></script>
+</head>
+<body>
+<main>
+  <h1>Habitat cached inputs</h1>
+  <p><a href="/admin-eolab">Administration</a> · <a href="/">Open map</a></p>
+  <p>Check and prepare Google Earth Engine inputs for selected areas without running a Habitat model.</p>
+  <div id="habitat-admin"></div>
+  <noscript>Enable JavaScript to check and prepare Habitat inputs.</noscript>
+</main>
+<section id="vector-filter-panel" hidden aria-label="Area conditions">
+  <header><h2>Area conditions</h2><button id="close-vector-filter" type="button">Close conditions</button></header>
+  <p id="vector-filter-title"></p>
+  <div class="vector-filter-options">
+    <label><input id="vector-filter-enabled" type="checkbox" checked> Enable conditions</label>
+    <label>Match <select id="vector-filter-match"><option value="all">all conditions (AND)</option><option value="any">any condition (OR)</option></select></label>
+  </div>
+  <div id="vector-filter-rules" aria-label="Area conditions"></div>
+  <div class="vector-filter-actions">
+    <button id="vector-filter-add" type="button">Add condition</button>
+    <button id="vector-filter-clear" type="button">Clear conditions</button>
+    <button id="vector-filter-apply" type="button">Use these area conditions</button>
+    <button id="vector-filter-cancel" type="button" hidden>Cancel</button>
+  </div>
+  <p id="vector-filter-status" role="status" aria-live="polite"></p>
+  <p id="vector-filter-applied"></p>
+  <p id="vector-filter-count" role="status" aria-live="polite"></p>
+  <p id="vector-filter-help"></p>
+</section>
+</body>
+</html>

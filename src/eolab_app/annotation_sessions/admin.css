@@ -20,3 +20,41 @@ code { font-size: 1rem; user-select: all; }
 small { display: block; font-size: .8rem; overflow-wrap: anywhere; font-weight: normal; color: #53606a; }
 dialog { max-width: 30rem; border: 1px solid #8a969e; border-radius: 6px; padding: 1.5rem; }
 dialog::backdrop { background: #0006; }
+
+#habitat-admin section { margin: 2rem 0; }
+#habitat-admin label { display: flex; flex-direction: column; gap: .25rem; margin: .75rem 0; }
+#habitat-admin input, #habitat-admin select { font: inherit; box-sizing: border-box; max-width: 100%; padding: .4rem; }
+#habitat-admin input[type="text"], #habitat-admin input[type="search"], #habitat-admin select { width: 100%; }
+#habitat-admin input:focus-visible, #habitat-admin select:focus-visible { outline: 3px solid #008bc5; outline-offset: 3px; }
+#habitat-admin .habitat-inline, #habitat-admin .habitat-actions { display: flex; align-items: end; flex-wrap: wrap; gap: .65rem; }
+#habitat-admin .habitat-inline label { flex: 1 1 18rem; }
+#habitat-admin button + button { margin-left: 0; }
+#habitat-admin .habitat-actions { align-items: center; margin-top: 1rem; }
+#habitat-admin .habitat-cards { display: grid; gap: .75rem; margin-top: 1rem; }
+#habitat-admin .habitat-card { background: white; border: 1px solid #d7dde1; border-radius: 4px; padding: 1rem; overflow-wrap: anywhere; }
+#habitat-admin .habitat-card h3 { margin: 0 0 .5rem; }
+#habitat-admin .habitat-card p { margin: .5rem 0; }
+#habitat-admin .habitat-years { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin: 1rem 0; }
+#habitat-admin .habitat-years label, #habitat-admin .vector-filter-options label { flex-direction: row; align-items: center; margin: .25rem 0; }
+#habitat-admin .habitat-error { color: #a32121; }
+#habitat-admin .habitat-times { font-size: .875rem; color: #53606a; }
+#habitat-admin .vector-filter-inline { padding: 1rem; border: 1px solid #8a969e; border-radius: 4px; }
+#habitat-admin .vector-filter-inline header, #habitat-admin .vector-filter-actions, #habitat-admin .vector-filter-options { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+#habitat-admin .vector-filter-inline header h2 { font-size: 1.1rem; margin: 0; flex: 1; }
+#habitat-admin .vector-filter-rule { display: flex; gap: .5rem; flex-wrap: wrap; margin: .75rem 0; }
+#habitat-admin .vector-filter-rule > input, #habitat-admin .vector-filter-rule > select { flex: 1 1 9rem; width: auto; min-width: 0; }
+#habitat-admin .is-error { color: #a32121; }
+#habitat-admin .vector-filter-value-picker { flex: 1 1 100%; min-width: 0; }
+#habitat-admin .vector-filter-value-picker > div { margin-top: .5rem; }
+#habitat-admin .vector-filter-value-picker button { margin: .25rem .4rem .25rem 0; }
+#habitat-admin .vector-filter-value-list { max-height: 12rem; overflow-y: auto; margin-top: .4rem; border: 1px solid #8a969e; border-radius: 4px; }
+#habitat-admin .vector-filter-value-list:empty { display: none; }
+#habitat-admin .vector-filter-value-list [role="option"] { padding: .4rem .5rem; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+#habitat-admin .vector-filter-value-list [aria-selected="true"] { background: #edf0f2; outline: 2px solid #202b33; outline-offset: -2px; }
+#habitat-admin .vector-filter-value-list [aria-disabled="true"] { color: #53606a; cursor: not-allowed; }
+#habitat-admin [hidden] { display: none; }
+@media (max-width: 600px) {
+  #habitat-admin .habitat-inline { align-items: stretch; }
+  #habitat-admin .habitat-inline label { flex-basis: 100%; }
+  #habitat-admin .habitat-actions > * { max-width: 100%; }
+}
