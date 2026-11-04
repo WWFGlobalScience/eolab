@@ -639,15 +639,18 @@ export class RasterSeriesController {
         if (this.sourceMode === "temporal") {
             if (area.busy || !area.temporalResult) return "";
             const rows = csvParse(area.temporalResult.csv);
-            const observations = new Map();
+            /** Native JavaScript lookups keyed by UTC time, then captured calculation label.
+             * @type {Map<string, Map<string, Record<string, string>>>}
+             */
+            const rowsByTime = new Map();
             for (const row of rows) {
-                if (!observations.has(row.time_utc)) observations.set(row.time_utc, new Map());
-                observations.get(row.time_utc).set(row.calculation, row);
+                if (!rowsByTime.has(row.time_utc)) rowsByTime.set(row.time_utc, new Map());
+                rowsByTime.get(row.time_utc).set(row.calculation, row);
             }
             const statistics = this.formulas.map(formula => ({label: getCapturedStatisticLabel(area.temporalResult, formula),
                 name: spreadsheetText(formula.label || formula.expression)}));
-            const exported = [...observations.values()].flatMap(observation => statistics.map(({label, name}) =>
-                ({...observation.get(label), calculation: name})));
+            const exported = [...rowsByTime.values()].flatMap(rowsByCalculationLabel => statistics.map(({label, name}) =>
+                ({...rowsByCalculationLabel.get(label), calculation: name})));
             return csvFormat(exported, rows.columns) + "\r\n";
         }
         if (area.busy || !area.results.size) return "";
