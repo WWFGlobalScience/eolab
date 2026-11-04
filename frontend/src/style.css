@@ -3688,6 +3688,12 @@ article.raster-histogram-summary {
   grid-column: auto;
 }
 
+.raster-bivariate-range .raster-bivariate-rescale {
+  display: flex;
+  gap: 6px;
+  font-weight: 400;
+}
+
 @media (max-width: 480px) {
   .raster-bivariate-range label {
     grid-template-columns: 68px minmax(60px, 1fr);
