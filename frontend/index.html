@@ -645,15 +645,16 @@
         </header>
         <div id="map-inspection-panels" class="map-inspection-panels">
           <section id="models-panel" role="tabpanel" aria-labelledby="map-inspection-tab-models" hidden>
-            <header class="map-histogram-toolbar">
-              <h2 id="models-heading" tabindex="-1">Model library</h2>
+            <header class="map-histogram-toolbar models-header">
+              <h2 id="models-heading" tabindex="-1">Models</h2>
+              <nav class="models-navigation" aria-label="Models">
+                <button id="models-nav-library" type="button" aria-pressed="true">Choose model</button>
+                <button id="models-nav-setup" type="button" aria-pressed="false" disabled>Setup</button>
+                <button id="models-nav-runs" type="button" aria-pressed="false">Runs</button>
+              </nav>
               <button id="models-close" class="analysis-panel-action analysis-panel-close" type="button" aria-label="Close Models">×</button>
             </header>
-            <nav class="models-navigation" aria-label="Models">
-              <button id="models-nav-library" type="button" aria-pressed="true">Library</button>
-              <button id="models-nav-setup" type="button" aria-pressed="false" disabled>Setup</button>
-              <button id="models-nav-runs" type="button" aria-pressed="false">Runs</button>
-            </nav>
+            <h3 id="models-setup-heading" class="models-name" tabindex="-1" hidden></h3>
             <p id="models-error" class="models-error" role="alert" hidden></p>
             <div id="models-deletions"></div>
             <div id="models-recovery" hidden>

@@ -679,7 +679,7 @@ export class ModelsController {
             this.revision += 1;
             this.state.selectedRun = null; this.state.invocation = null; this.state.invocationError = "";
             this.state.yaml = null; this.state.deleteConfirmation = null;
-            if (this.state.page === "run") { this.state.page = "runs"; this.view.focusHeading(); }
+            if (this.state.page === "run") { this.state.page = "runs"; this.view.focusHeading("runs"); }
         }
         if (ACTIVE_JOB_STATES.has(job.status) || this.state.active && (this.state.page === "run" && this.state.selectedRun === job.jobId || this.state.page === "setup" &&
             this.state.draft && getModelRasterFields(this.state.draft).some(({state, field}) => state[field]?.jobId === job.jobId))) {
