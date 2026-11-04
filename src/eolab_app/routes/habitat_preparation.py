@@ -158,7 +158,7 @@ def create_habitat_preparation_router(
     """
     router = APIRouter(
         prefix="/api/admin/habitat/input-preparations",
-        tags=["Habitat input administration"],
+        tags=["Ecosystem Condition input administration"],
         route_class=HabitatPreparationRoute,
         dependencies=[Depends(create_administrator_dependency(password))],
     )

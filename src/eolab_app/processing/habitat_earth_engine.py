@@ -286,7 +286,7 @@ def _name_downloaded_bands(
             or dataset.dtypes != ("float32",) * len(names)
         ):
             raise ValueError(
-                "Earth Engine returned a raster that does not match the requested Habitat stack."
+                "Earth Engine returned a raster that does not match the requested Ecosystem Condition stack."
             )
         # Decode once at download admission, so truncated pixel data is not
         # returned as a completed tile. Keep the original NoData and masks.
@@ -325,7 +325,7 @@ def _build_habitat_image(
         ee.EEException,
     ):
         raise RuntimeError(
-            "Habitat could not connect to Earth Engine. Check the configured project "
+            "Ecosystem Condition could not connect to Earth Engine. Check the configured project "
             "and the mounted service-account credentials and permissions."
         ) from None
     return build_earth_engine_stack(configuration)
@@ -437,7 +437,7 @@ def get_habitat_tiles(
                 )
             except (OSError, GoogleAuthError, HttpError, HttpLib2Error, ee.EEException):
                 raise RuntimeError(
-                    "Earth Engine could not download a Habitat tile. Check the "
+                    "Earth Engine could not download an Ecosystem Condition tile. Check the "
                     "server connection and access to the configured source datasets."
                 ) from None
             check_cancelled()

@@ -62,7 +62,9 @@ def bind_habitat_input_preparation(
     """
     area = inputs["area"]
     if area["kind"] != "catalogSelection":
-        raise ValueError("Habitat input preparation requires a Catalog polygon area.")
+        raise ValueError(
+            "Ecosystem Condition input preparation requires a Catalog polygon area."
+        )
     return HabitatInputPreparationRequest(
         requestId=request_id,
         name=name,
@@ -158,7 +160,7 @@ async def prepare_habitat_input_preparation_execution(
         raise ProcessingError(
             "habitat_earth_engine_unavailable",
             "Earth Engine inputs are not configured. Ask the administrator to "
-            "configure Habitat's Earth Engine project and credentials.",
+            "configure Ecosystem Condition's Earth Engine project and credentials.",
             503,
         )
     resolved = await context.areas.resolve_for_sampling(spec.inputs.selection)
@@ -191,7 +193,7 @@ def prepare_habitat_input_cache(
     if configuration.raster_configuration_sha256 != inputs.configurationSha256:
         raise ProcessingError(
             "habitat_configuration_changed",
-            "Habitat's input configuration changed. Submit a new preparation request.",
+            "The Ecosystem Condition input configuration changed. Submit a new preparation request.",
             409,
         )
     runtime = cast(HabitatEarthEngineRuntime, sources.earth_engine)
@@ -265,7 +267,7 @@ def habitat_input_preparation_process_target(
         for path, label in (
             (sources.vectors["area"].path, "selected polygon source"),
             (directory, "preparation files"),
-            (runtime.cache_directory, "Habitat input cache"),
+            (runtime.cache_directory, "Ecosystem Condition input cache"),
             (runtime.connection.credentials_file, "Earth Engine credentials"),
         ):
             detail = detail.replace(str(path), label).replace(path.as_posix(), label)
@@ -276,7 +278,7 @@ def habitat_input_preparation_process_target(
                 "error",
                 (
                     "habitat_preparation_read_failed",
-                    "The selected area or Habitat input files could not be read or written.",
+                    "The selected area or Ecosystem Condition input files could not be read or written.",
                     409,
                 ),
             )
@@ -287,7 +289,7 @@ def habitat_input_preparation_process_target(
                 "error",
                 (
                     "habitat_preparation_failed",
-                    "Habitat inputs could not be prepared. Try again later.",
+                    "Ecosystem Condition inputs could not be prepared. Try again later.",
                     500,
                 ),
             )

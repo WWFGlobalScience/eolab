@@ -54,7 +54,7 @@ def habitat_cache_coverage_process(
         detail = str(error)
         for path, label in (
             (selection.path, "selected polygon source"),
-            (cache_directory, "Habitat input cache"),
+            (cache_directory, "Ecosystem Condition input cache"),
         ):
             detail = detail.replace(str(path), label).replace(path.as_posix(), label)
         writer.put(("error", ("invalid_habitat_area", detail, 422)))
@@ -64,7 +64,7 @@ def habitat_cache_coverage_process(
                 "error",
                 (
                     "habitat_cache_unavailable",
-                    "The selected area or Habitat input cache could not be read. Try again later.",
+                    "The selected area or Ecosystem Condition input cache could not be read. Try again later.",
                     409,
                 ),
             )
@@ -75,7 +75,7 @@ def habitat_cache_coverage_process(
                 "error",
                 (
                     "habitat_cache_inspection_failed",
-                    "Cached Habitat inputs could not be checked. Try again later.",
+                    "Cached Ecosystem Condition inputs could not be checked. Try again later.",
                     500,
                 ),
             )
@@ -116,7 +116,7 @@ async def get_habitat_cache_coverage(
     except ProcessDeadlineError as error:
         raise ProcessingError(
             "habitat_cache_inspection_failed",
-            "Cached Habitat inputs could not be checked. Try again later.",
+            "Cached Ecosystem Condition inputs could not be checked. Try again later.",
             500,
         ) from error
     if status != "ok":

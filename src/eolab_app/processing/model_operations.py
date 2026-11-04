@@ -255,7 +255,7 @@ OPERATIONS = MappingProxyType(
                     "report",
                     "download",
                     "application/json",
-                    "Habitat input preparation report",
+                    "Ecosystem Condition input preparation report",
                 ),
                 execution_profile="habitat-condition",
                 queued_type=QueuedHabitatInputPreparation,
@@ -280,7 +280,10 @@ OPERATIONS = MappingProxyType(
                 primary_input=None,
                 execution_inputs=habitat_inputs.prepare_habitat_input_preparation_execution,
                 progress_descriptions=(
-                    ("fetching_habitat_tiles", "Preparing Habitat input tiles"),
+                    (
+                        "fetching_habitat_tiles",
+                        "Preparing Ecosystem Condition input tiles",
+                    ),
                 ),
             ),
             ModelOperation[HabitatRequest, QueuedHabitat, HabitatCalculationInputs](
@@ -336,7 +339,10 @@ OPERATIONS = MappingProxyType(
                     ("raster_preparation", TypeAdapter(HabitatPreparation)),
                 ),
                 progress_descriptions=(
-                    ("fetching_habitat_tiles", "Loading Habitat input tiles"),
+                    (
+                        "fetching_habitat_tiles",
+                        "Loading Ecosystem Condition input tiles",
+                    ),
                     ("preparing_rasters", "Preparing model rasters"),
                 )
                 + tuple(
