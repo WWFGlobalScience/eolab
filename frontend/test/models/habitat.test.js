@@ -127,7 +127,8 @@ test("Habitat starts with the original GEE configuration and linked datasets gro
     const h = await fixture(), stack = h.view.setup.inputs.stack;
     const chooser = h.view.elements["library-items"].querySelectorAll("button").find(button => button.textContent === "Ecosystem Condition");
     assert.equal(chooser.getAttribute("aria-label"), "Set up Ecosystem Condition");
-    assert.equal(h.view.setup.fields.children[0].textContent, "Ecosystem Condition");
+    assert.equal(h.view.elements["setup-heading"].textContent, "Ecosystem Condition");
+    assert.equal(h.view.setup.fields.getAttribute("aria-labelledby"), "models-setup-heading");
     assert.equal(h.view.setup.label.value, "Ecosystem Condition");
     assert.equal(stack.source.value, "earthEngine");
     assert.equal(stack.source.parentElement.textContent, "Input configuration");

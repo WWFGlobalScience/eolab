@@ -46,6 +46,50 @@ function fixture(overrides = {}, viewOverride = null) {
     return {controller, api, jobs, context, storage, values, submitted, cancelled, filterRequests, mapFilters, handlers};
 }
 
+test("Models navigation retains an unfinished setup and focuses actual model and run names", async t => {
+    const saved = job({status: "cancelled"});
+    const doc = new SummaryControlDocument(), view = new ModelsView(doc);
+    const h = fixture({listModelRuns: async () => ({jobs: [saved], nextCursor: null}), getJob: async () => saved}, view);
+    t.after(() => h.controller.destroy());
+    await h.controller.open();
+    assert.equal(view.navigation.setup.disabled, true);
+    view.elements["library-items"].children[0].children[0].children[0].dispatchEvent(new Event("click"));
+    const draft = h.controller.state.draft, setup = view.setup;
+    assert.equal(view.elements["setup-heading"].textContent, model.title);
+    assert.equal(doc.activeElement, view.elements["setup-heading"]);
+    assert.equal(setup.fields.getAttribute("aria-labelledby"), "models-setup-heading");
+    setup.label.value = "My unfinished analysis"; setup.label.dispatchEvent(new Event("input"));
+    setup.parameters.summary.value = "mean(a)"; setup.parameters.summary.dispatchEvent(new Event("input"));
+    for (const page of ["runs", "library", "setup"]) {
+        view.navigation[page].focus(); view.navigation[page].dispatchEvent(new Event("click"));
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(h.controller.state.page, page);
+        assert.equal(doc.activeElement, view.navigation[page], "navigation keeps its native button focus");
+        for (const [name, button] of Object.entries(view.navigation)) assert.equal(button.getAttribute("aria-pressed"), String(name === page));
+        assert.equal(view.navigation.setup.disabled, false);
+        assert.equal(h.controller.state.draft, draft);
+        assert.equal(view.setup, setup);
+        assert.equal(setup.label.value, "My unfinished analysis");
+        assert.equal(setup.parameters.summary.value, "mean(a)");
+    }
+    view.navigation.runs.dispatchEvent(new Event("click"));
+    await new Promise(resolve => setImmediate(resolve));
+    view.runCards.get(saved.jobId).button.dispatchEvent(new Event("click"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.controller.state.page, "run");
+    assert.equal(view.navigation.runs.getAttribute("aria-pressed"), "true");
+    assert.equal(view.navigation.setup.getAttribute("aria-pressed"), "false");
+    assert.equal(doc.activeElement, view.run.title);
+    assert.equal(view.run.title.textContent, saved.label);
+    assert.equal(view.run.title.tabIndex, -1);
+    view.navigation.setup.dispatchEvent(new Event("click"));
+    assert.equal(h.controller.state.draft, draft);
+    assert.equal(view.setup, setup);
+    assert.equal(draft.label, "My unfinished analysis");
+    assert.equal(draft.parameters.summary, "mean(a)");
+    assert.equal(h.submitted.length, 0);
+});
+
 const periodModel = {...model, id: "regional-period-statistic", parameters: {}, inputs: {
     weather: {type: "temporal_interval", label: "Dataset and period"},
     region: {type: "summary_area", label: "Analysis area"},

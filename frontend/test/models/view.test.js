@@ -42,7 +42,7 @@ test("separate Undo offers retain full names, action identity and the other noti
     assert.equal(h.view.deletionNotices.has(first.deletionId), false);
     assert.equal(h.doc.activeElement, secondNotice.undo);
     h.state.deletions = []; h.view.render(h.state);
-    assert.equal(h.view.elements.deletions.children.length, 0); assert.equal(h.doc.activeElement, h.view.elements.heading);
+    assert.equal(h.view.elements.deletions.children.length, 0); assert.equal(h.doc.activeElement, h.view.elements["setup-heading"]);
 });
 
 test("Undo busy and failed-retry states preserve the named notice and its controls", () => {

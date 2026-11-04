@@ -57,7 +57,7 @@ export class ModelsView {
     constructor(documentContext = globalThis.document) {
         this.document = documentContext; this.listeners = []; this.runCards = new Map();
         this.deletionNotices = new Map();
-        this.elements = Object.fromEntries(["heading", "close", "library", "setup", "run", "runs", "error", "recovery", "recover", "query",
+        this.elements = Object.fromEntries(["heading", "setup-heading", "close", "library", "setup", "run", "runs", "error", "recovery", "recover", "query",
             "library-items", "library-status", "refresh", "runs-list", "runs-status", "more", "refresh-runs", "yaml", "deletions"]
             .map(name => [name, documentContext.querySelector(`#models-${name}`)]));
         this.navigation = Object.fromEntries(["library", "setup", "runs"].map(name => [name, documentContext.querySelector(`#models-nav-${name}`)]));
@@ -96,10 +96,14 @@ export class ModelsView {
         for (const [node, event, callback] of this.listeners) node.addEventListener(event, callback);
     }
 
-    /** Focus the panel heading after an explicit setup or run choice.
+    /** Focus the chosen model or run name, or the Models header on a list page.
+     * @param {"library"|"setup"|"runs"|"run"} [page=this.state.page] Destination, including a list transition before its render.
      * @return {void}
      */
-    focusHeading() { this.elements.heading.focus(); }
+    focusHeading(page = this.state.page) {
+        const heading = page === "setup" ? this.elements["setup-heading"] : page === "run" ? this.run.title : this.elements.heading;
+        heading.focus();
+    }
 
     /** Focus the safe choice when asking to delete a run. @return {void} */
     focusDeleteConfirmation() { this.run?.keep.focus(); }
@@ -239,7 +243,7 @@ export class ModelsView {
      */
     buildSetup(draft) {
         const form = this.element("form", "", "models-form");
-        const fields = this.element("fieldset"); const legend = this.element("legend", draft.model.title); fields.append(legend);
+        const fields = this.element("fieldset"); fields.setAttribute("aria-labelledby", "models-setup-heading");
         const description = this.element("p", draft.model.description, "models-help"); fields.append(description);
         const label = this.element("input"); label.type = "text"; label.required = true;
         label.addEventListener("input", () => this.handlers.onEdit({label: label.value}));
@@ -439,7 +443,7 @@ export class ModelsView {
      */
     buildRun(id) {
         const heading = this.element("div", "", "models-run-heading");
-        const title = this.element("h3", "", "models-name");
+        const title = this.element("h3", "", "models-name"); title.tabIndex = -1;
         const rename = this.button("", () => this.openRunNameEditor(), "models-action models-rename");
         rename.title = "Rename run"; rename.setAttribute("aria-label", "Rename run");
         const pencil = this.document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -659,7 +663,7 @@ export class ModelsView {
         }
     }
 
-    /** Update visible runs and controls, removing history cards no longer present.
+    /** Present the selected Models page while retaining drafts, controls and run cards.
      * @param {Object} state Controller snapshot.
      * @return {void}
      */
@@ -668,7 +672,8 @@ export class ModelsView {
         for (const page of ["library", "setup", "runs", "run"]) this.elements[page].hidden = state.page !== page;
         for (const [page, node] of Object.entries(this.navigation)) node.setAttribute("aria-pressed", String(state.page === page || page === "runs" && state.page === "run"));
         this.navigation.setup.disabled = !state.draft;
-        this.elements.heading.textContent = ({library: "Model library", setup: "Model setup", runs: "Model runs", run: "Model run"})[state.page];
+        this.elements["setup-heading"].hidden = state.page !== "setup";
+        this.elements["setup-heading"].textContent = state.draft?.model.title ?? "";
         const error = state.error || (state.page === "setup" ? "" : state.observationError) || "";
         this.elements.error.textContent = error; this.elements.error.hidden = !error;
         this.renderDeletions(state.deletions ?? []);
