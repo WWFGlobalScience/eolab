@@ -1,6 +1,7 @@
 /** Present selected Habitat input coverage and administrator preparation history. */
 import { VectorFilterControls } from "../vector/filter-controls.js";
 import { EMPTY_VECTOR_FILTER, vectorFilterSummary } from "../vector/filter.js";
+import { ACTIVE_PREPARATION_STATES } from "./api.js";
 
 /** Format a retained server timestamp without inventing an unfinished job's deadline.
  * @param {string|null|undefined} value Server timestamp.
@@ -267,9 +268,9 @@ export class HabitatAdminView {
             const status = job.status === "ready" && Date.parse(job.expiresAt) <= Date.now() ? "expired" : job.status;
             card.title.textContent = inputs ? `${inputs.name} · ${inputs.year}` : "Preparation details expired";
             card.detail.textContent = jobStatus(job); card.error.textContent = job.error?.detail ?? ""; card.error.hidden = !job.error;
-            const reportExpiry = ["queued", "running", "cancelling"].includes(job.status) ? "After completion" : timeLabel(job.expiresAt);
+            const reportExpiry = ACTIVE_PREPARATION_STATES.has(job.status) ? "After completion" : timeLabel(job.expiresAt);
             card.times.textContent = `Updated ${timeLabel(job.updatedAt)} · Report expires ${reportExpiry} · Saved inputs expire ${timeLabel(job.metadataExpiresAt)}`;
-            card.cancel.hidden = !["queued", "running", "cancelling"].includes(job.status); card.cancel.disabled = this.busy || job.status === "cancelling";
+            card.cancel.hidden = !ACTIVE_PREPARATION_STATES.has(job.status); card.cancel.disabled = this.busy || job.status === "cancelling";
             card.cancel.setAttribute("aria-label", `Cancel preparation for ${inputs?.name ?? "this area"} ${inputs?.year ?? ""}`.trim());
             const retryCommand = state.submissions.find(row => row.kind === "retry" && row.sourceJobId === job.jobId && ["accepted", "uncertain", "submitting"].includes(row.status));
             const retryLabel = retryCommand ? ({accepted: "Retry requested", uncertain: "Retry needs recovery", submitting: "Submitting retry…"})[retryCommand.status] : "Retry missing inputs";

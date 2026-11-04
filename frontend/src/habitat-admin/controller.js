@@ -1,5 +1,5 @@
 /** Prepare named Catalog areas and observe administrator-owned Habitat jobs. */
-import { ACTIVE_JOB_STATES } from "../processing/jobs.js";
+import { ACTIVE_PREPARATION_STATES } from "./api.js";
 import { validateVectorSelection } from "../selected-area.js";
 import { EMPTY_VECTOR_FILTER, normalizeVectorFilter, vectorFilterSummary } from "../vector/filter.js";
 
@@ -351,7 +351,7 @@ export class HabitatAdminController {
         if (!this.isVisible()) return Promise.resolve();
         if (this.historyRequest) return this.historyPromise;
         const controller = new AbortController(), revision = ++this.historyRevision, mutations = this.mutationRevision;
-        const active = more ? [] : [...this.jobs.values()].filter(job => ACTIVE_JOB_STATES.has(job.status)).map(job => job.jobId);
+        const active = more ? [] : [...this.jobs.values()].filter(job => ACTIVE_PREPARATION_STATES.has(job.status)).map(job => job.jobId);
         this.historyRequest = controller; this.readControllers.add(controller);
         this.state.historyLoading = true; this.state.historyError = ""; this.render();
         this.historyPromise = (async () => {
@@ -423,7 +423,7 @@ export class HabitatAdminController {
     schedule() {
         this.clock.clearTimeout(this.timer); this.timer = null;
         if (this.started && this.isVisible()) this.timer = this.clock.setTimeout(() => this.readHistory(),
-            [...this.jobs.values()].some(job => ACTIVE_JOB_STATES.has(job.status)) ? 2000 : 30000);
+            [...this.jobs.values()].some(job => ACTIVE_PREPARATION_STATES.has(job.status)) ? 2000 : 30000);
     }
 
     /** Present a stable snapshot without starting coverage or server mutations.

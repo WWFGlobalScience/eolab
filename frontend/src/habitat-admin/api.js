@@ -11,8 +11,12 @@ const PREPARATIONS = "/api/admin/habitat/input-preparations";
 const OPERATION = "habitat.prepare-inputs.v1";
 const DIGEST = /^[a-f0-9]{64}$/;
 const JOB_ID = /^[a-f0-9]{32}$/;
+/** Preparation states whose server-side work has not finished.
+ * @type {ReadonlySet<string>}
+ */
+export const ACTIVE_PREPARATION_STATES = new Set(["queued", "running", "cancelling"]);
 const JOB_STATES = new Set([
-    "queued", "running", "cancelling", "ready", "failed", "cancelled",
+    ...ACTIVE_PREPARATION_STATES, "ready", "failed", "cancelled",
     "interrupted", "expired", "deleted",
 ]);
 
