@@ -9,7 +9,7 @@ import { ACTIVE_PREPARATION_STATES } from "./api.js";
  */
 function timeLabel(value) { return value ? new Date(value).toLocaleString() : "After completion"; }
 
-/** Present the lifecycle and actual completed tile count of a preparation.
+/** Present a preparation's lifecycle and last measured tile counts when available.
  * @param {Object} job Administrator job snapshot.
  * @return {string} Readable status, without estimating overall tile coverage.
  */
@@ -18,8 +18,8 @@ function jobStatus(job) {
     const labels = {queued: "Queued", running: "Preparing inputs", cancelling: "Cancelling…", ready: "Completed",
         failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted", expired: "Report expired"};
     const progress = job.progress;
-    return `${labels[status] ?? status}${status === "running" && progress?.total != null
-        ? ` · ${progress.completed ?? 0} of ${progress.total} tiles` : ""}`;
+    return `${labels[status] ?? status}${progress?.completed != null && progress.total != null
+        ? ` · ${progress.completed} of ${progress.total} tiles` : ""}`;
 }
 
 /** Own the standalone page's controls and stable rows without map dependencies. */

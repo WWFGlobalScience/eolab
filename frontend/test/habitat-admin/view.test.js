@@ -46,7 +46,8 @@ function fixture() {
  */
 function job(changes = {}) {
     return {jobId: "a".repeat(32), inputs: {name: "Northern area", year: 2018}, status: "running",
-        progress: {phase: "fetching_habitat_tiles", completed: 2, total: 6, unit: "tiles"},
+        progress: ["ready", "expired"].includes(changes.status) ? {phase: "ready", completed: null, total: null, unit: null} :
+            {phase: "fetching_habitat_tiles", completed: 2, total: 6, unit: "tiles"},
         updatedAt: "2026-11-03T08:00:00Z", expiresAt: "2099-11-04T08:00:00Z", metadataExpiresAt: "2099-11-10T08:00:00Z", error: null, result: null, ...changes};
 }
 
@@ -105,6 +106,22 @@ test("history actions respect retained inputs and preserve focus during progress
     h.view.destroy();
 });
 
+test("stopped preparation history retains measured tile counts without inventing missing measurements", () => {
+    const h = fixture(), current = job({progress: {phase: "fetching_habitat_tiles", completed: 3, total: 8, unit: "tiles"}});
+    h.state.jobs = [current];
+    for (const [status, label] of [["failed", "Failed"], ["interrupted", "Interrupted"], ["cancelling", "Cancelling…"], ["cancelled", "Cancelled"]]) {
+        current.status = status; h.view.render(h.state);
+        assert.equal(h.view.cards.get(`job:${current.jobId}`).detail.textContent, `${label} · 3 of 8 tiles`);
+    }
+    current.progress.completed = 0; h.view.render(h.state);
+    assert.equal(h.view.cards.get(`job:${current.jobId}`).detail.textContent, "Cancelled · 0 of 8 tiles");
+    current.progress.completed = null; h.view.render(h.state);
+    assert.equal(h.view.cards.get(`job:${current.jobId}`).detail.textContent, "Cancelled");
+    current.progress.completed = 3; current.progress.total = null; h.view.render(h.state);
+    assert.equal(h.view.cards.get(`job:${current.jobId}`).detail.textContent, "Cancelled");
+    h.view.destroy();
+});
+
 test("reports, partial failures and uncertain submissions retain distinct visible actions", () => {
     const h = fixture(), ready = job({status: "ready", result: {url: "/api/admin/habitat/input-preparations/a/report", provenanceUrl: "/api/admin/habitat/input-preparations/a/provenance"}});
     h.state.jobs = [ready]; h.state.submissions = [{key: "north:2018", name: "Northern area", year: 2018, status: "uncertain", error: "Connection lost"},
@@ -145,6 +162,7 @@ test("active job placeholders never appear as report-retention deadlines", () =>
             /Report expires After completion · Saved inputs expire After completion$/);
     }
     current.status = "ready"; current.expiresAt = "2099-11-04T08:00:00Z";
+    current.progress = {phase: "ready", completed: null, total: null, unit: null};
     current.metadataExpiresAt = "2099-11-10T08:00:00Z"; h.view.render(h.state);
     assert.doesNotMatch(h.view.cards.get(`job:${current.jobId}`).times.textContent, /After completion/);
     h.view.destroy();
