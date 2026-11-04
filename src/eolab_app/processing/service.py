@@ -374,13 +374,13 @@ class ProcessingService:
         except ValueError as error:
             raise ProcessingError(
                 "invalid_habitat_year",
-                "Choose an assessment year supported by the installed Habitat inputs.",
+                "Choose an assessment year supported by the installed Ecosystem Condition inputs.",
                 422,
             ) from error
         except OSError as error:
             raise ProcessingError(
                 "habitat_inputs_unavailable",
-                "Habitat input preparation is temporarily unavailable. Try again later.",
+                "Ecosystem Condition input preparation is temporarily unavailable. Try again later.",
                 503,
             ) from error
         if (
@@ -389,7 +389,7 @@ class ProcessingService:
         ):
             raise ProcessingError(
                 "habitat_configuration_changed",
-                "The Habitat input configuration changed. Start a new preparation request.",
+                "The Ecosystem Condition input configuration changed. Start a new preparation request.",
                 409,
             )
         await self.areas.resolve_for_sampling(request.selection)

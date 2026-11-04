@@ -251,7 +251,7 @@ async def prepare_habitat_execution(
             raise ProcessingError(
                 "habitat_earth_engine_unavailable",
                 "Earth Engine inputs are not configured. Ask the administrator to "
-                "configure Habitat's Earth Engine project and credentials.",
+                "configure Ecosystem Condition's Earth Engine project and credentials.",
                 503,
             )
         sources = HabitatSources(sources.rasters, sources.vectors, runtime)

@@ -1,7 +1,7 @@
 schema: eolab.model/v1
 id: habitat-condition
 version: "1.0.0"
-title: Habitat condition
+title: Ecosystem Condition
 description: Fit expected habitat responses from reference sites inside the analysis area, then map how closely observed conditions resemble those references.
 inputs:
   stack:

@@ -38,7 +38,7 @@ Use a population dataset to estimate how many people live downstream of
 selected areas, such as proposed restoration sites. Map the downstream coverage
 and summarize the population within it.
 
-**[Assess habitat condition](#assess-habitat-condition):** Compare observed habitat
+**[Assess ecosystem condition](#assess-ecosystem-condition):** Compare observed habitat
 conditions with those expected from selected reference sites. Map their
 similarity to identify places whose condition differs from comparable reference
 areas.
@@ -313,9 +313,9 @@ beneficiaries; it does not measure how much benefit each person receives. You ca
 also choose another values raster or summary formula to explore a different
 downstream question.
 
-### Assess habitat condition
+### Assess ecosystem condition
 
-Open **Tools → Models** and choose **Habitat condition** to assess how closely a
+Open **Tools → Models** and choose **Ecosystem Condition** to assess how closely a
 landscape resembles conditions expected from selected reference sites. Choose an
 analysis area, reference sites, environmental predictor rasters and observed
 habitat-response rasters. The model learns the relationship between the
@@ -323,9 +323,9 @@ environment and habitat responses at the reference sites inside that area, then
 compares observed responses elsewhere with those expected under reference
 conditions.
 
-![The top of the Habitat condition setup card, showing Earth Engine inputs and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
+![The top of the Ecosystem Condition setup card, showing Earth Engine inputs and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
 
-*The Habitat card starts with the input configuration. Earth Engine mode also offers
+*The Ecosystem Condition card starts with the input configuration. Earth Engine mode also offers
 an assessment year; area and reference-site choices follow below.*
 
 The **Reference similarity** map shows the result on a scale from 0 to 1: higher

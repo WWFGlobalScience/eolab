@@ -586,7 +586,7 @@ def test_child_without_result_returns_safe_private_failure(
     )
     assert response.status_code == 500
     assert response.json() == {
-        "detail": "Cached Habitat inputs could not be checked. Try again later."
+        "detail": "Cached Ecosystem Condition inputs could not be checked. Try again later."
     }
     assert response.headers["cache-control"] == "private, no-store"
     assert str(tmp_path) not in response.text

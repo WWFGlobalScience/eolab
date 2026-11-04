@@ -230,7 +230,7 @@ class HabitatRequest(HabitatSchema):
             self.settings.required_crs
         ):
             raise ValueError(
-                f"Habitat condition requires {self.settings.required_crs}."
+                f"Ecosystem Condition requires {self.settings.required_crs}."
             )
         return self
 

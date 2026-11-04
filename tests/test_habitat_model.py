@@ -267,6 +267,10 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
         },
     )
 
+    assert submission.summary["model"]["title"] == "Ecosystem Condition"
+    assert submission.summary["model"]["id"] == "habitat-condition"
+    assert submission.summary["label"] == "Habitat fixture"
+
     async def authorize(source: CatalogRasterRequest) -> AuthorizedRaster:
         """Return the fixture's admitted raster identity and native file.
 

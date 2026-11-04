@@ -104,7 +104,7 @@ def create_habitat_admin_router(
         POST requests require the existing same-origin administrator header.
     """
     router = APIRouter(
-        tags=["Habitat administration"],
+        tags=["Ecosystem Condition administration"],
         route_class=HabitatAdminRoute,
         dependencies=[Depends(create_administrator_dependency(password))],
     )

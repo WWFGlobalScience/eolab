@@ -6,7 +6,7 @@ import { captureModelSubmission, createModelDraft, modelSourceKey } from "../../
 import { SummaryControlDocument } from "../../test-support/processing/summary-document.js";
 import { model, selection, job, fileManifest, clipResult } from "../../test-support/models/fixtures.js";
 
-const habitat = {...model, id: "habitat-condition", title: "Habitat condition",
+const habitat = {...model, id: "habitat-condition", title: "Ecosystem Condition",
     description: "Fit expected habitat responses from reference sites and map their similarity.", parameters: {}, inputs: {
     stack: {type: "habitat_stack", label: "Predictors and observed responses"},
     area: {type: "summary_area", label: "Analysis area"},
@@ -125,6 +125,10 @@ function chooseStack(harness) {
 
 test("Habitat starts with the original GEE configuration and linked datasets grouped by their roles", async () => {
     const h = await fixture(), stack = h.view.setup.inputs.stack;
+    const chooser = h.view.elements["library-items"].querySelectorAll("button").find(button => button.textContent === "Ecosystem Condition");
+    assert.equal(chooser.getAttribute("aria-label"), "Set up Ecosystem Condition");
+    assert.equal(h.view.setup.fields.children[0].textContent, "Ecosystem Condition");
+    assert.equal(h.view.setup.label.value, "Ecosystem Condition");
     assert.equal(stack.source.value, "earthEngine");
     assert.equal(stack.source.parentElement.textContent, "Input configuration");
     assert.equal(stack.source.children[0].textContent, "Original model inputs (Google Earth Engine)");

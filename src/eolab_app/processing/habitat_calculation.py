@@ -470,7 +470,7 @@ def habitat_process_target(
             locations[arguments[2]] = "run files"
             if arguments[0].earth_engine is not None:
                 locations[arguments[0].earth_engine.cache_directory] = (
-                    "Habitat input cache"
+                    "Ecosystem Condition input cache"
                 )
         for path, name in locations.items():
             detail = detail.replace(str(path), name).replace(path.as_posix(), name)
@@ -481,7 +481,7 @@ def habitat_process_target(
                 "error",
                 (
                     "habitat_read_failed",
-                    "A Habitat input or result file could not be read or written.",
+                    "An Ecosystem Condition input or result file could not be read or written.",
                     409,
                 ),
             )
@@ -492,7 +492,7 @@ def habitat_process_target(
                 "error",
                 (
                     "habitat_calculation_failed",
-                    "Habitat condition could not be calculated.",
+                    "Ecosystem Condition could not be calculated.",
                     500,
                 ),
             )
