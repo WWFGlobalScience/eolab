@@ -3579,7 +3579,9 @@ export function initializeRasterViewer(
         } else {
             nextStatus = "Whole-raster histogram selected. Click the map to inspect a location.";
         }
-        controlsView.setSampleWindowStatus(nextStatus);
+        controlsView.setSampleWindowStatus(
+            nextStatus, Boolean(guidance) && !pendingVectorSelection
+        );
     }
 
     /**

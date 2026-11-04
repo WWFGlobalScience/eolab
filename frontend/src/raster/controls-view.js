@@ -380,13 +380,15 @@ export class RasterControlsView {
     }
 
     /**
-     * Replace the current sample-window guidance.
+     * Present sampling status with optional visible spatial guidance.
      *
-     * @param {string} message Sample-window guidance message.
+     * @param {string} message Guidance or ordinary selection announcement.
+     * @param {boolean} [showMessage=false] Show the message visually even when
+     * the numeric size is valid.
      * @return {void}
      */
-    setSampleWindowStatus(message) {
-        this.#samplingAreaView.setSampleWindowStatus(message);
+    setSampleWindowStatus(message, showMessage = false) {
+        this.#samplingAreaView.setSampleWindowStatus(message, showMessage);
     }
 
     /**
