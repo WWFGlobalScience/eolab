@@ -105,6 +105,9 @@ test("area predicates and multiple years use explicit actions without checking o
     click(h.view.editFilter);
     assert.equal(h.view.addArea.disabled, true);
     const editor = h.view.filterControls;
+    assert.ok(editor, "the administrator template supports the shared filter editor");
+    assert.equal(editor.zoomButton.hidden, true, "inline area editing has no map zoom action");
+    assert.equal(editor.cancelZoomButton.hidden, true);
     click(editor.add);
     const input = editor.rules.children[0].children[2];
     input.value = "7"; input.dispatchEvent(new Event("input"));
