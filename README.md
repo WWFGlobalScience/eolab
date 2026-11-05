@@ -379,18 +379,25 @@ site's current datasets; missing data can prevent full restoration.
 
 #### Draw and share polygons
 
-Use **Shared layers → Create layer** to start a shared polygon layer, or **Join
-layer** with a share code and your contributor name. Draw polygons, edit their
-boundaries, and add names and notes. Everyone sees the saved polygons; you can
-edit only your own. **Share layer** copies the code for someone else to join.
+Use **Map layers → Draw polygon** to create a private polygon layer and start
+drawing. Drawings stay on this device. Edit their boundaries, add names and
+notes, and save before using them in an analysis. Use **Draw polygon** on the
+layer to add more polygons.
+
+For collaboration, use **Shared layers → Create shared layer…**, or **Join
+shared layer…** with a share code and your contributor name. Everyone sees the
+saved polygons; you can edit only your own. **Share layer** on a private layer
+starts sharing it; on a shared layer it copies the code for someone else to join.
 
 If you arrived through a shared map link, choose **Draw polygon** on its shared
 layer and enter your contributor name when asked to add your own polygons.
 
-**Import GeoJSON** brings simple polygons into an editable local layer saved on
-your device. It accepts WGS84 longitude/latitude Polygon features without holes,
-including names and notes. Other file attributes and styles are not imported.
-Use **Polygon uploads…** for a GeoPackage whose attributes you want to retain.
+**Upload polygons → Import GeoJSON…** brings simple polygons into an editable
+local layer saved on your device. It accepts WGS84 longitude/latitude Polygon
+features without holes, including names and notes. Other file attributes and
+styles are not imported.
+Use **Upload polygons → GeoPackage uploads…** for a GeoPackage whose attributes
+you want to retain.
 
 Drawn or imported polygons can define supported analysis areas. Save edits
 before calculating or exporting. **Export GeoJSON** downloads all saved
@@ -400,9 +407,9 @@ them in a shared layer when collaborators need to see them.
 
 #### Bring your own polygons
 
-Open **Map layers → Polygon uploads…** to add a GeoPackage (`.gpkg`) containing
-one polygon layer. Choose the file, give the layer a name, then select **Upload
-and add to map**. You can style it, inspect its attributes and filter features,
+Open **Map layers → Upload polygons → GeoPackage uploads…** to add a GeoPackage
+(`.gpkg`) containing one polygon layer. Choose the file, give the layer a name,
+then select **Upload and add to map**. You can style it, inspect its attributes and filter features,
 then use the supported polygon selection in raster analyses or model inputs.
 
 ![The polygon upload form with file, layer name and Upload and add to map controls](docs/images/eolab-polygon-uploads.jpg)

@@ -83,6 +83,8 @@ test("create and join ask for a real display name and only the relevant connecti
     const { view, document, calls } = setup();
     document.querySelector("#create-shared-annotation-layer").dispatchEvent(new Event("click"));
     assert.equal(view.dialog.open, true);
+    assert.equal(view.heading.textContent, "Create shared layer");
+    assert.equal(view.submit.textContent, "Create shared layer");
     assert.equal(view.code.input.disabled, true);
     assert.equal(view.name.input.required, true);
     view.layerName.input.value = "Watersheds"; view.name.input.value = " Maria ";
@@ -90,6 +92,7 @@ test("create and join ask for a real display name and only the relevant connecti
     assert.deepEqual(calls[0], ["create", "Watersheds", "Maria", null]);
     view.connected(); assert.equal(view.dialog.open, false);
     view.open("join");
+    assert.equal(view.heading.textContent, "Join shared layer");
     assert.equal(view.layerName.input.disabled, true);
     assert.equal(view.code.input.disabled, false);
     view.code.input.value = "ABCDEFGH";
@@ -127,6 +130,6 @@ test("changing your name prefills only the name and saves to the chosen layer", 
     assert.equal(view.dialog.open, false);
     assert.equal(calls.length, 1, "cancel does not submit another change");
     view.open("join");
-    assert.equal(view.submit.textContent, "Join layer");
+    assert.equal(view.submit.textContent, "Join shared layer");
     assert.match(view.help.textContent, /Everyone with the code/);
 });

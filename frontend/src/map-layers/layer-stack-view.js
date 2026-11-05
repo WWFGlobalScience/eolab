@@ -363,7 +363,7 @@ export class MapLayerStackView {
     #renderCounts(layers) {
         const parts = ["raster", "vector", "annotation"].flatMap((kind) => {
             const count = layers.filter((layer) => layer.datasetKind === kind).length;
-            return count === 0 ? [] : [`${count} ${kind === "annotation" ? "shared layer" : kind}${count === 1 ? "" : "s"}`];
+            return count === 0 ? [] : [`${count} ${kind === "annotation" ? "polygon layer" : kind}${count === 1 ? "" : "s"}`];
         });
         this.counts.textContent = `· ${parts.length === 0 ? "Empty" : parts.join(" · ")}`;
     }

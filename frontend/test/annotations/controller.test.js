@@ -16,7 +16,7 @@ function controller() {
         controls: new Map(), clearedFilterLayerIds: new Set(), inspectionMatches: [], inspectedPolygon: null, onHoverInvalidated() {},
         panel: { open: false, show() { this.open = true; }, showLayer(key) { this.open = true; this.selectedKey = key; } }, status: { textContent: "" },
         fileStatus: { textContent: "", classList: { add() {}, remove() {} } },
-        retryButton: { hidden: true }, importButton: { disabled: true },
+        retryButton: { hidden: true }, drawButton: { disabled: true }, importButton: { disabled: true },
         storage: { async load() { return []; }, async save() {} },
         document: { createElement() { return { remove() {} }; } },
     });
@@ -113,6 +113,97 @@ function drawingController() {
     annotations.refreshLayer = (...args) => calls.push(["refresh", ...args]);
     return { annotations, layer, calls };
 }
+
+/** Connect private layer creation to existing drawing and device-save boundaries.
+ * @return {{annotations:AnnotationController,calls:Array<unknown[]|string>}} Empty annotation controller and observed editor/layer actions.
+ */
+function privateDrawingController() {
+    const { annotations, calls } = drawingController();
+    annotations.model = new AnnotationModel();
+    annotations.controls.clear();
+    annotations.attachLayer = layer => {
+        calls.push(["attach", layer.id]);
+        annotations.layers.set(layer.id, { setEditingPolygon() {}, setInspectedPolygon() {} });
+        annotations.controls.set(layer.id, { clearPolygonInspection() {} });
+    };
+    return { annotations, calls };
+}
+
+test("Draw polygon creates a private device layer whose saved polygons enter ordinary analysis targets", async () => {
+    const { annotations, calls } = privateDrawingController();
+    const saved = [];
+    annotations.storage.save = async document => saved.push(structuredClone(document));
+    annotations.drawPrivatePolygon();
+    await annotations.savePromise;
+    const [layer] = annotations.model.layers;
+    assert.equal(layer.name, "Polygon layer 1");
+    assert.equal(annotations.shared.size, 0);
+    assert.equal(annotations.layers.has(layer.id), true);
+    assert.equal(annotations.panel.selectedKey, `local:annotation:${layer.id}`);
+    assert.equal(annotations.model.draft.layerId, layer.id);
+    assert.equal(calls.some(call => call[0] === "editing" && call[1]), true);
+    annotations.model.updateDraftText("Assessment forest", "Private sketch");
+    [[0, 0], [2, 0], [1, 2]].forEach(point => annotations.model.addVertex(point));
+    assert.deepEqual(saved[0].layers[0].polygons, [], "unfinished drawing is never persisted");
+    assert.deepEqual(annotations.summaryTargets()[0].polygons, [], "unfinished drawing is never sampled");
+    annotations.finishPolygon();
+    await annotations.savePromise;
+    assert.equal(annotations.model.draft, null);
+    assert.equal(annotations.summaryTargets()[0].polygons[0].note, "Private sketch");
+    assert.deepEqual(readAnnotationLayers(saved.at(-1)), annotations.model.layers);
+    assert.equal(annotations.shared.size, 0, "saving never creates a shared membership");
+});
+
+test("private layer creation preserves an existing draft and creates no extra layer", async () => {
+    const { annotations, calls } = privateDrawingController();
+    annotations.drawPrivatePolygon();
+    await annotations.savePromise;
+    annotations.model.updateDraftText("Keep this", "Unfinished notes");
+    annotations.model.addVertex([2, 3]);
+    const before = structuredClone(annotations.model.draft);
+    const beforeLayers = annotations.model.document();
+    annotations.drawPrivatePolygon();
+    assert.deepEqual(annotations.model.draft, before);
+    assert.deepEqual(annotations.model.document(), beforeLayers);
+    assert.match(calls.filter(call => call[0] === "render").at(-1)[3], /Save or cancel/);
+    assert.equal(calls.filter(call => call[0] === "attach").length, 1);
+});
+
+test("private drawing cannot replace polygons while device storage is unavailable", async () => {
+    const { annotations } = privateDrawingController();
+    annotations.loaded = false;
+    annotations.storage.load = async () => { throw new Error("Cannot open database"); };
+    let writes = 0;
+    annotations.storage.save = async () => { writes++; };
+    await annotations.load();
+    annotations.drawPrivatePolygon();
+    assert.equal(annotations.drawButton.disabled, true);
+    assert.equal(annotations.model.layers.length, 0);
+    assert.equal(annotations.model.draft, null);
+    assert.equal(writes, 0);
+    assert.match(annotations.status.textContent, /Cannot open database/);
+});
+
+test("a new private drawing survives a failed device save and can retry without losing the draft", async () => {
+    const { annotations } = privateDrawingController();
+    annotations.storage.save = async () => { throw new Error("Storage full"); };
+    annotations.drawPrivatePolygon();
+    annotations.model.updateDraftText("Keep this polygon", "Keep these notes");
+    annotations.model.addVertex([2, 3]);
+    await annotations.savePromise;
+    const before = structuredClone(annotations.model.draft);
+    assert.equal(annotations.model.layers.length, 1);
+    assert.equal(annotations.dirty, true);
+    assert.equal(annotations.retryButton.hidden, false);
+    assert.match(annotations.status.textContent, /Not saved: Storage full/);
+    const saved = [];
+    annotations.storage.save = async document => saved.push(document);
+    await annotations.save();
+    assert.equal(annotations.dirty, false);
+    assert.deepEqual(annotations.model.draft, before);
+    assert.equal(saved[0].layers[0].id, before.layerId);
+    assert.deepEqual(saved[0].layers[0].polygons, []);
+});
 
 /** @return {Object} Real annotation owner/model with observable panel, hit and highlight boundaries. */
 function inspectionController() {
@@ -430,6 +521,7 @@ test("startup retains storage failure in the closed editor and clears it after a
     assert.equal(annotations.panel.open, false);
     assert.equal(annotations.loaded, false);
     assert.equal(annotations.importButton.disabled, true);
+    assert.equal(annotations.drawButton.disabled, true);
     assert.equal(annotations.status.textContent, "Cannot open saved polygons: Cannot open database");
     await assert.rejects(annotations.saveForSharing(), /Cannot open database/);
     annotations.storage.load = async () => [];
@@ -438,6 +530,7 @@ test("startup retains storage failure in the closed editor and clears it after a
     assert.equal(annotations.status.textContent, "");
     assert.equal(annotations.loaded, true);
     assert.equal(annotations.importButton.disabled, false);
+    assert.equal(annotations.drawButton.disabled, false);
 });
 
 test("empty polygon storage keeps the editor closed in every startup mode", async () => {

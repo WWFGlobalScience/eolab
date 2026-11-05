@@ -61,10 +61,12 @@ export class AnnotationController {
         this.status = document.querySelector("#annotation-save-status");
         this.undoButton = document.querySelector("#undo-annotation-delete");
         this.retryButton = document.querySelector("#retry-annotation-save");
+        this.drawButton = document.querySelector("#draw-private-polygon");
         this.importButton = document.querySelector("#import-annotation-geojson");
         this.importInput = document.querySelector("#annotation-geojson-file");
         this.fileStatus = document.querySelector("#annotation-file-status");
         this.importing = false;
+        this.drawButton.addEventListener("click", () => this.drawPrivatePolygon());
         this.importButton.addEventListener("click", () => {
             this.importInput.value = "";
             this.importInput.click();
@@ -119,6 +121,7 @@ export class AnnotationController {
      * Failed loads leave stored data untouched and retain the error in the polygon
      * editor without showing polygon controls over an unrelated map workflow.
      * Recovered filters are identified on their layers until the user applies a filter or reloads.
+     * Creating drawing layers and importing files remain disabled until loading succeeds.
      * @param {Object} [options] Startup presentation policy.
      * @param {boolean} [options.attachSavedLayers=true] Display private saved layers; false keeps them off the shared map.
      * @param {string[]} [options.sharedLayerIds=[]] Bookmarked shared layers whose inclusion comes from the remembered map, not polygon storage.
@@ -133,11 +136,30 @@ export class AnnotationController {
                 if (!shared.has(layer.id)) this.attachLayer(layer);
             }
             this.loaded = true;
+            this.drawButton.disabled = false;
             this.importButton.disabled = false;
             this.status.textContent = "";
         } catch (error) {
             this.status.textContent = `Cannot open saved polygons: ${error.message}`;
         }
+    }
+
+    /**
+     * Add a private layer and start its first polygon using the ordinary map editor.
+     * Save the empty layer on this device; its unfinished polygon stays outside storage
+     * until Save. Loading, editing and capacity errors use the existing editor status.
+     * @return {void}
+     */
+    drawPrivatePolygon() {
+        this.perform(() => {
+            if (!this.loaded) throw new Error(this.status.textContent || "Wait for saved polygons to open before drawing.");
+            if (this.model.draft) throw new Error("Save or cancel the current polygon before creating another layer.");
+            const layer = this.model.createLayer();
+            this.attachLayer(layer);
+            this.panel.showLayer(`local:annotation:${layer.id}`);
+            void this.save();
+            this.beginPolygon(layer.id);
+        });
     }
 
     /** Restore your server contribution as a local editable layer after joining.

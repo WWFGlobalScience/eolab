@@ -56,7 +56,7 @@ export class AnnotationLayerControls {
         this.sharedStatus = document.createElement("span"); this.sharedStatus.className = "shared-annotation-status"; this.sharedStatus.setAttribute("role", "status");
         this.drawing.append(this.draw, this.members, this.sharedStatus);
         this.share = this.button("Share layer", actions.share);
-        this.share.title = "Copy the code so other contributors can join this shared layer.";
+        this.share.title = "Create a shared layer so other contributors can see and add polygons.";
         buttons.append(this.share);
         const exportButton = this.button("Export GeoJSON", actions.exportGeoJSON);
         exportButton.title = "Download all saved polygons, names and notes in this layer, including filtered-out polygons. Save unfinished edits first to include them.";
@@ -243,7 +243,9 @@ export class AnnotationLayerControls {
         this.polygonList.replaceChildren(...polygons.map(polygon => this.polygonRow(polygon)));
         if (!polygons.length) {
             const empty = this.document.createElement("li");
-            empty.textContent = filtered ? "No polygons match the filter." : "Draw a polygon and add its name and notes in the editor. Save shares the complete polygon with this layer's contributors.";
+            empty.textContent = filtered ? "No polygons match the filter." : this.collaborating
+                ? "Draw a polygon and add its name and notes in the editor. Save shares the complete polygon with this layer's contributors."
+                : "Draw a polygon and add its name and notes in the editor. Save stores the complete polygon on this device.";
             this.polygonList.append(empty);
         }
         if (focusPolygon) {
