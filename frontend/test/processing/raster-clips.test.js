@@ -482,10 +482,12 @@ test("Downloads and sampling share only neutral selection values; peers never im
 });
 
 
-test("clip capture, recovery and HTTP submission retain the geodesic descriptor", async () => {
+test("clip capture, recovery and HTTP submission retain the exact observation and geodesic box", async () => {
     const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};
+    const reference = {collectionId: "eolab-temporal-datasets", itemId: "era5-cog",
+        variable: "surface_pressure", time: "2026-07-01T00:00:00Z"};
     const h = fixture();
-    h.setContext({sources: [source], area});
+    h.setContext({sources: [{...reference, label: "ERA5 surface pressure"}], area});
     h.controller.open();
     area.samplingBox.center.latitude = 0;
     await h.controller.submit();
@@ -493,17 +495,17 @@ test("clip capture, recovery and HTTP submission retain the geodesic descriptor"
     assert.equal(captured.area.samplingBox.center.latitude, 60);
     assert.ok(Object.isFrozen(captured.area.samplingBox.center));
     h.storage.write(captured);
-    assert.deepEqual(h.storage.read().area, captured.area);
+    const recovered = h.storage.read();
+    assert.deepEqual(recovered, captured);
     let body;
     const api = new ProcessingApiClient(async (url, options) => {
         if (url.endsWith("/jobs")) return new Response(JSON.stringify({jobs: []}));
         body = JSON.parse(options.body);
         return new Response(JSON.stringify({...job, area: {kind: "samplingBox", samplingBox: captured.area.samplingBox}}));
     });
-    await api.submitClip(captured);
-    assert.deepEqual(body.samplingBox, captured.area.samplingBox);
-    assert.equal(Object.hasOwn(body, "selectedBounds"), false);
-    assert.equal(JSON.stringify(body).includes("polygon"), false);
+    await api.submitClip(recovered);
+    assert.deepEqual(body, {source: reference, samplingBox: captured.area.samplingBox,
+        requestId: captured.requestId});
 });
 
 

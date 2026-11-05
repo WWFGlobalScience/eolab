@@ -300,9 +300,12 @@ export class ProcessingApiClient {
         const {source, requestId} = submission;
         const selected = normalizeRasterSamplingArea(submission.area);
         if (!["selectedArea", "samplingBox", "catalogSelection"].includes(selected.kind)) throw new Error("Select a box or vector layer first.");
+        const reference = processingRasterReference(source);
+        const raster = reference.kind === "runArtifact" || reference.variable !== undefined
+            ? {source: reference} : reference;
         await this.ensureSession();
         return validateJob(await this.request("/raster-clips", "POST", {
-            ...(source.kind === "runArtifact" ? {source: processingRasterReference(source)} : processingRasterReference(source)), requestId,
+            ...raster, requestId,
             ...(selected.kind === "selectedArea" ? {selectedBounds: selected.selectedBounds}
                 : selected.kind === "samplingBox" ? {samplingBox: selected.samplingBox}
                 : {catalogSelection: selected.catalogSelection}),

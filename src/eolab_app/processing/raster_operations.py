@@ -46,7 +46,6 @@ from eolab_app.processing.calculation_cache import (
 from eolab_app.processing.polygon_areas import PolygonAreaReference
 from eolab_app.raster.models import AuthorizedRaster, CatalogRasterRequest
 from eolab_app.raster.source_models import (
-    RasterSourceReference,
     RasterAnalysisSourceReference,
     TemporalRasterSelection,
 )
@@ -263,14 +262,14 @@ async def prepare_summary(
 async def prepare_clip(
     context: OperationContext,
     queued: UnpreparedClip,
-    authorized: AuthorizedRaster,
+    authorized: AuthorizedRaster | TemporalObservation,
 ) -> PreparedJobPlan:
     """Measure clip work using its existing native-grid and selected-polygon rules.
 
     Args:
         context: Worker capabilities and resource limits for this attempt.
         queued: Validated explicit clip inputs.
-        authorized: Source already authorized by the worker.
+        authorized: Confined raster file or exact admitted temporal observation.
 
     Returns:
         Prepared clip plan and its disk reservation.
@@ -280,11 +279,17 @@ async def prepare_clip(
     """
     request = queued.request
     source = get_clip_source(queued)
-    signature = (
-        tuple(authorized.source_signature.to_catalog())
-        if authorized.source_signature is not None
-        else None
-    )
+    raster_data: RasterData
+    if isinstance(authorized, TemporalObservation):
+        raster_data = authorized
+        signature = None
+    else:
+        raster_data = authorized.source_path
+        signature = (
+            tuple(authorized.source_signature.to_catalog())
+            if authorized.source_signature is not None
+            else None
+        )
     if request.samplingBox is not None:
         area = ClipArea(
             kind="samplingBox",
@@ -314,7 +319,7 @@ async def prepare_clip(
         )
     status, grid = await context.run_native(
         clip_process_target,
-        ("plan", (authorized.source_path, area, context.limits)),
+        ("plan", (raster_data, area, context.limits)),
         None,
         context.native,
     )
@@ -425,14 +430,14 @@ def get_summary_source(
 
 def get_clip_source(
     value: ClipJobRequest | UnpreparedClip | ClipSpec,
-) -> RasterSourceReference:
+) -> RasterAnalysisSourceReference:
     """Return the source from a validated clip request or execution plan.
 
     Args:
         value: Clip request, queued inputs or prepared specification.
 
     Returns:
-        The operation's catalog or owned published-raster reference.
+        The operation's catalog raster, temporal observation or owned raster.
     """
     if isinstance(value, ClipSpec):
         return value.source
@@ -536,7 +541,7 @@ def build_clip_submission(request: ClipJobRequest, polygons: None) -> PreparedJo
     return PreparedJobPlan(
         specification=queued.model_dump(mode="json", by_alias=True),
         summary={
-            "source": get_clip_source(request).model_dump(by_alias=True),
+            "source": get_clip_source(request).model_dump(mode="json", by_alias=True),
             "grid": None,
             "area": {
                 "kind": (

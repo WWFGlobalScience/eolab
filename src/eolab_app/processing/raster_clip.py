@@ -31,6 +31,7 @@ from eolab_app.processing.clip_models import (
     RasterClipLimits,
 )
 from eolab_app.raster.models import SelectedRasterArea, CatalogRasterRequest
+from eolab_app.raster.reader import RasterData, open_raster_data
 from eolab_app.raster.source_contract import (
     RASTER_VALIDITY_POLICY,
     read_native_raster_block,
@@ -95,20 +96,26 @@ def _plan_clip_grid(
     )
 
 
-def plan_clip(path: Path, area: ClipArea, limits: RasterClipLimits) -> ClipGrid:
+def plan_clip(
+    raster_data: RasterData, area: ClipArea, limits: RasterClipLimits
+) -> ClipGrid:
     """Plan a native-resolution raster clip without reading pixel values.
 
     Args:
-        path: Authorized local source.
+        raster_data: Confined raster file or exact admitted temporal observation.
         area: Explicit immutable area value.
         limits: Processing-owned resource policy.
 
     Returns:
         Planned native grid; this function does not read raster values.
+
+    Raises:
+        ProcessingError: If the source or area is unsupported.
+        rasterio.errors.RasterioError: If the source cannot be opened.
     """
     with rasterio.Env(GDAL_CACHEMAX=64 * 1024**2, GDAL_NUM_THREADS="2"):
-        with rasterio.open(path) as dataset:
-            _validate_supported_raster(dataset, path)
+        with open_raster_data(raster_data) as dataset:
+            _validate_supported_raster(dataset, raster_data)
             grid = _plan_clip_grid(
                 dataset, _select_clip_area(dataset, area, limits), limits
             )
@@ -116,12 +123,13 @@ def plan_clip(path: Path, area: ClipArea, limits: RasterClipLimits) -> ClipGrid:
 
 
 def create_clip(
-    path: Path, spec: ClipSpec, directory: Path, limits: RasterClipLimits
+    raster_data: RasterData, spec: ClipSpec, directory: Path, limits: RasterClipLimits
 ) -> ClipArtifact:
     """Stream native blocks to a masked, lossless COG and validate the result.
 
     Args:
-        path: Source freshly authorized by the worker's catalog port.
+        raster_data: Confined raster file or temporal observation authorized by the
+            worker.
         spec: Immutable admitted source, geometry, and native-grid contract.
         directory: Empty attempt-owned directory outside all source mounts.
         limits: Same processing policy used for planning and admission.
@@ -142,8 +150,8 @@ def create_clip(
         GDAL_TIFF_INTERNAL_MASK=True,
         CPL_TMPDIR=str(directory),
     ):
-        with rasterio.open(path) as source:
-            _validate_supported_raster(source, path)
+        with open_raster_data(raster_data) as source:
+            _validate_supported_raster(source, raster_data)
             selected = _select_clip_area(source, spec.area, limits)
             window = selected.source_window
             blocks = source_block_indexes_for_window(window, source.block_shapes[0])
@@ -184,25 +192,26 @@ def create_clip(
                             }
                         }
                         destination.update_tags(band, **tags)
+                if isinstance(spec.source, CatalogRasterRequest):
+                    source_tags = {
+                        "EOLAB_ITEM": spec.source.item_id,
+                        "EOLAB_COLLECTION": spec.source.collection_id,
+                        "EOLAB_SOURCE_SIGNATURE": json.dumps(spec.sourceSignature),
+                    }
+                else:
+                    source_tags = {
+                        "EOLAB_SOURCE": json.dumps(
+                            spec.source.model_dump(mode="json", by_alias=True)
+                        )
+                    }
+                    if spec.sourceChecksum is not None:
+                        source_tags["EOLAB_SOURCE_SHA256"] = spec.sourceChecksum
                 destination.update_tags(
                     EOLAB_OPERATION=spec.operation,
-                    **(
-                        {
-                            "EOLAB_ITEM": spec.source.item_id,
-                            "EOLAB_COLLECTION": spec.source.collection_id,
-                            "EOLAB_SOURCE_SIGNATURE": json.dumps(spec.sourceSignature),
-                        }
-                        if isinstance(spec.source, CatalogRasterRequest)
-                        else {
-                            "EOLAB_SOURCE": json.dumps(
-                                spec.source.model_dump(by_alias=True)
-                            ),
-                            "EOLAB_SOURCE_SHA256": spec.sourceChecksum,
-                        }
-                    ),
                     EOLAB_MASK_RULE="all_touched",
                     EOLAB_AREA_BOUNDS=json.dumps(spec.area.bounds),
                     EOLAB_AREA_KIND=spec.area.kind,
+                    **source_tags,
                 )
                 last_progress = 0.0
                 for index, (row, column) in enumerate(blocks):
@@ -303,7 +312,7 @@ def create_clip(
     )
     provenance = {
         "operation": spec.operation,
-        "source": spec.source.model_dump(by_alias=True),
+        "source": spec.source.model_dump(mode="json", by_alias=True),
         **(
             {"sourceSignature": spec.sourceSignature}
             if spec.sourceSignature is not None

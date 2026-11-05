@@ -1174,7 +1174,7 @@ class ProcessingService:
 
         Args:
             owner: Current browser-session hash.
-            request: Catalog or private raster, explicit area and stable retry key.
+            request: Raster or exact temporal observation, explicit area and retry key.
             upload_owner: Browser identity authorizing an uploaded clipping area.
 
         Returns:
