@@ -191,7 +191,7 @@ def generated_raster_model(
         ),
         source=None,
         primary_input=None,
-        polygon=lambda request: None,
+        polygon_inputs=lambda request: {},
         vector_selections=lambda request: (
             {"references": request.references} if request.references is not None else {}
         ),

@@ -19,7 +19,7 @@ import pytest
 
 from eolab_app.processing.model_definitions import ModelDefinition, ModelRegistry
 from eolab_app.processing.habitat_models import QueuedHabitat
-from eolab_app.processing.model_run_contracts import RunDocument
+from eolab_app.processing.model_run_contracts import ModelRunSpec, RunDocument
 from eolab_app.processing.model_yaml import parse_yaml
 from eolab_app.processing.models import PreparedJobPlan, ProcessingError
 from eolab_app.processing.service import ProcessingService
@@ -1521,9 +1521,11 @@ def test_habitat_admission_retains_both_owned_polygon_roles(
             == 200
         )
     assert submit(client, body)["jobId"] == job["jobId"]
-    queued = QueuedHabitat.model_validate(
-        store.get(job["jobId"], owner)["spec"]["calculation"]
-    )
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == store.get(job["jobId"], owner)["job_id"]
+    queued = ModelRunSpec.model_validate(claimed["spec"]).calculation
+    assert isinstance(queued, QueuedHabitat)
     assert queued.polygonArea is not None
     assert queued.polygonArea.geometries == (assessment,)
     assert queued.referencePolygons is not None
