@@ -228,7 +228,7 @@ export function createModelDraft(model, context, id) {
             inputs[name] = {
                 ...preparation,
                 raster: input.type !== "optional_raster" && !usesStartingMask && suggestedRaster ? structuredClone(suggestedRaster) : null,
-                sourceReason: input.type !== "catalog_raster" ? "Choose a raster from Map layers or a completed run. Results do not need to be shown on the map." : catalogRasters.length ? "Choose a raster from Map layers." : "Add a raster to Map layers to use this model.",
+                sourceReason: input.type !== "catalog_raster" ? "Choose a raster from Map layers or a completed run. Results do not need to be shown on the map." : catalogRasters.length ? "Choose a raster from Map layers." : "Add a raster to Map layers to use this tool.",
             };
         } else if (input.type === "habitat_stack") {
             inputs[name] = {kind: "earthEngine", year: null, configuration: null, loading: false, error: "",
@@ -293,18 +293,18 @@ export function captureModelSubmission(draft, requestId, utcOffsetMinutes = -new
                 inputs[name] = {kind: references ? "raster" : "catalogRaster", source: captureModelRaster(raster, draft.sources, input.type)};
             } else {
                 const area = state.area;
-                if (!area) throw new Error(state.selectionError || (startingMask ? "Choose the vector features where flow should start." : references ? "Choose the reference sites." : "Choose an analysis area before running the model."));
-                if (!modelSupportsArea(input.type, area)) throw new Error("Choose an area supported by this model.");
+                if (!area) throw new Error(state.selectionError || (startingMask ? "Choose the vector features where flow should start." : references ? "Choose the reference sites." : "Choose an analysis area before running the tool."));
+                if (!modelSupportsArea(input.type, area)) throw new Error("Choose an area supported by this tool.");
                 if (area.kind === "catalogSelection" && state.areaMode !== "captured" &&
                     !state.vectors.some(source => modelSourceKey(source) === modelSourceKey(area.selection)))
-                    throw new Error("Add the selected vector layer to Map layers before running this model.");
+                    throw new Error("Add the selected vector layer to Map layers before running this tool.");
                 if (["selectedArea", "samplingBox"].includes(area.kind)) modelAreaInput(area);
                 else if (area.kind === "catalogSelection") modelAreaInput({kind: area.kind, catalogSelection: area.selection});
                 else if (area.kind === "polygonArea") modelAreaInput({kind: area.kind, polygonArea: area.reference});
                 inputs[name] = references ? {kind: "vector", selection: structuredClone(area.selection)} : structuredClone(area);
             }
         }
-        else throw new Error(`This model requires an input type this interface does not yet support: ${input.type}.`);
+        else throw new Error(`This tool requires an input type this interface does not yet support: ${input.type}.`);
     }
     if (getHabitatEarthEngineInput(draft) && Object.entries(draft.model.inputs).some(([name, input]) =>
         input.type === "summary_area" && inputs[name].kind === "wholeRaster"))

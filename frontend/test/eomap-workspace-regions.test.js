@@ -648,6 +648,16 @@ test("one persistent toolbar owns Tools, minimize and active filters outside ret
 });
 
 test("supporting analysis controls preserve native buttons, clear names and disclosure targets", () => {
+    for (const [id, label] of [
+        ["open-models", "Data tools"],
+        ["open-model-runs", "Data tool runs"],
+        ["map-inspection-tab-models", "Data tools"],
+        ["models-nav-library", "Choose a tool"],
+    ]) {
+        assert.ok(requireElementRange(id).source.endsWith(`>${label}</button>`), `${id} names its destination`);
+    }
+    assert.match(requireElementRange("models-heading").source, />Data tools<\/h2>$/);
+    assert.match(requireElementRange("models-panel").source, /<nav class="models-navigation" aria-label="Data tools">/);
     for (const id of ["map-tools-more-summary"]) {
         const {source} = requireElementRange(id);
         assert.match(source, /^<button\b[^>]*\btype="button"/);
@@ -665,7 +675,7 @@ test("supporting analysis controls preserve native buttons, clear names and disc
         assert.equal(countMarkupId(id), 1, `supporting control target ${id} exists once`);
     }
     for (const [id, accessibleName] of [
-        ["models-close", "Close Models"],
+        ["models-close", "Close Data tools"],
         ["close-annotations", "Close polygon editor"],
         ["close-raster-series", "Close raster statistics"],
         ["raster-clips-close", "Close raster download"],

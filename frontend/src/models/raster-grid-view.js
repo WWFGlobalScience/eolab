@@ -65,7 +65,7 @@ export class RasterGridView {
         value.requiredCrs ?? (value.projectionMode === "custom" ? "custom" : value.crs));
         this.projection.disabled = Boolean(value.requiredCrs);
         this.requirement.hidden = !value.requiredCrs;
-        this.requirement.textContent = value.requiredCrs ? `This model requires ${value.requiredCrs}. Inputs in other projections will be reprojected.` : "";
+        this.requirement.textContent = value.requiredCrs ? `This tool requires ${value.requiredCrs}. Inputs in other projections will be reprojected.` : "";
         this.customField.hidden = Boolean(value.requiredCrs) || value.projectionMode !== "custom";
         this.customCrs.required = !this.customField.hidden;
         if (this.document.activeElement !== this.customCrs) this.customCrs.value = value.crs;

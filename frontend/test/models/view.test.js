@@ -126,7 +126,7 @@ test("removed history entries leave the DOM while unrelated run cards retain the
     assert.equal(h.view.runCards.get(second.jobId).button, retained);
     h.state.runs = []; h.view.render(h.state);
     assert.equal(h.view.elements["runs-list"].children.length, 0);
-    assert.match(h.view.elements["runs-status"].textContent, /No model runs/);
+    assert.match(h.view.elements["runs-status"].textContent, /No data tool runs/);
 });
 
 test("library and run cards use the same presentation and invoke their existing navigation", () => {
@@ -144,6 +144,32 @@ test("library and run cards use the same presentation and invoke their existing 
     libraryButton.focus(); h.view.render(h.state);
     assert.equal(h.view.elements["library-items"].children[0], libraryCard);
     assert.equal(libraryCard.contains(h.doc.activeElement), true);
+});
+
+test("raster creation leads matching tools without changing discovery order or selecting a tool", () => {
+    const h = fixture();
+    const period = {...model, id: "temporal-period-map", title: "Create a raster from a time series"};
+    const library = [model, clipModel, period, seriesModel];
+    Object.assign(h.state, {page: "library", library});
+    h.view.render(h.state);
+    /** @return {string[]} Tool titles in their displayed order. */
+    const titles = () => h.view.elements["library-items"].children.map(card => card.children[0].children[0].textContent);
+    assert.deepEqual(titles(), [period.title, model.title, clipModel.title, seriesModel.title]);
+    assert.deepEqual(h.state.library, library);
+    assert.deepEqual(library.map(item => item.id), [model.id, clipModel.id, period.id, seriesModel.id]);
+    assert.equal(h.actions.length, 0);
+    h.state.query = "SCALAR"; h.view.render(h.state);
+    assert.deepEqual(titles(), [period.title, model.title, seriesModel.title]);
+    h.state.query = clipModel.title; h.view.render(h.state);
+    assert.deepEqual(titles(), [clipModel.title]);
+    h.state.query = "no matching tool"; h.view.render(h.state);
+    assert.deepEqual(titles(), []);
+    assert.equal(h.view.elements["library-status"].textContent, "No matching tools.");
+    h.state.query = ""; h.view.render(h.state);
+    const choose = h.view.elements["library-items"].children[0].children[0].children[0];
+    assert.equal(choose.getAttribute("aria-label"), `Set up ${period.title}`);
+    choose.dispatchEvent(new Event("click"));
+    assert.deepEqual(h.actions, [["Choose", period]]);
 });
 
 test("run renewal and deletion have explicit scope, confirmation and busy feedback", () => {
@@ -372,8 +398,8 @@ test("model progress uses the supplied description without reading operation pha
 
 test("model stages without a description use a running label while lifecycle states take precedence", () => {
     for (const progress of [{phase: "preparing_polygon_mask"}, {phase: "unfamiliar_stage", description: null}, {}]) {
-        assert.equal(describeModelProgress(job({status: "running", progress})), "Running model…");
-        assert.equal(describeModelProgress(job({status: "running", progress: {...progress, completed: 2, total: 5, unit: "blocks"}})), "Running model · 2 of 5 blocks");
+        assert.equal(describeModelProgress(job({status: "running", progress})), "Running tool…");
+        assert.equal(describeModelProgress(job({status: "running", progress: {...progress, completed: 2, total: 5, unit: "blocks"}})), "Running tool · 2 of 5 blocks");
     }
     for (const [status, expected] of Object.entries({queued: "Queued", cancelling: "Cancelling…", ready: "Ready", failed: "Failed",
         cancelled: "Cancelled", interrupted: "Interrupted", expired: "Results expired", deleted: "Deleted"})) {
@@ -568,11 +594,11 @@ function temporalFixture() {
 test("temporal recipes show UTC period fields and reuse area choices without an ordinary raster", () => {
     const h = temporalFixture(), controls = h.controls;
     assert.equal(h.view.setup.inputs.raster, undefined);
-    assert.equal(h.view.setup.run.textContent, "Run analysis");
+    assert.equal(h.view.setup.run.textContent, "Run tool");
     assert.equal(h.view.setup.run.disabled, false);
     assert.deepEqual(h.view.setup.inputs.region.source.children.map(option => option.textContent),
         ["Choose an area…", "Whole raster", "Visible map area", "Sampling box"]);
-    assert.match(h.view.setup.inputs.region.mapHelp.textContent, /Run analysis/);
+    assert.match(h.view.setup.inputs.region.mapHelp.textContent, /Run tool/);
     assert.equal(controls.period.startDate.type, "text"); assert.equal(controls.period.endDate.type, "text");
     assert.equal(controls.period.startDate.placeholder, "YYYY-MM-DD");
     assert.equal(controls.period.startDatePicker.type, "date");

@@ -1126,10 +1126,11 @@ test("sampling widget retains disclosure and area through Models, tool switches 
     view.unbind();
 });
 
-test("Models keeps its tool entry while its own compact header provides the title", () => {
+test("Data tools keeps its tool entry while its compact header provides the visible title", () => {
     const h = fixture(), models = h.doc.querySelector("#models-panel"), tab = h.doc.querySelector("#map-inspection-tab-models");
     h.controller.showModels();
     assert.equal(h.dockTitle.hidden, true);
+    assert.equal(h.dockTitle.textContent, "Analysis · Data tools");
     assert.equal(h.doc.querySelector("#map-inspection-context").hidden, true);
     assert.equal(tab.hidden, false);
     assert.equal(tab.getAttribute("aria-selected"), "true");

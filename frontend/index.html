@@ -446,7 +446,7 @@
                       id="eomap-map-layers-body"
                       aria-hidden="false"
                     >
-                    <p class="models-help" data-private-result-notice hidden>Result previews are temporary and private. Saved and shared maps omit them. Reopen them from Models → Runs.</p>
+                    <p class="models-help" data-private-result-notice hidden>Result previews are temporary and private. Saved and shared maps omit them. Reopen them from Data tools → Runs.</p>
                     <div class="map-layer-source-actions">
                     <button class="secondary-button" id="upload-polygons" type="button">Polygon uploads…</button>
                     <details class="annotation-layer-tools">
@@ -658,8 +658,8 @@
       <div id="workspace-tool-actions" popover="auto" role="group" aria-label="Map and analysis tools">
         <div class="workspace-tool-actions-group">
           <strong class="workspace-tool-actions-label">Analysis</strong>
-          <button id="open-models" class="workspace-tool-action" type="button" aria-controls="models-panel">Models</button>
-          <button id="open-model-runs" class="workspace-tool-action" type="button" aria-controls="models-panel">Model runs</button>
+          <button id="open-models" class="workspace-tool-action" type="button" aria-controls="models-panel">Data tools</button>
+          <button id="open-model-runs" class="workspace-tool-action" type="button" aria-controls="models-panel">Data tool runs</button>
           <button id="open-raster-series" class="workspace-tool-action" type="button"
             aria-controls="raster-series">Raster statistics</button>
         </div>
@@ -700,7 +700,7 @@
           <div class="map-inspection-navigation">
           <div id="map-inspection-tabs" class="map-inspection-tabs" role="tablist" hidden
             aria-label="Open map tools">
-            <button id="map-inspection-tab-models" class="map-inspection-tab" type="button" role="tab" aria-controls="models-panel" aria-selected="false" tabindex="-1" hidden>Models</button>
+            <button id="map-inspection-tab-models" class="map-inspection-tab" type="button" role="tab" aria-controls="models-panel" aria-selected="false" tabindex="-1" hidden>Data tools</button>
             <button id="map-inspection-tab-annotations" class="map-inspection-tab" type="button" role="tab" aria-controls="annotations-panel" aria-selected="false" tabindex="-1" hidden>Polygons</button>
             <button id="map-inspection-tab-raster-clips" class="map-inspection-tab"
               type="button" role="tab" aria-controls="raster-clips-panel"
@@ -723,13 +723,13 @@
         <div id="map-inspection-panels" class="map-inspection-panels">
           <section id="models-panel" role="tabpanel" aria-labelledby="map-inspection-tab-models" hidden>
             <header class="map-histogram-toolbar models-header">
-              <h2 id="models-heading" tabindex="-1">Models</h2>
-              <nav class="models-navigation" aria-label="Models">
-                <button id="models-nav-library" type="button" aria-pressed="true">Choose model</button>
+              <h2 id="models-heading" tabindex="-1">Data tools</h2>
+              <nav class="models-navigation" aria-label="Data tools">
+                <button id="models-nav-library" type="button" aria-pressed="true">Choose a tool</button>
                 <button id="models-nav-setup" type="button" aria-pressed="false" disabled>Setup</button>
                 <button id="models-nav-runs" type="button" aria-pressed="false">Runs</button>
               </nav>
-              <button id="models-close" class="analysis-panel-action analysis-panel-close" type="button" aria-label="Close Models">×</button>
+              <button id="models-close" class="analysis-panel-action analysis-panel-close" type="button" aria-label="Close Data tools">×</button>
             </header>
             <h3 id="models-setup-heading" class="models-name" tabindex="-1" hidden></h3>
             <p id="models-error" class="models-error" role="alert" hidden></p>
@@ -739,7 +739,7 @@
               <button id="models-recover" class="secondary-button" type="button">Recover submission</button>
             </div>
             <div id="models-library">
-              <label class="models-field" for="models-query">Find a model<input id="models-query" type="search" placeholder="Search by name or purpose"></label>
+              <label class="models-field" for="models-query">Find a tool<input id="models-query" type="search" placeholder="Search by name or purpose"></label>
               <p id="models-library-status" class="models-help" role="status"></p>
               <div id="models-library-items"></div>
               <button id="models-refresh" class="models-action" type="button">Refresh library</button>
@@ -1629,7 +1629,7 @@
     >
       <form method="dialog">
         <h2 id="saved-map-view-dialog-title">Open shared map view?</h2>
-        <p class="models-help" data-private-result-notice hidden>Private result previews are omitted from this link. Reopen them from Models → Runs in the browser that created them.</p>
+        <p class="models-help" data-private-result-notice hidden>Private result previews are omitted from this link. Reopen them from Data tools → Runs in the browser that created them.</p>
         <p id="saved-map-view-dialog-summary"></p>
         <textarea
           id="saved-map-view-dialog-url"

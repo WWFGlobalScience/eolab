@@ -1199,7 +1199,7 @@ async function initializeCatalog(
                 getTarget: key => key === target.key && request.isCurrent() ? target : null});
             modelFilterControls.open(request.key, {filter: request.filter, apply: request.apply, complete: request.complete, cancel: request.cancel,
                 applyLabel: "Apply filter", filterLabel: "Selected features", onClose: request.close,
-                help: "Change the filter for this map view and every model input using it. Use another view for a different filter.",
+                help: "Change the filter for this map view and every tool input using it. Use another view for a different filter.",
             });
         },
         closeVectorFilter: () => modelFilterControls?.close(),

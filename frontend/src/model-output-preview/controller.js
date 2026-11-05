@@ -103,16 +103,16 @@ export class ModelOutputLayers {
         try {
             if (this.layers.size + this.pending.size > 8) throw new Error("Remove a result layer before adding another. Up to eight results can be on the map at once.");
             if (!MAP_OUTPUT_MEDIA_TYPES.has(file.mediaType) || job.status !== "ready" || Date.parse(job.expiresAt) <= Date.now()) {
-                throw new Error("This result is no longer available. Run the model again.");
+                throw new Error("This result is no longer available. Run the tool again.");
             }
             if (file.mediaType === "image/tiff") {
                 const source = {kind: "runArtifact", jobId: job.jobId, artifactId: file.artifactId};
                 const metadata = await this.describe(source, abort.signal);
                 if (this.destroyed || abort.signal.aborted || !isCurrent()) return;
                 if (metadata.version !== file.sha256) throw new Error("This raster result changed. Reopen the run and try again.");
-                if (Date.parse(this.runStates.get(job.jobId).expiresAt) <= Date.now()) throw new Error("This raster result expired. Run the model again.");
+                if (Date.parse(this.runStates.get(job.jobId).expiresAt) <= Date.now()) throw new Error("This raster result expired. Run the tool again.");
                 const bbox = metadata.bounds;
-                if (!bbox) throw new Error("This raster cannot be placed on the map. Download it or choose it directly as a model input.");
+                if (!bbox) throw new Error("This raster cannot be placed on the map. Download it or choose it directly as a tool input.");
                 if (bbox[0] >= bbox[2] || bbox[1] >= bbox[3]) throw new Error("This raster crosses unsupported map bounds.");
                 const presentation = this.outputPresentation(job.jobId, file);
                 const retained = await this.addRaster({source, version: metadata.version, bbox, ...presentation,
@@ -239,7 +239,7 @@ export class ModelOutputLayers {
     async restore(snapshot, isCurrent) {
         const job = await this.api.getJob(snapshot.local.jobId);
         const file = job.artifacts?.files.find(value => value.artifactId === snapshot.local.artifactId);
-        if (!file) throw new Error("This result is no longer available. Run the model again.");
+        if (!file) throw new Error("This result is no longer available. Run the tool again.");
         if (isCurrent()) await this.show(job, file, snapshot, isCurrent);
     }
 
@@ -309,7 +309,7 @@ export class ModelOutputLayers {
             if (jobs.some(value => value.jobId === state.jobId)) continue;
             if (this.runStates.get(state.jobId)?.updatedAt !== revisions.get(state.key)) continue;
             this.messages.set(artifactLayerKey(state.jobId, state.file.artifactId), Date.parse(state.expiresAt) <= Date.now()
-                ? "This result expired and its map layer was removed. Run the model again."
+                ? "This result expired and its map layer was removed. Run the tool again."
                 : "Map layer removed because the result is no longer available. Reopen the run to check it.");
             this.removeLayer(state.key);
         }

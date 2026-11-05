@@ -125,7 +125,7 @@ export class ModelsController {
                 Object.values(model.inputs).every(input =>
                     ["raster", "catalog_raster", "optional_raster", "summary_area", "clip_area", "mask_source", "habitat_references", "habitat_stack", "raster_preparation", "temporal_interval", "temporal_reduction", "area_statistic"].includes(input.type)));
         }
-        catch (error) { this.state.error = `Model library unavailable: ${error.message}`; }
+        catch (error) { this.state.error = `Data tools unavailable: ${error.message}`; }
         finally { this.state.loading = false; this.render(); }
     }
 
@@ -520,7 +520,7 @@ export class ModelsController {
             const applied = await this.applyMapFilter(structuredClone(source), structuredClone(area));
             if (!applied) this.refreshMapLayers();
             message = applied ? "Filter applied to the map layer." : "The map filter changed before this update finished.";
-        } catch (error) { message = `Features selected for this model. Could not update the map filter: ${error.message}`; }
+        } catch (error) { message = `Features selected for this tool. Could not update the map filter: ${error.message}`; }
         if (this.state.draft === draft && this.vectorSelectionRequests.get(name) === request) {
             input.mapFilterMessage = message; this.render();
         }
@@ -547,7 +547,7 @@ export class ModelsController {
             await this.editVectorFilter({key: `model:${draft.id}:${name}:${key}`, host: this.view.getVectorFilterHost(name), source: structuredClone(source),
                 filter: structuredClone(input.area?.selection?.filter ?? source.filter), isCurrent: () => isCurrent() && this.state.active,
                 apply: candidate => {
-                    if (!isCurrent()) throw new Error("This model setup changed. Open its filter again.");
+                    if (!isCurrent()) throw new Error("This tool setup changed. Open its filter again.");
                     return this.selectVectorFeatures(name, key, candidate);
                 },
                 complete: () => { if (isCurrent()) { input.filterEditing = false; this.render(); } },
@@ -608,7 +608,7 @@ export class ModelsController {
         for (const [name, input] of Object.entries(draft.inputs)) {
             const type = draft.model.inputs[name].type;
             if (["raster", "catalog_raster", "optional_raster"].includes(type)) {
-                input.sourceReason = draft.sources.length ? "Choose a raster from Map layers." : "Add a raster to Map layers to use this model.";
+                input.sourceReason = draft.sources.length ? "Choose a raster from Map layers." : "Add a raster to Map layers to use this tool.";
                 if (type !== "catalog_raster") input.sourceReason = "Choose a raster from Map layers or a completed run. Results do not need to be shown on the map.";
                 if (input.raster?.available === false) input.sourceReason = "This raster is no longer available. Choose another input.";
                 continue;
@@ -640,13 +640,13 @@ export class ModelsController {
         const draft = this.state.draft; const revision = this.revision;
         this.state.error = "";
         try {
-            if (!retry && Object.values(draft.inputs).some(input => input.filterEditing)) throw new Error("Apply or close the filter before running the model.");
+            if (!retry && Object.values(draft.inputs).some(input => input.filterEditing)) throw new Error("Apply or close the filter before running the tool.");
             if (!retry) { this.refreshMapLayers(); this.refreshMapArea(); }
             const submission = retry ? this.state.pending : captureModelSubmission(draft, this.newId());
             if (!submission) return;
-            if (!this.storage) throw new Error("Enable session storage to submit a recoverable model run.");
+            if (!this.storage) throw new Error("Enable session storage to submit a recoverable run.");
             const serialized = JSON.stringify(submission);
-            if (new TextEncoder().encode(serialized).length > 16384) throw new Error("Model inputs exceed the 16 KiB submission limit.");
+            if (new TextEncoder().encode(serialized).length > 16384) throw new Error("Tool inputs exceed the 16 KiB submission limit.");
             this.storage.setItem(RECOVERY_KEY, serialized);
             this.state.pending = submission; this.state.submitting = true; this.render();
             const job = await this.api.submitModelRun(submission);
@@ -714,7 +714,7 @@ export class ModelsController {
                 if (!current || current.updatedAt <= job.updatedAt) this.rememberRun(job);
             }
             this.state.nextCursor = page.nextCursor; this.jobs.schedule();
-        } catch (error) { this.state.error = `Model runs unavailable: ${error.message}`; }
+        } catch (error) { this.state.error = `Data tool runs unavailable: ${error.message}`; }
         finally { this.state.historyLoading = false; this.refreshMapLayers(); this.render(); }
     }
 
@@ -910,7 +910,7 @@ export class ModelsController {
         this.closeVectorFilter();
         const model = this.state.library.find(value => value.id === saved.model.id && value.version === saved.model.version &&
             value.definitionSha256 === saved.model.definitionSha256);
-        if (!model) { this.state.error = "This model version is not available in model setup. Its YAML remains available until metadata expires."; this.render(); return; }
+        if (!model) { this.state.error = "This tool version is not available in setup. Its YAML remains available until metadata expires."; this.render(); return; }
         this.cancelVectorSelections(); this.revision += 1;
         this.temporalAbort?.abort(); this.temporalRevision += 1;
         const draft = createModelDraft(model, this.inputContext(model), this.newId());

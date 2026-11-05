@@ -191,7 +191,7 @@ area does not turn it into an average. Up to five formulas can be calculated
 together for each raster. The tool's formula reference explains the available
 functions.
 
-The **Raster summary** model in **Tools → Models** also calculates a statistic
+The **Raster summary** tool in **Tools → Data tools** also calculates a statistic
 or formula for a raster and area.
 
 ![The top of the Raster summary setup card, with a run name, Aboveground biomass raster and Visible map area selected](docs/images/eolab-model-raster-summary.jpg)
@@ -230,14 +230,14 @@ independent styles.
 *Follow changing weather by choosing another hour or variable from the same
 dataset. Here, blue shading shows rainfall at one available observation time.*
 
-To go beyond one observation, open **Tools → Models**.
+To go beyond one observation, open **Tools → Data tools**.
 
-#### Map for a period
+#### Create a raster from a time series
 
 Summarize observations across your chosen dates into a raster, with a second
 map showing how many observations contributed.
 
-![The top of the Map for a period setup card, with ERA5 hourly weather, 2 metre temperature and Whole month selected](docs/images/eolab-model-period-map.jpg)
+![The top of the time-series raster setup card, with ERA5 hourly weather, 2 metre temperature and Whole month selected](docs/images/eolab-model-period-map.jpg)
 
 *Start with a dataset and variable, then choose the dates and statistic further
 down the card.*
@@ -261,7 +261,7 @@ total** when offered to turn rainfall rates into an accumulated depth.
 
 ### Clip and download data
 
-Open **Tools → Models** and choose **Raster clip** to extract the part of a raster
+Open **Tools → Data tools** and choose **Raster clip** to extract the part of a raster
 you need. Choose a raster and a sampling box or selected polygons, then download
 the result as a GeoTIFF. The clip preserves the original pixel resolution and
 values, ready for further analysis in GIS software. For example, extract biomass
@@ -271,11 +271,11 @@ dataset.
 #### How do I download a clip?
 
 1. Add a raster to **Map layers**, then pan and zoom to the area you need.
-2. Open **Tools → Models** and choose **Raster clip**.
+2. Open **Tools → Data tools** and choose **Raster clip**.
 3. Give the run a name, choose **Raster**, and set **Analysis area** to
    **Visible map area**. Choose **Sampling box** to use the box shown on the map,
    or choose a vector layer directly to use its selected polygons.
-4. Select **Run model** and follow its progress in **Runs**.
+4. Select **Run tool** and follow its progress in **Runs**.
 5. When the run is ready, select **Download** under **Clipped raster** to save
    the GeoTIFF.
 
@@ -291,7 +291,7 @@ expiry shown in the run.*
 
 ### Estimate downstream beneficiaries
 
-Open **Tools → Models** and choose **Downstream ecosystem beneficiaries** to
+Open **Tools → Data tools** and choose **Downstream ecosystem beneficiaries** to
 explore which places lie downstream of a starting area and summarize what is
 there. Choose polygons or a raster mask for **Starting mask**, then a raster for
 **Values to summarize**, such as a population dataset. The model follows water
@@ -315,7 +315,7 @@ downstream question.
 
 ### Assess ecosystem condition
 
-Open **Tools → Models** and choose **Ecosystem Condition** to assess how closely a
+Open **Tools → Data tools** and choose **Ecosystem Condition** to assess how closely a
 landscape resembles conditions expected from selected reference sites. Choose an
 analysis area, reference sites, environmental predictor rasters and observed
 habitat-response rasters. The model learns the relationship between the
@@ -420,14 +420,13 @@ features, then select that polygon layer when choosing your analysis area.
 This is useful for working with one country, watershed or project group without
 preparing another file.
 
-## Run models and use their results
+## Run data tools and use their results
 
-Open **Tools → Models** to clip data, summarize observations or run environmental
-models. Choose a model to select its inputs and analysis area.
+Open **Tools → Data tools** to clip data, summarize observations or run
+environmental models. Choose a tool to select its inputs and analysis area.
 
-Select **Run model** (or **Run analysis** for the temporal tools). Follow progress
-in **Runs** while continuing to use the map. Closing the panel does not cancel
-work; use **Cancel run** to stop it.
+Select **Run tool** and follow progress in **Runs** while continuing to use the
+map. Closing the panel does not cancel work; use **Cancel run** to stop it.
 
 Download completed results or choose **Show on map** where offered. Some raster
 inputs also accept results from earlier runs. **Duplicate with changes** lets

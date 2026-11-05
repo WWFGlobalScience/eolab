@@ -546,7 +546,7 @@ test("model setup supports temporal input types and omits unknown controls while
     await h.controller.showRun(run.jobId);
     await h.controller.duplicateRun();
     assert.equal(h.controller.state.error,
-        "This model version is not available in model setup. Its YAML remains available until metadata expires.");
+        "This tool version is not available in setup. Its YAML remains available until metadata expires.");
     assert.equal(h.controller.state.page, "run");
     assert.equal(h.submitted.length, 0);
     h.controller.chooseModel(model);
@@ -990,7 +990,7 @@ test("duplicate uses the saved recipe and inputs without submitting or changing 
     draft.parameters.summary = "mean(a)";
     assert.equal(h.controller.state.invocation.parameters.summary, "sum(a)"); assert.equal(h.submitted.length, 0);
     h.controller.state.library = []; h.controller.state.page = "run";
-    await h.controller.duplicateRun(); assert.match(h.controller.state.error, /not available in model setup/);
+    await h.controller.duplicateRun(); assert.match(h.controller.state.error, /not available in setup/);
 });
 
 test("a late vector preparation cannot overwrite a newer area choice", async () => {
@@ -1482,7 +1482,7 @@ test("clip setup defaults to the visible map when the current area is unsupporte
     const draft = createModelDraft(clipModel, context, "clip");
     assert.equal(draft.inputs.area.areaMode, "viewport"); assert.deepEqual(draft.inputs.area.area.selectedBounds, context.viewportBounds);
     assert.deepEqual(captureModelSubmission(draft, "request").parameters, {});
-    draft.inputs.area.area = {kind: "wholeRaster"}; assert.throws(() => captureModelSubmission(draft, "request"), /supported by this model/);
+    draft.inputs.area.area = {kind: "wholeRaster"}; assert.throws(() => captureModelSubmission(draft, "request"), /supported by this tool/);
     const unavailable = createModelDraft(clipModel, {rasters: [raster]}, "no-view");
     assert.equal(unavailable.inputs.area.area, null); assert.match(unavailable.inputs.area.selectionError, /extent is unavailable/);
 });
