@@ -5,11 +5,15 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from dataclasses import dataclass
 import errno
+import os
+import re
+import stat
 from importlib.resources import as_file, files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from affine import Affine
+from pydantic import BaseModel, ConfigDict, Field
 import ee
 from google.auth.exceptions import GoogleAuthError
 from googleapiclient.errors import HttpError
@@ -78,6 +82,42 @@ class HabitatCacheCoverage:
     required_tiles: int
     cached_tiles: int
     missing_tiles: int
+
+
+class HabitatCacheConfiguration(BaseModel):
+    """Describe the scientific identity and source year of one cache namespace.
+
+    This small persisted record labels completed tiles after their source
+    configuration is no longer installed. It does not authorize reads or track
+    source mutation, jobs, areas or individual tiles. Readers admit at most
+    4 KiB of JSON metadata for this fixed record format.
+
+    Attributes:
+        configuration_sha256: Existing scientific configuration digest naming the namespace.
+        year: Source assessment year selected by acquisition.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    configuration_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    year: int = Field(strict=True)
+
+
+@dataclass(frozen=True)
+class HabitatCacheInventoryEntry:
+    """Count completed tiles and their stored raster bytes in one cache namespace.
+
+    Attributes:
+        configuration_sha256: Scientific identity from the namespace directory.
+        configuration: Persisted or installed descriptive metadata, otherwise None.
+        cached_tiles: Completed tile files observed during this snapshot.
+        stored_bytes: Sum of those tile.tif file sizes, excluding metadata and staging.
+    """
+
+    configuration_sha256: str
+    configuration: HabitatCacheConfiguration | None
+    cached_tiles: int
+    stored_bytes: int
 
 
 @dataclass(frozen=True)
@@ -262,6 +302,148 @@ def inspect_habitat_cache(
     )
 
 
+def _describe_cache_configuration(
+    configuration: RasterStackConfiguration,
+) -> HabitatCacheConfiguration:
+    """Return display metadata from an admitted scientific stack.
+
+    Args:
+        configuration: Installed scientific settings already admitted by the loader.
+
+    Returns:
+        Existing namespace identity and source assessment year.
+    """
+    return HabitatCacheConfiguration.model_construct(
+        configuration_sha256=configuration.raster_configuration_sha256,
+        year=configuration.year,
+    )
+
+
+def _publish_cache_configuration(
+    configuration: RasterStackConfiguration,
+    stack_directory: Path,
+    working_directory: Path,
+) -> None:
+    """Publish namespace metadata atomically before a missing tile is published.
+
+    Concurrent acquisition preserves the first immutable metadata file. Staging
+    belongs to the attempt directory, so normal native-attempt cleanup also
+    removes it if the worker terminates. Existing fully cached runs do not call
+    this function and require no historical backfill.
+
+    Args:
+        configuration: Scientific settings supplying the namespace identity.
+        stack_directory: Existing private cache namespace on the same filesystem.
+        working_directory: Existing attempt directory owning temporary files.
+
+    Raises:
+        OSError: If metadata staging or publication fails for an actual I/O reason.
+    """
+    destination = stack_directory / "configuration.json"
+    if destination.exists():
+        return
+    with TemporaryDirectory(
+        prefix="habitat-metadata-", dir=working_directory
+    ) as temporary:
+        staged = Path(temporary) / "configuration.json"
+        staged.write_text(
+            _describe_cache_configuration(configuration).model_dump_json(),
+            encoding="utf-8",
+        )
+        try:
+            os.link(staged, destination)
+        except FileExistsError:
+            pass
+
+
+def inspect_habitat_cache_inventory(
+    cache_directory: Path,
+) -> tuple[HabitatCacheInventoryEntry, ...]:
+    """Count all completed Habitat cache tiles independently of job and AOI history.
+
+    Enumerates only scientific digest namespaces and published grid-coordinate
+    entries. Raster files are statted for byte counts, never opened or hashed.
+    Missing namespace metadata is matched against installed scientific identities;
+    unmatched historical configurations remain explicitly unknown. The snapshot
+    may include a concurrent publication or observe it on the next refresh.
+
+    Args:
+        cache_directory: Server-controlled private cache root, which may not exist.
+
+    Returns:
+        Separate configuration rows with completed tile counts and tile-file bytes.
+        Empty namespaces, staging and report files are excluded.
+
+    Raises:
+        OSError: If cache enumeration, metadata or tile sizes cannot be read.
+        ValueError: If persisted metadata is malformed or a cache path is a symlink.
+    """
+    if not cache_directory.exists():
+        return ()
+    installed: dict[str, HabitatCacheConfiguration] | None = None
+    entries = []
+    for namespace in sorted(cache_directory.iterdir()):
+        if re.fullmatch(r"[a-f0-9]{64}", namespace.name) is None:
+            continue
+        if namespace.is_symlink():
+            raise ValueError("Cache namespaces must not be symbolic links.")
+        if not namespace.is_dir():
+            continue
+        cached_tiles = stored_bytes = 0
+        for tile in namespace.iterdir():
+            if re.fullmatch(r"-?\d+_-?\d+", tile.name) is None:
+                continue
+            if tile.is_symlink():
+                raise ValueError("Cache tiles must not be symbolic links.")
+            if not tile.is_dir():
+                continue
+            path = tile / "tile.tif"
+            if path.is_symlink():
+                raise ValueError("Cached raster files must not be symbolic links.")
+            try:
+                status = path.stat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(status.st_mode):
+                continue
+            cached_tiles += 1
+            stored_bytes += status.st_size
+        if not cached_tiles:
+            continue
+        metadata = namespace / "configuration.json"
+        if metadata.is_symlink():
+            raise ValueError(
+                "Cache configuration metadata must not be a symbolic link."
+            )
+        try:
+            with metadata.open("rb") as stream:
+                payload = stream.read(4097)
+        except FileNotFoundError:
+            if installed is None:
+                default = load_habitat_stack()
+                installed = {}
+                for year in range(default.minimum_year, default.maximum_year + 1):
+                    description = _describe_cache_configuration(
+                        load_habitat_stack(year)
+                    )
+                    installed[description.configuration_sha256] = description
+            configuration = installed.get(namespace.name)
+        else:
+            if len(payload) > 4096:
+                raise ValueError("Cache configuration metadata is too large.")
+            configuration = HabitatCacheConfiguration.model_validate_json(payload)
+            if configuration.configuration_sha256 != namespace.name:
+                raise ValueError(
+                    "Cache configuration metadata names another namespace."
+                )
+        entries.append(
+            HabitatCacheInventoryEntry(
+                namespace.name, configuration, cached_tiles, stored_bytes
+            )
+        )
+    return tuple(entries)
+
+
 def _name_downloaded_bands(
     path: Path, grid: RasterGrid, names: tuple[str, ...]
 ) -> None:
@@ -367,7 +549,10 @@ def get_habitat_tiles(
     grid, datasets, bands and stack version; globally anchored tile coordinates
     allow overlapping AOIs to reuse the same pixels. Completed entries are
     immutable and are not reopened or rehashed here. An entirely cached request
-    does not connect to Earth Engine.
+    does not connect to Earth Engine. Namespace identity and source year are
+    recorded before publishing a missing tile, so its later inventory does not
+    depend on installed historical configurations. Warm historical namespaces
+    require no metadata migration.
 
     Args:
         area: Valid, nonempty AOI already projected to configuration.grid.crs.
@@ -413,6 +598,9 @@ def get_habitat_tiles(
         check_cancelled()
         entry = _get_tile_cache_directory(grid, configuration.grid, stack_directory)
         if not entry.exists():
+            _publish_cache_configuration(
+                configuration, stack_directory, working_directory
+            )
             if image is None:
                 image = _build_habitat_image(configuration, settings)
             try:

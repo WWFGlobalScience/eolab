@@ -31,11 +31,12 @@ function fixture() {
         return root;
     };
     const view = new HabitatAdminView(document);
-    view.bind(Object.fromEntries(["search", "searchMore", "addArea", "removeArea", "setYears", "check", "prepare", "recover", "refreshHistory", "loadMore", "cancel", "retry"]
+    view.bind(Object.fromEntries(["search", "searchMore", "addArea", "removeArea", "setYears", "check", "prepare", "recover", "refreshHistory", "loadMore", "cancel", "retry", "refreshInventory"]
         .map(name => [name, (...args) => actions.push([name, ...args])])));
     const state = {options: {minimumYear: 2017, maximumYear: 2019}, sources: [{key: "areas", label: "Country polygons", selection,
         fields: [{name: "code", type: "int"}]}], searching: false, searchError: "", nextSearch: null,
         areas: [], years: [2018], coverageRows: [], checking: false, submissions: [], jobs: [], nextCursor: null,
+        inventory: null, inventoryLoading: false, inventoryError: "", inventoryCheckedAt: null,
         historyLoading: false, historyError: "", error: "", submitting: false, canPrepare: false, completedJobs: 0, requestedJobs: 0};
     view.render(state);
     return {view, state, actions, document};
@@ -259,4 +260,40 @@ test("refresh keeps source/name drafts and teardown detaches actions", () => {
     assert.deepEqual(h.actions.at(-1), ["refreshHistory"]);
     const before = h.actions.length; h.view.destroy(); click(h.view.refresh); click(h.view.searchButton);
     assert.equal(h.actions.length, before);
+});
+
+
+test("cache-wide inventory has an explicit refresh and preserves separate configurations and error snapshots", () => {
+    const h = fixture();
+    assert.equal(h.view.inventoryScroll.hidden, true);
+    assert.match(h.view.inventoryStatus.textContent, /Refresh to read/);
+    click(h.view.refreshInventory); assert.deepEqual(h.actions.at(-1), ["refreshInventory"]);
+    h.state.inventory = [{configurationSha256: "a".repeat(64), year: 2018, cachedTiles: 12, storedBytes: 12345678},
+        {configurationSha256: "b".repeat(64), year: null, cachedTiles: 1, storedBytes: 1000},
+        {configurationSha256: "c".repeat(64), year: 2018, cachedTiles: 3, storedBytes: 2000}];
+    h.state.inventoryCheckedAt = "2026-11-04T12:00:00Z"; h.view.render(h.state);
+    assert.equal(h.view.inventoryScroll.hidden, false);
+    assert.equal(h.view.inventoryRows.children.length, 3);
+    assert.equal(h.view.inventoryRows.children[0].children[0].children[0].textContent, "a".repeat(64));
+    assert.equal(h.view.inventoryRows.children[2].children[1].textContent, "2018");
+    assert.equal(h.view.inventoryRows.children[2].children[2].textContent, "3");
+    assert.match(h.view.inventoryRows.children[0].children[1].textContent, /2018/);
+    assert.match(h.view.inventoryRows.children[1].children[0].children[0].textContent, /Unknown configuration/);
+    assert.equal(h.view.inventoryRows.children[1].children[1].textContent, "Unknown");
+    assert.equal(h.view.inventoryRows.children[0].children[2].textContent, (12).toLocaleString());
+    assert.equal(h.view.inventoryRows.children[0].children[3].textContent, (12345678).toLocaleString());
+    const originalRow = h.view.inventoryRows.children[0];
+    h.view.refreshInventory.focus(); h.state.inventoryLoading = true; h.view.render(h.state);
+    assert.equal(h.view.inventoryRows.children[0], originalRow);
+    assert.equal(h.view.refreshInventory.disabled, true);
+    assert.equal(h.view.inventoryScroll.getAttribute("aria-busy"), "true");
+    h.state.inventoryLoading = false; h.state.inventoryError = "The cache could not be read."; h.view.render(h.state);
+    assert.equal(h.view.inventoryError.hidden, false);
+    assert.match(h.view.inventoryStatus.textContent, /previous snapshot/);
+    assert.equal(h.view.inventoryRows.children[0], originalRow);
+    h.state.inventory = []; h.state.inventoryError = ""; h.view.render(h.state);
+    assert.equal(h.view.inventoryScroll.hidden, true);
+    assert.match(h.view.inventoryStatus.textContent, /No completed cached input tiles/);
+    assert.equal(h.state.coverageRows.length, 0); assert.equal(h.state.jobs.length, 0);
+    h.view.destroy();
 });

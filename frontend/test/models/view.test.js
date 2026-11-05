@@ -20,6 +20,41 @@ function fixture() {
     view.render(state); return {doc, view, state, actions};
 }
 
+test("setup and saved runs share a collapsed recipe disclosure with their existing YAML actions", () => {
+    const h = fixture();
+    for (const [index, recipe] of [model, clipModel].entries()) {
+        Object.assign(h.state, {page: "setup", draft: createModelDraft(recipe, {rasters: [raster], area}, `recipe-${index}`)});
+        h.view.render(h.state);
+        const setup = h.view.setup.details;
+        assert.equal(setup.root.children[0].textContent, "Click to inspect the EOlab model recipe");
+        assert.equal(Boolean(setup.root.open), false);
+        assert.equal(setup.preview.textContent, "View Model YAML");
+        assert.equal(setup.model.textContent, "Download Model YAML");
+        assert.equal(setup.model.href, `/api/processing/models/${recipe.id}/versions/${recipe.version}/yaml`);
+        assert.equal(setup.run.hidden, true);
+        assert.equal(h.view.setup.fields.querySelectorAll("p").some(node => node.textContent.includes("uses the choices shown here")), false);
+        setup.preview.dispatchEvent(new Event("click")); assert.equal(h.actions.at(-1)[0], "Yaml");
+        setup.root.open = true; h.state.draft.label = "Unfinished setup"; h.view.render(h.state);
+        assert.equal(h.view.setup.details, setup); assert.equal(setup.root.open, true);
+
+        const saved = job({jobId: String(index + 1).repeat(32), model: recipe, status: "running"});
+        Object.assign(h.state, {page: "run", selectedRun: saved.jobId, runs: [saved],
+            invocation: {...invocation, model: {...recipe, definition: recipe}, parameters: recipe === model ? invocation.parameters : {}}});
+        h.view.render(h.state);
+        const run = h.view.run.details;
+        assert.equal(run.root.children[0].textContent, setup.root.children[0].textContent);
+        assert.equal(Boolean(run.root.open), false);
+        assert.equal(run.model.hidden, false); assert.equal(run.run.hidden, false);
+        assert.equal(run.model.href, `/api/processing/jobs/${saved.jobId}/model-yaml`);
+        assert.equal(run.run.href, `/api/processing/jobs/${saved.jobId}/run-yaml`);
+        assert.equal(run.run.textContent, "Download Run YAML");
+        run.preview.dispatchEvent(new Event("click")); assert.equal(h.actions.at(-1)[0], "Yaml");
+        run.root.open = true; saved.progress.completed = 2; h.view.render(h.state);
+        assert.equal(h.view.run.details, run); assert.equal(run.root.open, true);
+        assert.equal(h.view.run.cancel.hidden, false);
+    }
+});
+
 test("separate Undo offers retain full names, action identity and the other notice's focus", () => {
     const h = fixture(), first = {jobId: "1".repeat(32), deletionId: "d".repeat(32),
         label: "Downstream beneficiaries for the full watershed and coastal communities · 2026_10_08_00_00_00"};

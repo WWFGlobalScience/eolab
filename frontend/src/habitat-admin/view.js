@@ -1,4 +1,4 @@
-/** Present selected Habitat input coverage and administrator preparation history. */
+/** Present current Habitat cache storage, selected-area coverage and preparation history. */
 import { VectorFilterControls } from "../vector/filter-controls.js";
 import { EMPTY_VECTOR_FILTER, vectorFilterSummary } from "../vector/filter.js";
 import { ACTIVE_PREPARATION_STATES } from "./api.js";
@@ -34,6 +34,23 @@ export class HabitatAdminView {
         this.filter = structuredClone(EMPTY_VECTOR_FILTER); this.sourceKey = ""; this.sources = [];
         this.error = this.element("p", "", "habitat-error"); this.error.setAttribute("role", "alert");
         this.root.append(this.error);
+        const inventory = this.section("Cache inventory");
+        inventory.append(this.element("p", "Completed input tiles across all configurations and years, including ordinary model runs. Some source datasets may still contain missing values (NoData); cached tiles show availability, not data quality."));
+        this.refreshInventory = this.button("Refresh cache inventory", () => this.handlers.refreshInventory());
+        this.inventoryStatus = this.element("p"); this.inventoryStatus.setAttribute("role", "status");
+        this.inventoryError = this.element("p", "", "habitat-error"); this.inventoryError.setAttribute("role", "alert");
+        this.inventoryScroll = this.element("div", "", "table-scroll habitat-inventory-scroll");
+        this.inventoryScroll.tabIndex = 0; this.inventoryScroll.setAttribute("role", "region");
+        this.inventoryScroll.setAttribute("aria-label", "Completed cached input tiles");
+        this.inventoryTable = this.element("table");
+        this.inventoryTable.append(this.element("caption", "Completed cached input tiles"));
+        const inventoryHead = this.element("thead"), inventoryHeaders = this.element("tr");
+        for (const title of ["Scientific configuration", "Assessment year", "Completed tiles", "Stored tile bytes"]) {
+            const heading = this.element("th", title); heading.setAttribute("scope", "col"); inventoryHeaders.append(heading);
+        }
+        inventoryHead.append(inventoryHeaders); this.inventoryRows = this.element("tbody");
+        this.inventoryTable.append(inventoryHead, this.inventoryRows); this.inventoryScroll.append(this.inventoryTable);
+        inventory.append(this.refreshInventory, this.inventoryStatus, this.inventoryError, this.inventoryScroll);
         const selection = this.section("Choose areas and assessment years");
         selection.append(this.element("p", "Choose Catalog polygon layers and optional attribute conditions. Choosing inputs never starts a download."));
         this.searchForm = this.element("form", "", "habitat-inline");
@@ -221,11 +238,39 @@ export class HabitatAdminView {
         card.root.append(card.times, actions); return card;
     }
 
+    /** Present the latest explicitly requested inventory without combining configurations.
+     * @param {{inventory:Object[]|null,inventoryLoading:boolean,inventoryError:string,inventoryCheckedAt:string|null}} state Snapshot and independent read feedback.
+     * @return {void}
+     */
+    renderInventory(state) {
+        this.refreshInventory.disabled = state.inventoryLoading;
+        this.refreshInventory.textContent = state.inventoryLoading ? "Reading cache inventory…" : "Refresh cache inventory";
+        this.inventoryScroll.setAttribute("aria-busy", String(state.inventoryLoading));
+        this.inventoryError.textContent = state.inventoryError; this.inventoryError.hidden = !state.inventoryError;
+        this.inventoryStatus.textContent = state.inventoryLoading ? "Reading completed cached input tiles…" :
+            state.inventory === null ? "Refresh to read the completed tiles currently stored in the cache." :
+                `${state.inventory.length ? "Snapshot refreshed" : "No completed cached input tiles. Refreshed"} ${timeLabel(state.inventoryCheckedAt)}.${state.inventoryError ? " The previous snapshot is shown." : ""}`;
+        this.inventoryScroll.hidden = state.inventory === null || !state.inventory.length;
+        const signature = JSON.stringify(state.inventory);
+        if (signature !== this.inventorySignature) {
+            this.inventorySignature = signature;
+            this.inventoryRows.replaceChildren(...(state.inventory ?? []).map(entry => {
+                const row = this.element("tr"), configuration = this.element("td", "", "habitat-inventory-configuration");
+                configuration.append(this.element("span", entry.year === null ? "Unknown configuration" : entry.configurationSha256));
+                if (entry.year === null) configuration.append(this.element("small", entry.configurationSha256));
+                row.append(configuration, this.element("td", entry.year === null ? "Unknown" : String(entry.year)),
+                    this.element("td", entry.cachedTiles.toLocaleString()), this.element("td", entry.storedBytes.toLocaleString()));
+                return row;
+            }));
+        }
+    }
+
     /** Refresh state without replacing active form edits or focused history controls.
      * @param {Object} state Controller snapshot with sources, selected areas, checks and jobs.
      * @return {void}
      */
     render(state) {
+        this.renderInventory(state);
         this.busy = Boolean(state.submitting); this.sources = state.sources;
         this.error.textContent = state.error; this.error.hidden = !state.error;
         const choices = [["", "Choose a polygon layer…"], ...state.sources.map(source => [source.key, source.label])];

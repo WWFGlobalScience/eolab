@@ -13,8 +13,14 @@ from starlette.responses import JSONResponse
 
 from eolab_app.catalog_selection import CatalogSelection, CatalogSelectionReader
 from eolab_app.catalog_selection import SelectionUnavailableError
-from eolab_app.processing.habitat_cache import get_habitat_cache_coverage
-from eolab_app.processing.habitat_earth_engine import HabitatCacheCoverage
+from eolab_app.processing.habitat_cache import (
+    get_habitat_cache_coverage,
+    get_habitat_cache_inventory,
+)
+from eolab_app.processing.habitat_earth_engine import (
+    HabitatCacheCoverage,
+    HabitatCacheInventoryEntry,
+)
 from eolab_app.processing.models import ProcessingError
 from eolab_app.routes.admin_auth import create_administrator_dependency
 from eolab_app.routes.http_disconnect import (
@@ -52,6 +58,32 @@ class HabitatCacheCoverageResponse(BaseModel):
     requiredTiles: int
     cachedTiles: int
     missingTiles: int
+
+
+class HabitatCacheInventoryRow(BaseModel):
+    """Describe one private cache configuration without exposing filesystem paths.
+
+    Attributes:
+        configurationSha256: Scientific identity separating this namespace from others.
+        year: Assessment year, or None for an unrecognized historical configuration.
+        cachedTiles: Completed published tile files observed in the snapshot.
+        storedBytes: Bytes in those tile.tif files, excluding metadata and staging.
+    """
+
+    configurationSha256: str
+    year: int | None
+    cachedTiles: int
+    storedBytes: int
+
+
+class HabitatCacheInventoryResponse(BaseModel):
+    """Return current cache-wide storage counts, independent of preparation history.
+
+    Attributes:
+        configurations: Separate rows for each namespace containing completed tiles.
+    """
+
+    configurations: list[HabitatCacheInventoryRow]
 
 
 class HabitatAdminRoute(APIRoute):
@@ -92,7 +124,7 @@ class HabitatAdminRoute(APIRoute):
 def create_habitat_admin_router(
     selections: CatalogSelectionReader, cache_directory: Path, password: str
 ) -> APIRouter:
-    """Create a protected cache-count API without Earth Engine credentials.
+    """Create protected cache inspection APIs without Earth Engine credentials.
 
     Args:
         selections: Existing Catalog reader authorizing original vector selections.
@@ -162,6 +194,47 @@ def create_habitat_admin_router(
             requiredTiles=coverage.required_tiles,
             cachedTiles=coverage.cached_tiles,
             missingTiles=coverage.missing_tiles,
+        )
+
+    @router.get("/api/admin/habitat/cache-inventory")
+    async def inspect_inventory(request: Request) -> HabitatCacheInventoryResponse:
+        """Read completed cache tiles and bytes without inspecting rasters or jobs.
+
+        Args:
+            request: Authenticated connection whose disconnection stops inspection.
+
+        Returns:
+            Known or unknown scientific configurations with tile counts and bytes.
+
+        Raises:
+            HTTPException: If disconnected or the private cache cannot be read.
+        """
+
+        async def read_inventory() -> tuple[HabitatCacheInventoryEntry, ...]:
+            """Serialize enumeration with other cache inspections through native cleanup.
+
+            Returns:
+                Completed inventory rows after the existing reader slot is acquired.
+            """
+            async with inspection_lock:
+                return await get_habitat_cache_inventory(cache_directory)
+
+        try:
+            entries = await run_until_http_disconnect(request, read_inventory())
+        except HttpClientDisconnectedError as error:
+            raise HTTPException(499, "Cache inventory cancelled.") from error
+        except ProcessingError as error:
+            raise HTTPException(error.status, error.detail) from error
+        return HabitatCacheInventoryResponse(
+            configurations=[
+                HabitatCacheInventoryRow(
+                    configurationSha256=entry.configuration_sha256,
+                    year=entry.configuration.year if entry.configuration else None,
+                    cachedTiles=entry.cached_tiles,
+                    storedBytes=entry.stored_bytes,
+                )
+                for entry in entries
+            ]
         )
 
     return router

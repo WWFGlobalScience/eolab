@@ -311,6 +311,28 @@ export class HabitatAdminApi {
         });
     }
 
+    /** Read the current cache-wide inventory without starting preparation work.
+     * @param {AbortSignal} [signal] Cancel this explicit snapshot request.
+     * @return {Promise<Array<{configurationSha256:string,year:number|null,cachedTiles:number,storedBytes:number}>>} Separate namespace counts and display metadata.
+     * @throws {HabitatAdminRequestError} If inspection fails or its response is malformed.
+     * @throws {DOMException} When the request is cancelled.
+     */
+    inventory(signal) {
+        return this.#request("/api/admin/habitat/cache-inventory", {signal}, value => {
+            if (!Array.isArray(value?.configurations)) throw new TypeError("Invalid cache inventory");
+            const identities = new Set();
+            return value.configurations.map(row => {
+                if (!row || !DIGEST.test(row.configurationSha256) || identities.has(row.configurationSha256) ||
+                    !Number.isSafeInteger(row.cachedTiles) || row.cachedTiles < 0 ||
+                    !Number.isSafeInteger(row.storedBytes) || row.storedBytes < 0 ||
+                    !(row.year === null || Number.isInteger(row.year))) throw new TypeError("Invalid cache inventory row");
+                identities.add(row.configurationSha256);
+                return {configurationSha256: row.configurationSha256, year: row.year,
+                    cachedTiles: row.cachedTiles, storedBytes: row.storedBytes};
+            });
+        });
+    }
+
     /**
      * Submit the exact captured command, including its stable idempotency identifier.
      * @param {{requestId:string,name:string,selection:Object,year:number}} request Captured preparation command.

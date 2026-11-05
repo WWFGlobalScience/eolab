@@ -21,6 +21,8 @@ from eolab_app.execution.bounded_process import (
 from eolab_app.processing.habitat_calculation import read_habitat_polygons
 from eolab_app.processing.habitat_earth_engine import (
     HabitatCacheCoverage,
+    HabitatCacheInventoryEntry,
+    inspect_habitat_cache_inventory,
     inspect_habitat_cache,
     load_habitat_stack,
 )
@@ -122,3 +124,71 @@ async def get_habitat_cache_coverage(
     if status != "ok":
         raise ProcessingError(*result)
     return cast(HabitatCacheCoverage, result)
+
+
+def habitat_cache_inventory_process(
+    writer: ProcessResultWriter, cache_directory: Path
+) -> None:
+    """Read the current cache inventory in a supervised child without source access.
+
+    Args:
+        writer: Parent-owned result pipe receiving rows or a path-free failure.
+        cache_directory: Server-controlled persistent Habitat cache root.
+    """
+    try:
+        writer.put(("ok", inspect_habitat_cache_inventory(cache_directory)))
+    except (OSError, ValueError):
+        writer.put(
+            (
+                "error",
+                (
+                    "habitat_cache_unavailable",
+                    "The Ecosystem Condition cache inventory could not be read. Try again later.",
+                    409,
+                ),
+            )
+        )
+    except Exception:
+        writer.put(
+            (
+                "error",
+                (
+                    "habitat_cache_inventory_failed",
+                    "The Ecosystem Condition cache inventory could not be read. Try again later.",
+                    500,
+                ),
+            )
+        )
+
+
+async def get_habitat_cache_inventory(
+    cache_directory: Path,
+) -> tuple[HabitatCacheInventoryEntry, ...]:
+    """Return cache-wide tile counts after supervised filesystem enumeration.
+
+    No Catalog source, geometry, credentials or preparation history is needed.
+    Cancellation stops and joins the native reader before returning.
+
+    Args:
+        cache_directory: Server-controlled persistent Habitat cache root.
+
+    Returns:
+        Separate configuration rows with completed tiles and stored tile bytes.
+
+    Raises:
+        ProcessingError: If metadata, filesystem reads or native execution fail.
+        asyncio.CancelledError: After the native child stops on cancellation.
+    """
+    try:
+        status, result = await run_bounded_process(
+            habitat_cache_inventory_process, (cache_directory,), None
+        )
+    except ProcessDeadlineError as error:
+        raise ProcessingError(
+            "habitat_cache_inventory_failed",
+            "The Ecosystem Condition cache inventory could not be read. Try again later.",
+            500,
+        ) from error
+    if status != "ok":
+        raise ProcessingError(*result)
+    return cast(tuple[HabitatCacheInventoryEntry, ...], result)

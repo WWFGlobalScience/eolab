@@ -105,13 +105,19 @@ def _request_body(source: ResolvedCatalogSelection, year: int = 2018) -> dict[st
 
 
 def _start_admin_request(
-    application: ASGIApp, payload: dict[str, Any]
+    application: ASGIApp,
+    payload: dict[str, Any],
+    *,
+    path: str = API,
+    method: str = "POST",
 ) -> tuple[asyncio.Task[None], asyncio.Queue[Message], list[Message], asyncio.Event]:
     """Start an authenticated ASGI request whose connection can be disconnected.
 
     Args:
         application: Application exposing the production cache-inspection route.
         payload: Public catalog selection and assessment year.
+        path: Existing protected cache endpoint under test.
+        method: HTTP method declared by that endpoint.
 
     Returns:
         Running request, incoming messages, captured responses and an event set
@@ -154,9 +160,9 @@ def _start_admin_request(
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "POST",
+        "method": method,
         "scheme": "http",
-        "path": API,
+        "path": path,
         "query_string": b"",
         "headers": [
             (b"content-type", b"application/json"),
@@ -439,10 +445,12 @@ def test_habitat_cache_admin_route_is_composed_with_private_settings(
     assert response.headers["cache-control"] == "private, no-store"
 
 
+@pytest.mark.parametrize("inventory", [False, True])
 def test_disconnect_keeps_native_cleanup_serial_and_skips_cancelled_waiters(
     source: ResolvedCatalogSelection,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    inventory: bool,
 ) -> None:
     """Keep inspection serialized through cleanup and discard disconnected waiters.
 
@@ -450,6 +458,7 @@ def test_disconnect_keeps_native_cleanup_serial_and_skips_cancelled_waiters(
         source: Real catalog source retained for authorization before native work.
         tmp_path: Isolated cache parent.
         monkeypatch: Gate native execution while preserving HTTP and adapter wiring.
+        inventory: Finish with inventory instead of another selected-area coverage read.
     """
 
     async def exercise() -> None:
@@ -458,27 +467,27 @@ def test_disconnect_keeps_native_cleanup_serial_and_skips_cancelled_waiters(
         cleanup_started = asyncio.Event()
         release_cleanup = asyncio.Event()
         cleanup_finished = asyncio.Event()
-        native_years: list[int] = []
+        native_years: list[int | str] = []
 
         async def run_native(
             target: Callable[..., None],
             arguments: tuple[Any, ...],
             timeout_seconds: float | None,
-        ) -> tuple[str, HabitatCacheCoverage]:
+        ) -> tuple[str, HabitatCacheCoverage | tuple[()]]:
             """Hold the first native call until cancellation cleanup is released.
 
             Args:
                 target: Production inspection target passed to the execution boundary.
-                arguments: Authorized source, assessment year and private cache root.
+                arguments: Authorized source/year/cache for coverage, or the cache root for inventory.
                 timeout_seconds: Production deadline policy, passed through unchanged.
 
             Returns:
-                Coverage for the final request after the first native call stops.
+                Coverage or inventory rows after the first native call stops.
 
             Raises:
                 asyncio.CancelledError: After the first request completes cleanup.
             """
-            year = arguments[1]
+            year = "inventory" if len(arguments) == 1 else arguments[1]
             native_years.append(year)
             if year == 2018:
                 entered.set()
@@ -488,9 +497,11 @@ def test_disconnect_keeps_native_cleanup_serial_and_skips_cancelled_waiters(
                     cleanup_started.set()
                     await release_cleanup.wait()
                     cleanup_finished.set()
-            assert year == 2019
+            assert year == ("inventory" if inventory else 2019)
             assert cleanup_finished.is_set()
-            return "ok", HabitatCacheCoverage("a" * 64, year, 2, 0, 2)
+            return "ok", (
+                () if inventory else HabitatCacheCoverage("a" * 64, 2019, 2, 0, 2)
+            )
 
         monkeypatch.setattr(
             "eolab_app.processing.habitat_cache.run_bounded_process", run_native
@@ -509,7 +520,12 @@ def test_disconnect_keeps_native_cleanup_serial_and_skips_cancelled_waiters(
 
             await active[1].put({"type": "http.disconnect"})
             await asyncio.wait_for(cleanup_started.wait(), 2)
-            final = _start_admin_request(application, _request_body(source, 2019))
+            final = _start_admin_request(
+                application,
+                _request_body(source, 2019),
+                path="/api/admin/habitat/cache-inventory" if inventory else API,
+                method="GET" if inventory else "POST",
+            )
             requests.append(final)
             await asyncio.wait_for(final[3].wait(), 2)
             assert native_years == [2018]
@@ -518,7 +534,7 @@ def test_disconnect_keeps_native_cleanup_serial_and_skips_cancelled_waiters(
 
             release_cleanup.set()
             await asyncio.wait_for(asyncio.gather(active[0], final[0]), 2)
-            assert native_years == [2018, 2019]
+            assert native_years == [2018, "inventory" if inventory else 2019]
             for request, expected_status in (
                 (active, 499),
                 (queued, 499),
@@ -591,3 +607,103 @@ def test_child_without_result_returns_safe_private_failure(
     assert response.headers["cache-control"] == "private, no-store"
     assert str(tmp_path) not in response.text
     assert "Child exited" not in response.text
+
+
+def test_cache_inventory_reports_current_storage_independent_of_catalog_or_jobs(
+    source: ResolvedCatalogSelection,
+    tmp_path: Path,
+) -> None:
+    """Expose current completed namespaces through the protected path-free GET.
+
+    Args:
+        source: Existing Catalog fixture used only to compose the administrator router.
+        tmp_path: Cache and unrelated expired preparation metadata fixtures.
+    """
+    cache = tmp_path / "cache"
+    client = _create_client(source, cache)
+    client.auth = ("admin", PASSWORD)
+    endpoint = "/api/admin/habitat/cache-inventory"
+    response = client.get(endpoint)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"configurations": []}
+    assert not cache.exists()
+    configuration = load_habitat_stack(2018)
+    namespace = cache / configuration.raster_configuration_sha256
+    tile = namespace / "0_0"
+    tile.mkdir(parents=True)
+    (tile / "tile.tif").write_bytes(b"published bytes")
+    unknown = cache / ("b" * 64) / "1_1"
+    unknown.mkdir(parents=True)
+    (unknown / "tile.tif").write_bytes(b"unknown bytes")
+    response = client.get(endpoint)
+    assert response.status_code == 200, response.text
+    rows = {
+        row["configurationSha256"]: row for row in response.json()["configurations"]
+    }
+    assert rows[configuration.raster_configuration_sha256] == {
+        "configurationSha256": configuration.raster_configuration_sha256,
+        "year": 2018,
+        "cachedTiles": 1,
+        "storedBytes": len(b"published bytes"),
+    }
+    assert rows["b" * 64] == {
+        "configurationSha256": "b" * 64,
+        "year": None,
+        "cachedTiles": 1,
+        "storedBytes": len(b"unknown bytes"),
+    }
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert str(tmp_path) not in response.text
+    (namespace / "configuration.json").write_text(
+        '{"private_path":"' + str(tmp_path).replace("\\", "/") + '"}'
+    )
+    failure = client.get(endpoint)
+    assert failure.status_code == 409, failure.text
+    assert str(tmp_path) not in failure.text
+    assert failure.headers["cache-control"] == "private, no-store"
+    valid_metadata = {
+        "configuration_sha256": configuration.raster_configuration_sha256,
+        "year": 2018,
+    }
+    for invalid in (
+        json.dumps({**valid_metadata, "configuration_sha256": "b" * 64}),
+        " " * 4097,
+    ):
+        (namespace / "configuration.json").write_text(invalid, encoding="utf-8")
+        failure = client.get(endpoint)
+        assert failure.status_code == 409, failure.text
+        assert str(tmp_path) not in failure.text
+        assert failure.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize(
+    "password,credentials,expected",
+    [
+        ("", ("admin", PASSWORD), 404),
+        (PASSWORD, None, 401),
+        (PASSWORD, ("admin", "wrong"), 401),
+        (PASSWORD, ("contributor", PASSWORD), 401),
+    ],
+)
+def test_cache_inventory_requires_administrator_authentication(
+    source: ResolvedCatalogSelection,
+    tmp_path: Path,
+    password: str,
+    credentials: tuple[str, str] | None,
+    expected: int,
+) -> None:
+    """Keep cache-wide storage information private, including disabled/error responses.
+
+    Args:
+        source: Catalog fixture composing the existing administrator router.
+        tmp_path: Private cache location.
+        password: Configured administrator password, or empty to disable the route.
+        credentials: Caller-provided credentials, independent of contributor sessions.
+        expected: Expected disabled or unauthorized HTTP status.
+    """
+    response = _create_client(source, tmp_path / "cache", password).get(
+        "/api/admin/habitat/cache-inventory", auth=credentials
+    )
+    assert response.status_code == expected
+    assert response.headers["cache-control"] == "private, no-store"
