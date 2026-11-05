@@ -1,5 +1,6 @@
 """Calculate native-grid period statistics and valid-observation count rasters."""
 
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -9,7 +10,7 @@ import math
 import mmap
 from pathlib import Path
 import time
-from typing import Any, Iterator, Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -38,9 +39,40 @@ from eolab_app.processing.temporal_models import (
 from eolab_app.raster.source_contract import read_native_raster_window
 from eolab_app.raster.temporal import ResolvedTemporalInterval, TemporalRasterDataset
 
+# Target retained accumulator cells; one native window is always processed.
+STREAMING_BATCH_PIXELS = 1024 * 1024
+
+
+def _batch_windows(grid: TemporalReadGrid) -> Iterator[tuple[Window, ...]]:
+    """Group native windows to reuse observation handles with modest accumulators.
+
+    A batch targets about one million selected cells. A larger native window
+    remains a valid batch; this chooses working storage without limiting a job.
+
+    Args:
+        grid: Admitted native windows and selected crop.
+
+    Yields:
+        Nonempty batches in the original native-window order.
+    """
+    windows: list[Window] = []
+    pixels = 0
+    for window in temporal_grid_windows(grid):
+        window_pixels = int(window.width) * int(window.height)
+        if windows and pixels + window_pixels > STREAMING_BATCH_PIXELS:
+            yield tuple(windows)
+            windows, pixels = [], 0
+        windows.append(window)
+        pixels += window_pixels
+    if windows:
+        yield tuple(windows)
+
 
 def _read_observations(
-    interval: ResolvedTemporalInterval, window: Window, column_rotation: int
+    interval: ResolvedTemporalInterval,
+    window: Window,
+    column_rotation: int,
+    record_read: Callable[[], None],
 ) -> Iterator[np.ma.MaskedArray]:
     """Read one native tile per observation with one shared longitude origin.
 
@@ -48,6 +80,7 @@ def _read_observations(
         interval: Authorized observations in increasing label order.
         window: Integral native tile inside the planned longitude view.
         column_rotation: Source-column shift chosen when the area was planned.
+        record_read: Count a completed native observation-window read.
 
     Yields:
         Native finite values with declared NoData cells masked.
@@ -55,11 +88,14 @@ def _read_observations(
     Raises:
         OSError: If native storage cannot be read.
         ValueError: If a source chunk is corrupt or escapes its archive.
+        rasterio.errors.RasterioError: If a native TIFF cannot be opened or read.
     """
     for observation in interval.observations:
         with TemporalRasterDataset(observation) as dataset:
             dataset.prepare_column_view(column_rotation)
-            yield read_native_raster_window(dataset, window)
+            values = read_native_raster_window(dataset, window)
+            record_read()
+            yield values
 
 
 def _reduce_ordered_values(
@@ -68,6 +104,8 @@ def _reduce_ordered_values(
     column_rotation: int,
     percentile: float,
     scratch: Path,
+    record_read: Callable[[], None],
+    record_ordering: Callable[[int], None],
 ) -> tuple[NDArray[np.float64], NDArray[np.uint64]]:
     """Calculate exact linear percentiles using disk-backed observation rows.
 
@@ -77,6 +115,8 @@ def _reduce_ordered_values(
         column_rotation: Planned source-column shift.
         percentile: Validated percentile between zero and one hundred.
         scratch: Attempt-owned file reused for this tile's temporary values.
+        record_read: Count a completed native observation-window read.
+        record_ordering: Count processed pixel series; zero starts this phase.
 
     Returns:
         Two-dimensional percentile values and valid-observation counts.
@@ -85,6 +125,7 @@ def _reduce_ordered_values(
     Raises:
         OSError: If source or scratch-file I/O fails.
         ValueError: If native decoding fails.
+        rasterio.errors.RasterioError: If a native TIFF cannot be opened or read.
     """
     shape = (int(window.height), int(window.width))
     pixels = shape[0] * shape[1]
@@ -100,11 +141,12 @@ def _reduce_ordered_values(
                     (pixels, observations), dtype="float64", buffer=storage
                 )
                 for index, values in enumerate(
-                    _read_observations(interval, window, column_rotation)
+                    _read_observations(interval, window, column_rotation, record_read)
                 ):
                     valid = ~np.ma.getmaskarray(values)
                     series[:, index] = np.where(valid, values.data, np.nan).ravel()
                     counts += valid.ravel().astype("uint64")
+                record_ordering(0)
                 for pixel in range(pixels):
                     count = int(counts[pixel])
                     if count:
@@ -116,86 +158,191 @@ def _reduce_ordered_values(
                         low, high = series[pixel, lower], series[pixel, upper]
                         fraction = position - lower
                         result[pixel] = low * (1 - fraction) + high * fraction
+                    record_ordering(1)
                 del series
     finally:
         scratch.unlink(missing_ok=True)
     return result.reshape(shape), counts.reshape(shape)
 
 
-def _reduce_window(
+def _reduce_streaming_batch(
     interval: ResolvedTemporalInterval,
     reduction: TemporalReduction,
     conversion_factor: float,
-    window: Window,
+    windows: tuple[Window, ...],
     column_rotation: int,
-    scratch: Path,
-) -> tuple[NDArray[np.float64], NDArray[np.uint64]]:
-    """Reduce one spatial tile while excluding each observation's missing cells.
+    record_read: Callable[[], None],
+) -> tuple[tuple[Window, NDArray[np.float64], NDArray[np.uint64]], ...]:
+    """Reduce a spatial batch while opening each observation only once.
+
+    Every cell retains the original observation order and float64 operations.
+    Accumulators and precipitation scratch arrays are retained for this batch;
+    observation handles close before opening the next or returning the arrays.
 
     Args:
         interval: Authorized observations in increasing label order.
-        reduction: Equal-weight statistic or integrated precipitation total.
+        reduction: Streaming statistic or integrated precipitation total;
+            median and percentile are handled separately.
         conversion_factor: Model-configured multiplier after rate times seconds;
             unused by ordinary statistics.
-        window: Integral native tile in the planned longitude view.
+        windows: Native windows grouped by their selected-cell working target.
         column_rotation: Source-column shift shared by every observation.
-        scratch: Attempt-owned temporary file for exact order statistics.
+        record_read: Count a native read after its accumulator update completes.
 
     Returns:
-        Statistic values and valid counts, with NaN and zero for all-missing cells.
+        Each native window, its statistic values and valid counts. All-missing
+        cells contain NaN and zero, respectively.
 
     Raises:
-        OSError: If source or temporary-file I/O fails.
+        OSError: If a native source cannot be read.
         ValueError: If native decoding fails.
         FloatingPointError: If the statistic overflows float64 arithmetic.
+        rasterio.errors.RasterioError: If a native TIFF cannot be opened or read.
     """
-    if reduction.reducer in {"median", "percentile"}:
-        percentile = (
-            50.0 if reduction.reducer == "median" else cast(float, reduction.percentile)
-        )
-        return _reduce_ordered_values(
-            interval, window, column_rotation, percentile, scratch
-        )
-    shape = (int(window.height), int(window.width))
-    counts = np.zeros(shape, dtype="uint64")
-    result = np.zeros(shape, dtype="float64")
-    variance_sum = (
+    shapes = [(int(window.height), int(window.width)) for window in windows]
+    results = [np.zeros(shape, dtype="float64") for shape in shapes]
+    counts = [np.zeros(shape, dtype="uint64") for shape in shapes]
+    variances = [
         np.zeros(shape, dtype="float64") if reduction.reducer == "stdev" else None
-    )
-    for observation, values in zip(
-        interval.observations, _read_observations(interval, window, column_rotation)
-    ):
-        valid = ~np.ma.getmaskarray(values)
-        current = values.data[valid].astype("float64")
-        previous_counts = counts[valid]
-        counts[valid] += 1
-        if reduction.reducer == "precipitation_total":
-            seconds = (
-                observation.interval_end - observation.interval_start
-            ).total_seconds()
-            result[valid] += current * seconds * conversion_factor
-        elif reduction.reducer == "sum":
-            result[valid] += current
-        elif reduction.reducer in {"mean", "stdev"}:
-            delta = current - result[valid]
-            result[valid] += delta / counts[valid]
-            if variance_sum is not None:
-                variance_sum[valid] += delta * (current - result[valid])
-        elif reduction.reducer == "min":
-            result[valid] = np.where(
-                previous_counts == 0, current, np.minimum(result[valid], current)
-            )
-        else:
-            result[valid] = np.where(
-                previous_counts == 0, current, np.maximum(result[valid], current)
-            )
-    present = counts > 0
-    if variance_sum is not None:
-        result[present] = np.sqrt(
-            np.maximum(variance_sum[present], 0) / counts[present]
+        for shape in shapes
+    ]
+    precipitation_values = [
+        (
+            np.empty(shape, dtype="float64")
+            if reduction.reducer == "precipitation_total"
+            else None
         )
-    result[~present] = np.nan
-    return result, counts
+        for shape in shapes
+    ]
+    for observation in interval.observations:
+        with TemporalRasterDataset(observation) as dataset:
+            dataset.prepare_column_view(column_rotation)
+            for window, result, count, variance_sum, converted_values in zip(
+                windows, results, counts, variances, precipitation_values, strict=True
+            ):
+                values = read_native_raster_window(dataset, window)
+                valid = ~np.ma.getmaskarray(values)
+                if reduction.reducer in {"min", "max"}:
+                    previous_counts = count[valid]
+                np.add(count, valid, out=count)
+                if reduction.reducer == "precipitation_total":
+                    seconds = (
+                        observation.interval_end - observation.interval_start
+                    ).total_seconds()
+                    np.multiply(
+                        values.data,
+                        seconds,
+                        out=converted_values,
+                        dtype="float64",
+                        where=valid,
+                    )
+                    np.multiply(
+                        converted_values,
+                        conversion_factor,
+                        out=converted_values,
+                        where=valid,
+                    )
+                    np.add(result, converted_values, out=result, where=valid)
+                elif reduction.reducer == "sum":
+                    np.add(
+                        result, values.data, out=result, dtype="float64", where=valid
+                    )
+                else:
+                    current = values.data[valid].astype("float64")
+                    if reduction.reducer in {"mean", "stdev"}:
+                        delta = current - result[valid]
+                        result[valid] += delta / count[valid]
+                        if variance_sum is not None:
+                            variance_sum[valid] += delta * (current - result[valid])
+                    elif reduction.reducer == "min":
+                        result[valid] = np.where(
+                            previous_counts == 0,
+                            current,
+                            np.minimum(result[valid], current),
+                        )
+                    else:
+                        result[valid] = np.where(
+                            previous_counts == 0,
+                            current,
+                            np.maximum(result[valid], current),
+                        )
+                record_read()
+    reduced = []
+    for window, result, count, variance_sum in zip(
+        windows, results, counts, variances, strict=True
+    ):
+        present = count > 0
+        if variance_sum is not None:
+            result[present] = np.sqrt(
+                np.maximum(variance_sum[present], 0) / count[present]
+            )
+        result[~present] = np.nan
+        reduced.append((window, result, count))
+    return tuple(reduced)
+
+
+def _reduce_windows(
+    interval: ResolvedTemporalInterval,
+    spec: TemporalMapSpec,
+    directory: Path,
+    record_read: Callable[[], None],
+    record_ordering: Callable[[int], None],
+) -> Iterator[tuple[Window, NDArray[np.float64], NDArray[np.uint64]]]:
+    """Yield native results using batched streaming or exact disk-backed ordering.
+
+    Args:
+        interval: Authorized observations in the established chronological order.
+        spec: Accepted native grid, reducer and precipitation conversion.
+        directory: Attempt-owned scratch directory for exact order statistics.
+        record_read: Count completed native observation-window reads.
+        record_ordering: Count processed pixel series; zero starts the phase.
+
+    Yields:
+        Native windows with their statistic values and valid-observation counts.
+
+    Raises:
+        ProcessingError: If the statistic overflows float64 arithmetic.
+        OSError: If source or scratch-file I/O fails.
+        ValueError: If native decoding fails.
+        rasterio.errors.RasterioError: If a native TIFF cannot be opened or read.
+    """
+    try:
+        if spec.reduction.reducer in {"median", "percentile"}:
+            percentile = (
+                50.0
+                if spec.reduction.reducer == "median"
+                else cast(float, spec.reduction.percentile)
+            )
+            for window in temporal_grid_windows(spec.grid):
+                with np.errstate(over="raise", invalid="raise"):
+                    values, counts = _reduce_ordered_values(
+                        interval,
+                        window,
+                        spec.grid.columnRotation,
+                        percentile,
+                        directory / "ordered-values.bin",
+                        record_read,
+                        record_ordering,
+                    )
+                yield window, values, counts
+        else:
+            for windows in _batch_windows(spec.grid):
+                with np.errstate(over="raise", invalid="raise"):
+                    reduced = _reduce_streaming_batch(
+                        interval,
+                        spec.reduction,
+                        spec.conversionFactor,
+                        windows,
+                        spec.grid.columnRotation,
+                        record_read,
+                    )
+                yield from reduced
+                del reduced
+    except FloatingPointError as error:
+        raise ProcessingError(
+            "numerical_error",
+            "The temporal statistic exceeds float64 arithmetic.",
+        ) from error
 
 
 def _create_cog(
@@ -293,13 +440,59 @@ def create_temporal_map(
         ProcessingError: If numerical computation or output validation fails.
         OSError: If a native input or output cannot be read or written.
         ValueError: If native source decoding fails.
+        rasterio.errors.RasterioError: If native raster I/O fails.
     """
     grid = spec.grid
     crop = Window(*grid.window)
     stage = directory / "statistic-stage.tif"
     count_stage = directory / "count-stage.tif"
     valid_pixels = count_pixels = 0
-    last_progress = 0.0
+    total_reads = len(interval.observations) * grid.tileCount
+    completed_reads = ordered_pixels = 0
+    last_read_progress = last_ordering_progress = 0.0
+    write_progress(directory, "reducing", 0, total_reads, unit="raster reads")
+
+    def record_read() -> None:
+        """Count a completed observation-window read and throttle its updates.
+
+        Raises:
+            OSError: If the attempt's atomic progress file cannot be written.
+        """
+        nonlocal completed_reads, last_read_progress
+        completed_reads += 1
+        now = time.monotonic()
+        if completed_reads == total_reads or now - last_read_progress > 0.5:
+            write_progress(
+                directory, "reducing", completed_reads, total_reads, unit="raster reads"
+            )
+            last_read_progress = now
+
+    def record_ordering(increment: int) -> None:
+        """Count processed pixel series across exact median/percentile windows.
+
+        Args:
+            increment: One after a pixel is processed, or zero to enter the phase.
+
+        Raises:
+            OSError: If the attempt's atomic progress file cannot be written.
+        """
+        nonlocal ordered_pixels, last_ordering_progress
+        ordered_pixels += increment
+        now = time.monotonic()
+        if (
+            not increment
+            or ordered_pixels == grid.width * grid.height
+            or now - last_ordering_progress > 0.5
+        ):
+            write_progress(
+                directory,
+                "ordering",
+                ordered_pixels,
+                grid.width * grid.height,
+                unit="pixels",
+            )
+            last_ordering_progress = now
+
     with (
         rasterio.Env(
             GDAL_CACHEMAX=64 * 1024**2,
@@ -343,7 +536,9 @@ def create_temporal_map(
             count_raster.set_band_unit(1, "observations")
             statistic.update_tags(1, units=spec.unit, reducer=spec.reduction.reducer)
             count_raster.update_tags(1, units="observations")
-            for index, window in enumerate(temporal_grid_windows(grid), start=1):
+            for window, values, counts in _reduce_windows(
+                interval, spec, directory, record_read, record_ordering
+            ):
                 output_window = Window(
                     window.col_off - crop.col_off,
                     window.row_off - crop.row_off,
@@ -355,21 +550,6 @@ def create_temporal_map(
                     if mask is not None
                     else np.ones((int(window.height), int(window.width)), dtype=bool)
                 )
-                try:
-                    with np.errstate(over="raise", invalid="raise"):
-                        values, counts = _reduce_window(
-                            interval,
-                            spec.reduction,
-                            spec.conversionFactor,
-                            window,
-                            grid.columnRotation,
-                            directory / "ordered-values.bin",
-                        )
-                except FloatingPointError as error:
-                    raise ProcessingError(
-                        "numerical_error",
-                        "The temporal statistic exceeds float64 arithmetic.",
-                    ) from error
                 valid = inside & (counts > 0)
                 valid_pixels += int(np.count_nonzero(valid))
                 count_pixels += int(np.count_nonzero(inside))
@@ -385,16 +565,15 @@ def create_temporal_map(
                 count_raster.write_mask(
                     inside.astype("uint8") * 255, window=output_window
                 )
-                if time.monotonic() - last_progress > 0.5:
-                    write_progress(directory, "reducing", index, grid.tileCount)
-                    last_progress = time.monotonic()
-        write_progress(directory, "creating_cog", grid.tileCount, grid.tileCount)
+        write_progress(directory, "creating_cog", 0, 2, unit="files")
         result = _create_cog(
             stage, directory / "result.tif", grid, valid_pixels, spec.unit
         )
+        write_progress(directory, "creating_cog", 1, 2, unit="files")
         count = _create_cog(
             count_stage, directory / "count.tif", grid, count_pixels, "observations"
         )
+        write_progress(directory, "creating_cog", 2, 2, unit="files")
     artifact = TemporalMapArtifact(
         size=result.size,
         sha256=result.sha256,
