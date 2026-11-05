@@ -43,7 +43,7 @@ export function describeModelProgress(job) {
     const status = job.status === "ready" && Date.parse(job.expiresAt) <= Date.now() ? "expired" : job.status;
     if (status !== "running") return ({queued: "Queued", cancelling: "Cancelling…", ready: "Ready", failed: "Failed",
         cancelled: "Cancelled", interrupted: "Interrupted", expired: "Results expired", deleted: "Deleted"})[status] ?? status;
-    const description = job.progress.description ?? "Running model";
+    const description = job.progress.description ?? "Running tool";
     return job.progress.total > 0 ? `${description} · ${job.progress.completed ?? 0} of ${job.progress.total} ${job.progress.unit ?? "units"}` : `${description}…`;
 }
 

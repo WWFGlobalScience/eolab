@@ -1,4 +1,4 @@
-/** Present the model library, editable setup and one run's results in Analysis. */
+/** Present data tools, their editable setup and one run's results in Analysis. */
 import { ACTIVE_JOB_STATES } from "../processing/jobs.js";
 import { processingDownloadUrl } from "../processing/api.js";
 import { describeModelProgress } from "../processing/presentation.js";
@@ -282,7 +282,7 @@ export class ModelsView {
             if (modelHasInput(draft.model, "mask_source") && parameter.type === "optional_number") fields.append(this.element("p", "Leave blank for no distance cutoff. Distance is measured in a straight line from the starting cells.", "models-help"));
             if (parameter.type === "summary_expression") fields.append(this.element("p", "a is the selected raster. Examples: sum(a), mean(a), stdev(a), min(a), max(a), count(a), areaha(a > 10), sum(a, where=a > 10).", "models-help"));
         }
-        const runLabel = temporal ? "Run analysis" : "Run model";
+        const runLabel = "Run tool";
         const run = this.button(runLabel, () => {}, "models-primary"); run.type = "submit";
         fields.append(run); form.append(fields);
         form.addEventListener("submit", event => { event.preventDefault(); this.handlers.onSubmit(); });
@@ -346,7 +346,7 @@ export class ModelsView {
         const draft = state.draft;
         const references = input.type === "habitat_references";
         const usesRasterOrVector = input.type === "mask_source" || references;
-        const runLabel = draft.temporal ? "Run analysis" : "Run model";
+        const runLabel = "Run tool";
         const areaChoices = [{value: "", label: references ? "Choose reference sites…" : input.type === "mask_source" ? "Choose a starting area…" : "Choose an area…"}];
         if (!usesRasterOrVector) areaChoices.push({value: "viewport", label: "Visible map area"}, {value: "samplingArea", label: "Sampling box"});
         if (modelSupportsArea(input.type, {kind: "wholeRaster"}) && !getHabitatEarthEngineInput(draft)) areaChoices.splice(1, 0, {value: "whole", label: "Whole raster"});
@@ -417,7 +417,7 @@ export class ModelsView {
         if (this.setup?.id !== draft.id) this.buildSetup(draft);
         const setupControls = this.setup;
         const temporalError = setupControls.temporal?.render(draft.temporal, draft.reduction) ?? "";
-        const runLabel = draft.temporal ? "Run analysis" : "Run model";
+        const runLabel = "Run tool";
         setupControls.fields.disabled = state.submitting;
         if (this.document.activeElement !== setupControls.label) setupControls.label.value = draft.label;
         let inputsReady = !temporalError;
@@ -433,7 +433,7 @@ export class ModelsView {
         setupControls.run.textContent = state.submitting ? "Submitting…" : runLabel;
         setupControls.details.model.href = `/api/processing/models/${draft.model.id}/versions/${draft.model.version}/yaml`;
         setupControls.details.run.hidden = true;
-        setupControls.details.message.textContent = supported ? `Model version ${draft.model.version}. Results are temporary.` : "This model requires input controls not yet available in this interface.";
+        setupControls.details.message.textContent = supported ? `Model version ${draft.model.version}. Results are temporary.` : "This tool requires input controls not yet available in this interface.";
     }
 
     /** Build stable run controls with deletion confirmation at its action's location.
@@ -464,7 +464,7 @@ export class ModelsView {
             if (event.key === "Escape" && !this.state.actionBusy) { event.preventDefault(); event.stopPropagation(); this.closeRunNameEditor(); }
         });
         const status = this.element("p"); status.setAttribute("role", "status");
-        const progress = this.element("progress"); progress.setAttribute("aria-label", "Current model stage progress");
+        const progress = this.element("progress"); progress.setAttribute("aria-label", "Current run stage progress");
         const error = this.element("p", "", "models-error"); const result = this.element("div", "", "models-results");
         const actions = this.element("div", "", "models-actions");
         const cancel = this.button("Cancel run", this.handlers.onCancel, "models-action"); const duplicate = this.button("Duplicate with changes", this.handlers.onDuplicate, "models-action");
@@ -532,8 +532,8 @@ export class ModelsView {
         const id = state.selectedRun; if (!id) return;
         if (this.run?.id !== id) this.buildRun(id);
         const r = this.run; const job = state.runs.find(run => run.jobId === id);
-        r.title.textContent = job?.label ?? "Model run"; r.title.title = job?.label ?? "Model run";
-        r.title.setAttribute("aria-label", job?.label ?? "Model run");
+        r.title.textContent = job?.label ?? "Data tool run"; r.title.title = job?.label ?? "Data tool run";
+        r.title.setAttribute("aria-label", job?.label ?? "Data tool run");
         r.created.textContent = job ? `Created ${formatModelRunCreatedTime(job)}` : "";
         r.rename.hidden = !job || job.status === "deleted" || r.editingName;
         r.rename.disabled = Boolean(state.actionBusy);
@@ -662,7 +662,7 @@ export class ModelsView {
         }
     }
 
-    /** Present the selected Models page while retaining drafts, controls and run cards.
+    /** Present the selected Data tools page, promoting raster creation among search matches.
      * @param {Object} state Controller snapshot.
      * @return {void}
      */
@@ -678,6 +678,8 @@ export class ModelsView {
         this.renderDeletions(state.deletions ?? []);
         this.elements.recovery.hidden = !state.pending; this.elements.recover.disabled = state.submitting;
         const filtered = state.library.filter(model => `${model.title} ${model.description}`.toLowerCase().includes(state.query.toLowerCase()));
+        const rasterCreationIndex = filtered.findIndex(model => model.id === "temporal-period-map");
+        if (rasterCreationIndex > 0) filtered.unshift(...filtered.splice(rasterCreationIndex, 1));
         const signature = JSON.stringify(filtered);
         if (signature !== this.librarySignature) {
             this.librarySignature = signature;
@@ -689,10 +691,10 @@ export class ModelsView {
                 card.append(heading, this.element("p", model.description),
                     this.element("p", `Inputs: ${Object.values(model.inputs).map(input => input.label).join(", ")}`, "models-help"),
                     this.element("p", `Outputs: ${Object.entries(model.outputs).map(([name, output]) => `${name} (${output.presentation})`).join(", ")}`, "models-help"),
-                    this.element("span", "Set up model →", "models-card-hint")); return card;
+                    this.element("span", "Set up tool →", "models-card-hint")); return card;
             }));
         }
-        this.elements["library-status"].textContent = state.loading ? "Loading model library…" : filtered.length ? "" : "No matching models.";
+        this.elements["library-status"].textContent = state.loading ? "Loading data tools…" : filtered.length ? "" : "No matching tools.";
         this.elements.refresh.disabled = state.loading;
         this.renderSetup(state); this.renderRun(state);
         const retainedRuns = new Set(state.runs.map(job => job.jobId));
@@ -715,7 +717,7 @@ export class ModelsView {
         // Move retained nodes only when ordering changes, keeping focus during status reads.
         const order = state.runs.map(job => job.jobId).join();
         if (order !== this.runOrder) { this.runOrder = order; for (const job of state.runs) this.elements["runs-list"].append(this.runCards.get(job.jobId).root); }
-        this.elements["runs-status"].textContent = state.historyLoading ? "Loading runs…" : state.runs.length ? "Runs belong to this browser session. Closing Models does not cancel them." : "No model runs in this browser session yet.";
+        this.elements["runs-status"].textContent = state.historyLoading ? "Loading runs…" : state.runs.length ? "Runs belong to this browser session. Closing Data tools does not cancel them." : "No data tool runs in this browser session yet.";
         this.elements.more.hidden = !state.nextCursor; this.elements.more.disabled = state.historyLoading;
         this.elements["refresh-runs"].disabled = state.historyLoading;
         this.elements.yaml.hidden = !state.yaml; this.elements.yaml.textContent = state.yaml ?? "";

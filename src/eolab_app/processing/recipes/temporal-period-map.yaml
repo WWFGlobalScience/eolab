@@ -1,7 +1,7 @@
 schema: eolab.model/v1
 id: temporal-period-map
 version: "1.0.0"
-title: Map for a period
+title: Create a raster from a time series
 description: Calculate a statistic over observations or total precipitation for a period. Ordinary statistics give observations equal weight and retain source units without integration. Results include valid-observation counts; gaps remain missing. Precipitation totals require whole UTC hours.
 inputs:
   source:

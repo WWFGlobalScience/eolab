@@ -84,7 +84,7 @@ export class MapInspectionController {
         this.map = documentContext.querySelector("#map");
         this.closeButton = documentContext.querySelector("#close-map-histogram");
         this.tools = [
-            { name: "models", label: "Models", panel: documentContext.querySelector("#models-panel"),
+            { name: "models", label: "Data tools", panel: documentContext.querySelector("#models-panel"),
                 tab: documentContext.querySelector("#map-inspection-tab-models") },
             { name: "raster-series", label: "Raster statistics", panel: this.rasterSeries, raster: true, resultNavigation: true,
                 tab: documentContext.querySelector("#open-raster-series-dock") },
@@ -336,10 +336,10 @@ export class MapInspectionController {
     /** Close raster-series plotting while retaining its settings. @return {void} */
     hideRasterSeries() { this.#hideTool("raster-series"); }
 
-    /** Reveal Models without changing any model draft or accepted job. @return {void} */
+    /** Reveal Data tools without changing any model draft or accepted job. @return {void} */
     showModels() { this.#showTool("models"); }
 
-    /** Hide Models while its controller retains setup and run observation. @return {void} */
+    /** Hide Data tools while its controller retains setup and run observation. @return {void} */
     hideModels() { this.#hideTool("models"); }
 
 
@@ -804,7 +804,7 @@ export class MapInspectionController {
      * Raster destinations use stable native buttons; their owners handle opening.
      * Features share the compact result navigation. Raster statistics omits the
      * inactive Style tab while retaining its editor; other tools keep their tabs.
-     * Models and polygon editing use their panel headings without another task heading.
+     * Data tools and polygon editing use their panel headings without another task heading.
      * Opening or updating a tool never replaces its focused raster destination.
      * Hide the panel surface when no tool is active so the retained result header
      * cannot leave an invisible container intercepting map input below it.
