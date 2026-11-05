@@ -134,6 +134,30 @@ class TemporalRasterDataset:
         """
         return self.native_dataset.units
 
+    @property
+    def descriptions(self) -> tuple[str | None, ...]:
+        """Return the stored band descriptions for this observation.
+
+        Returns:
+            One description per band, with None for an unnamed band.
+        """
+        return self.native_dataset.descriptions
+
+    def tags(self, band: int = 0, *, ns: str | None = None) -> dict[str, str]:
+        """Read the observation's original GeoTIFF metadata tags.
+
+        Args:
+            band: Zero for dataset tags, or the one-based band number.
+            ns: Metadata namespace, or None for the default namespace.
+
+        Returns:
+            Metadata stored on the dataset or selected band.
+
+        Raises:
+            rasterio.errors.RasterioError: If the band or metadata cannot be read.
+        """
+        return self.native_dataset.tags(band, ns=ns)
+
     def _update_grid_metadata(self) -> None:
         """Update the view bounds and logical blocks after a column rotation."""
         corners = [

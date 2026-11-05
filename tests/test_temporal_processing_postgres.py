@@ -30,7 +30,7 @@ from eolab_app.raster.catalog import StacRasterCatalog
 from eolab_app.raster.source_authorization import CatalogRasterSourceAuthorizer
 from eolab_app.raster.sources import MountedRasterResolver
 from eolab_app.routes.processing import create_processing_router
-from test_processing_jobs import HEADERS, store
+from test_processing_jobs import HEADERS, store, submitted
 from tests.test_catalog_temporal import (
     ITEM_KEY,
     PRECIPITATION,
@@ -191,6 +191,58 @@ def submit_period(client: TestClient, request: dict[str, Any]) -> dict[str, Any]
     response = client.post("/api/processing/model-runs", json=request, headers=HEADERS)
     assert response.status_code == 202, response.text
     return response.json()
+
+
+def test_snapshot_clip_download_preserves_native_cells_at_longitude_seam(
+    temporal_boundary: TemporalBoundary,
+) -> None:
+    """Download two adjacent cells across the source grid's longitude seam.
+
+    Args:
+        temporal_boundary: Admitted temporal sources, clip API and native worker.
+    """
+    client, worker, _, archive, scanner = temporal_boundary
+    observation = observation_path(archive, TEMPERATURE, 2, 1)
+    _write_equatorial_cell(observation, 1439, 99)
+    _write_equatorial_cell(observation, 0, 101)
+    assert client.portal.call(scan, scanner)["errors"] == []
+    source = {
+        "collectionId": ITEM_KEY[0],
+        "itemId": ITEM_KEY[1],
+        "variable": TEMPERATURE,
+        "time": "2000-02-01T01:00:00Z",
+    }
+    job = submitted(
+        client,
+        {
+            "source": source,
+            "samplingBox": {
+                "center": {"longitude": 179.875, "latitude": 0},
+                "sideLengthKm": 25,
+            },
+        },
+    )
+    assert job["source"] == source
+    assert client.portal.call(worker.run_once)
+    ready = client.get(f"/api/processing/jobs/{job['jobId']}").json()
+    assert ready["status"] == "ready", ready
+    assert ready["source"] == source
+    download = client.get(ready["result"]["url"])
+    assert download.status_code == 200, download.text
+    with MemoryFile(download.content) as memory, memory.open() as raster:
+        assert raster.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+        assert raster.crs.to_epsg() == 4326
+        assert raster.res == (0.25, 0.25)
+        assert raster.dtypes == ("float32",)
+        assert raster.read(1, masked=True).count() == 2
+        assert [sample[0] for sample in raster.sample([(179.75, 0), (180, 0)])] == [
+            99,
+            101,
+        ]
+    provenance = client.get(ready["result"]["provenanceUrl"])
+    assert provenance.status_code == 200, provenance.text
+    assert provenance.json()["source"] == source
+    assert str(observation) not in provenance.text
 
 
 def test_period_map_outputs_are_owned_reusable_rasters(

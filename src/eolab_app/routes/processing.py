@@ -660,7 +660,7 @@ def create_processing_router(
         """Queue a raster clip for the selected dataset and area.
 
         Args:
-            body: The catalog raster, analysis area and retry ID.
+            body: Raster or exact temporal observation, clip area and retry ID.
             request: HTTP request carrying Processing and private-upload browser cookies.
             response: Response renewing those cookies and private-cache headers.
 

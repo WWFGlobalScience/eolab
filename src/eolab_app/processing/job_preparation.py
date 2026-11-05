@@ -41,16 +41,17 @@ def prepare_clip_job(spec: ClipSpec) -> PreparedJobPlan:
     """Serialize prepared raster clip inputs and display metadata.
 
     Args:
-        spec: Raster identity, selected area and output grid measured during preparation.
+        spec: Exact raster or observation identity, selected area and output grid.
 
     Returns:
         Path-free worker inputs and browser summary with no disk reservation.
     """
+    data = spec.model_dump(mode="json", by_alias=True)
     return PreparedJobPlan(
-        specification=spec.model_dump(mode="json", by_alias=True),
+        specification=data,
         summary={
-            "source": spec.source.model_dump(by_alias=True),
-            "grid": spec.grid.model_dump(mode="json"),
+            "source": data["source"],
+            "grid": data["grid"],
             "area": {
                 "kind": spec.area.kind,
                 "bounds": list(spec.area.bounds),

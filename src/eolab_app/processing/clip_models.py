@@ -23,22 +23,26 @@ from eolab_app.processing.models import (
 )
 from eolab_app.sampling_box import Wgs84SamplingBox, sampling_box_bounds
 from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
-from eolab_app.raster.source_models import RasterSourceReference, RunArtifactReference
+from eolab_app.raster.source_models import (
+    RasterAnalysisSourceReference,
+    RunArtifactReference,
+)
 
 OPERATION_VERSION = "raster.clip.v1"
 
 
 class ClipInputs(BaseModel):
-    """A catalog or private raster and an explicit geographic clip area.
+    """A raster or temporal observation and an explicit geographic clip area.
 
     Catalog requests use collectionId/itemId or a nested ``source`` reference.
-    Private run-file requests use ``source`` with the owned artifact identity.
+    Temporal observations and private run files use their exact nested ``source``
+    references.
     The clip area may be a geodesic sampling box, geographic rectangle, or
     features selected from a Catalog vector or private upload.
     """
 
     model_config = ConfigDict(extra="forbid")
-    source: RasterSourceReference | None = Field(
+    source: RasterAnalysisSourceReference | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     collection_id: str | None = Field(
@@ -189,11 +193,16 @@ class ClipGrid(BaseModel):
 
 
 class ClipSpec(BaseModel):
-    """A path-free clip plan with catalog identity or a published-file checksum."""
+    """A path-free clip plan with the selected source and native output grid.
+
+    Catalog rasters carry their admitted metadata signature. Private files carry
+    their published checksum. Temporal observations carry their variable and UTC
+    timestamp in the source reference.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     operation: Literal["raster.clip.v1"] = OPERATION_VERSION
-    source: RasterSourceReference
+    source: RasterAnalysisSourceReference
     sourceSignature: tuple[int, int, int, int] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -205,7 +214,7 @@ class ClipSpec(BaseModel):
 
     @model_validator(mode="after")
     def check_source_checksum(self) -> "ClipSpec":
-        """Require catalog metadata or a published checksum for the plan's source.
+        """Validate the metadata appropriate to the stored source reference.
 
         Returns:
             The prepared clip with the correct source identity contract.
@@ -216,7 +225,9 @@ class ClipSpec(BaseModel):
         private = isinstance(self.source, RunArtifactReference)
         if private != (self.sourceChecksum is not None):
             raise ValueError("Private raster plans require their published checksum")
-        if private != (self.sourceSignature is None):
+        if isinstance(self.source, CatalogRasterRequest) != (
+            self.sourceSignature is not None
+        ):
             raise ValueError("Only catalog raster plans require a source signature")
         return self
 
@@ -257,10 +268,10 @@ class ClipProgressResponse(JobProgressResponse):
 
 
 class ClipJobResponse(JobResponse):
-    """Add raster context to the shared job lifecycle without redefining it."""
+    """Describe a clip job's source, including its selected observation if temporal."""
 
     operation: Literal["raster.clip.v1"]
-    source: RasterSourceReference | None
+    source: RasterAnalysisSourceReference | None
     grid: ClipGrid | None
     area: ClipAreaSummary | None
     progress: ClipProgressResponse
