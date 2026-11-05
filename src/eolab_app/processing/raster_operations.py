@@ -454,18 +454,6 @@ def get_summary_polygon(request: AggregateJobRequest) -> PolygonAreaReference | 
     return request.polygonArea
 
 
-def get_clip_polygon(request: ClipJobRequest) -> None:
-    """Report that clipping accepts no uploaded polygon references.
-
-    Args:
-        request: Validated clip request.
-
-    Returns:
-        None; clip areas are explicit bounds or catalog predicates.
-    """
-    return None
-
-
 def build_summary_submission(
     request: AggregateJobRequest, polygons: AggregateArea | None
 ) -> PreparedJobPlan:

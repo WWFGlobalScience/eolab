@@ -16,6 +16,7 @@ from eolab_app.processing.habitat_models import (
     HabitatEarthEngineStack,
     HabitatRequest,
     HabitatSettings,
+    PolygonReferenceSites,
     QueuedHabitat,
     VectorReferenceSites,
 )
@@ -106,31 +107,42 @@ def get_habitat_vector_selections(
     return selections
 
 
-def get_habitat_polygon(request: HabitatRequest) -> PolygonAreaReference | None:
-    """Return an owned polygon-area input that admission must retain for this run.
+def get_habitat_polygon_inputs(
+    request: HabitatRequest,
+) -> dict[str, PolygonAreaReference]:
+    """Identify the drawn assessment and reference polygons for admission.
 
     Args:
         request: Validated Habitat inputs.
 
     Returns:
-        The polygon input reference, or None for other assessment-area choices.
+        Owned polygon references keyed by area or reference_sites when selected.
     """
-    return request.polygonArea
+    inputs = {}
+    if request.polygonArea is not None:
+        inputs["area"] = request.polygonArea
+    if isinstance(request.references, PolygonReferenceSites):
+        inputs["reference_sites"] = request.references.reference
+    return inputs
 
 
 def build_habitat_submission(
-    request: HabitatRequest, polygons: AggregateArea | None
+    request: HabitatRequest, polygons: dict[str, AggregateArea]
 ) -> PreparedJobPlan:
     """Queue selected Habitat inputs without opening raster or vector data.
 
     Args:
         request: Validated layer selections and scientific settings.
-        polygons: Owned polygon input copied by ordinary Processing admission.
+        polygons: Owned assessment and reference polygons copied at admission.
 
     Returns:
         A durable, path-free request for an independent model run.
     """
-    queued = QueuedHabitat(request=request, polygonArea=polygons)
+    queued = QueuedHabitat(
+        request=request,
+        polygonArea=polygons.get("area"),
+        referencePolygons=polygons.get("reference_sites"),
+    )
     return PreparedJobPlan(
         operation=queued.operation,
         specification=queued.model_dump(mode="json", by_alias=True),
@@ -177,7 +189,7 @@ async def prepare_habitat(
 
     Args:
         context: Existing source, lifecycle and native-execution capabilities.
-        queued: Accepted inputs and any retained polygon-area geometry.
+        queued: Accepted inputs and any retained assessment or reference polygons.
         primary: None; all selected raster roles use ordinary additional sources.
 
     Returns:
@@ -218,7 +230,7 @@ async def prepare_habitat(
         )
     status, prepared = await context.run_native(
         habitat_process_target,
-        ("prepare", (sources, request, area)),
+        ("prepare", (sources, request, area, queued.referencePolygons)),
         None,
         context.native,
     )

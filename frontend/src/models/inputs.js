@@ -2,6 +2,8 @@
 import { normalizeCalculationArea } from "../processing/calculation-area.js";
 import { createTemporalDraft, captureTemporalInput, captureTemporalReduction } from "./temporal-inputs.js";
 
+/** @typedef {{key:string,label:string,polygons:Array<{type:"Polygon",coordinates:number[][][]}>,total:number}} DrawnPolygonLayer */
+
 /** Check whether a model declares an input of the requested type.
  * @param {Object} model Installed recipe.
  * @param {string} type Input type from the model contract.
@@ -191,14 +193,23 @@ export function modelViewportArea(bounds) {
 
 /** Check whether an area is accepted by one declared input type.
  * @param {string} type Recipe area, starting-mask or reference-sites input type.
- * @param {Object|null} area Explicit area descriptor.
+ * @param {{kind:string}|null} area Explicit area descriptor.
  * @return {boolean} Whether this field accepts the area kind.
  */
 export function modelSupportsArea(type, area) {
     const supportedAreaKinds = type === "clip_area" ? ["selectedArea", "samplingBox", "catalogSelection"] :
         type === "summary_area" ? ["selectedArea", "samplingBox", "catalogSelection", "wholeRaster", "polygonArea"] :
-            ["mask_source", "habitat_references"].includes(type) ? ["catalogSelection"] : [];
+            type === "habitat_references" ? ["catalogSelection", "polygonArea"] : type === "mask_source" ? ["catalogSelection"] : [];
     return supportedAreaKinds.includes(area?.kind);
+}
+
+/** Find this field's drawn layer in the latest committed map snapshot.
+ * @param {{drawnPolygonLayers:DrawnPolygonLayer[]}} draft Available drawn layers and their applied filters' polygons.
+ * @param {{drawnPolygonKey:string}} input This field's independent layer choice.
+ * @return {DrawnPolygonLayer|undefined} Filtered layer, or undefined when it is absent.
+ */
+export function selectedDrawnPolygonLayer(draft, input) {
+    return draft.drawnPolygonLayers.find(layer => layer.key === input.drawnPolygonKey);
 }
 
 /** Create independent setup state for each declared raster and spatial input.
@@ -206,7 +217,7 @@ export function modelSupportsArea(type, area) {
  * Models with a starting mask require the user to choose that mask explicitly.
  * Habitat starts with Earth Engine inputs and an explicit analysis area.
  * @param {Object} model Installed recipe.
- * @param {Object} context Catalog and map choices supplied by browser composition.
+ * @param {Object & {drawnPolygonLayers?:DrawnPolygonLayer[]}} context Catalog and map choices supplied by browser composition, with detached drawn layers for Ecosystem Condition.
  * @param {string} id Local draft identity.
  * @return {Object} Draft with field state in inputs[name], shared source choices,
  * temporal controls and parameters. Spatial fields select live vector views or
@@ -252,12 +263,13 @@ export function createModelDraft(model, context, id) {
             inputs[name] = {
                 ...(explicitSelection ? preparation : {}),
                 area, capturedArea: structuredClone(area), areaMode, areaOrigin: "map", areaDescription: context.areaDescription ?? "Area selected on the map.",
-                vectorKey: "", vectorInfo: null, selecting: false, selectionError, maskRaster: null,
+                vectorKey: "", vectorInfo: null, drawnPolygonKey: "", selecting: false, selectionError, maskRaster: null,
                 vectors: structuredClone(context.vectors ?? []),
             };
         }
     }
     return {id, model, label: model.title, sources, inputs,
+        drawnPolygonLayers: model.id === "habitat-condition" ? context.drawnPolygonLayers ?? [] : [],
         temporal: usesTemporal ? createTemporalDraft(context.temporalDatasets ?? [], statisticType,
             statisticType === "temporal_reduction" ? model.steps[0].inputs.precipitation.value : null) : null,
         reduction: statisticType ? {reducer: "mean", percentile: 90} : null,
@@ -265,11 +277,13 @@ export function createModelDraft(model, context, id) {
     };
 }
 
-/** Capture each declared field as a model request with independent input choices.
+/** Capture the checked model inputs independently of later map and draft edits.
+ * Drawn polygon choices are captured as local geometry for the controller to
+ * replace with private area references before sending or saving the request.
  * @param {Object} draft Editable model setup with raster and spatial state in inputs[name].
  * @param {string} requestId Stable retry identity generated before dispatch.
  * @param {number} [utcOffsetMinutes=-new Date().getTimezoneOffset()] Local minutes east of UTC, captured once for this submission and its retries.
- * @return {Object} Independent submission, unaffected by later map or draft edits.
+ * @return {Object} Detached submission with any drawn polygons awaiting upload.
  * @throws {Error} If a required input, label, area or parameter is missing.
  */
 export function captureModelSubmission(draft, requestId, utcOffsetMinutes = -new Date().getTimezoneOffset()) {
@@ -288,7 +302,12 @@ export function captureModelSubmission(draft, requestId, utcOffsetMinutes = -new
             if (state.selecting) throw new Error("Wait for the selected features to finish loading.");
             const startingMask = input.type === "mask_source";
             const references = input.type === "habitat_references";
-            if ((startingMask || references) && state.areaMode === "raster") {
+            if (state.areaMode === "drawnPolygons") {
+                const layer = selectedDrawnPolygonLayer(draft, state);
+                if (!layer) throw new Error(`Choose a drawn polygon layer for ${input.label.toLowerCase()}.`);
+                if (!layer.polygons.length) throw new Error(`No polygons match in ${layer.label}. Add a polygon or change the layer's filter.`);
+                inputs[name] = {kind: "drawnPolygons", key: layer.key, polygons: layer.polygons};
+            } else if ((startingMask || references) && state.areaMode === "raster") {
                 const raster = state.maskRaster;
                 inputs[name] = {kind: references ? "raster" : "catalogRaster", source: captureModelRaster(raster, draft.sources, input.type)};
             } else {
@@ -301,7 +320,8 @@ export function captureModelSubmission(draft, requestId, utcOffsetMinutes = -new
                 if (["selectedArea", "samplingBox"].includes(area.kind)) modelAreaInput(area);
                 else if (area.kind === "catalogSelection") modelAreaInput({kind: area.kind, catalogSelection: area.selection});
                 else if (area.kind === "polygonArea") modelAreaInput({kind: area.kind, polygonArea: area.reference});
-                inputs[name] = references ? {kind: "vector", selection: structuredClone(area.selection)} : structuredClone(area);
+                inputs[name] = references && area.kind === "catalogSelection"
+                    ? {kind: "vector", selection: structuredClone(area.selection)} : structuredClone(area);
             }
         }
         else throw new Error(`This tool requires an input type this interface does not yet support: ${input.type}.`);

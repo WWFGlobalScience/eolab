@@ -181,7 +181,7 @@ def _consumer_run_plan(
     )
     operation = get_model_operation("habitat.condition.v1")
     return build_model_job_submission(
-        operation.queue(calculation, None), invocation, None, {}
+        operation.queue(calculation, {}), invocation, None, {}
     )
 
 

@@ -15,7 +15,7 @@ export class ModelsController {
      * @param {Object} dependencies.api Processing API client.
      * @param {Object} dependencies.jobs Existing shared Processing job observer.
      * @param {Object} dependencies.view Models view.
-     * @param {()=>Object} dependencies.getContext Catalog/map suggestions and plain viewport bounds, independent of rendering.
+     * @param {(options?:{includeDrawnPolygons?:boolean})=>Object & {drawnPolygonLayers?:import("./inputs.js").DrawnPolygonLayer[]}} dependencies.getContext Catalog and map choices, with optional detached drawn polygons.
      * @param {(identity:{collectionId:string,itemId:string})=>Promise<Object>} dependencies.getTemporalItem Read the selected dataset's current Catalog metadata.
      * @param {(source:Object,signal:AbortSignal,targetCrs?:string|null)=>Promise<Object>} dependencies.describeSource Read source grid metadata in the chosen CRS.
      * @param {(item:Object,variable:string,month?:string,signal?:AbortSignal)=>Promise<Object>} dependencies.loadTemporalTimes Read actual observation labels for one month.
@@ -50,6 +50,7 @@ export class ModelsController {
             pending: null, submitting: false, actionBusy: false, renamingRun: null, deleteConfirmation: null, actionMessage: ""};
         this.runSnapshots = new Map(); this.revision = 0; this.historyRevision = 0; this.temporalRevision = 0;
         this.vectorSelectionRequests = new Map();
+        this.pendingPolygonAreaIds = [];
         this.tracked = new Set(); this.destroyed = false;
         this.unsubscribe = jobs.subscribe(() => this.observeJobs());
         view.bind({onOpen: () => this.open(), onClose, onPage: page => this.navigate(page),
@@ -403,9 +404,9 @@ export class ModelsController {
         this.editDraft({});
     }
 
-    /** Choose whether setup uses the live map area, vector features or a fixed area.
+    /** Choose a live map area, a source layer or a fixed area for one input.
      * @param {string} name Input name declared by the recipe.
-     * @param {string} mode Whole raster, viewport, samplingArea, mapPolygons, vector, starting raster or captured run area.
+     * @param {string} mode Area mode, or a `drawn:` choice containing a polygon layer key.
      * @return {void}
      */
     chooseArea(name, mode) {
@@ -413,7 +414,10 @@ export class ModelsController {
         const input = draft.inputs[name];
         if (input.filterEditing) this.closeVectorFilter();
         this.vectorSelectionRequests.get(name)?.abort(); this.vectorSelectionRequests.delete(name); input.selecting = false;
-        input.areaMode = mode; input.vectorInfo = null; input.vectorKey = ""; input.selectionError = ""; this.state.error = "";
+        const drawn = mode.startsWith("drawn:");
+        input.areaMode = drawn ? "drawnPolygons" : mode;
+        input.drawnPolygonKey = drawn ? mode.slice("drawn:".length) : "";
+        input.vectorInfo = null; input.vectorKey = ""; input.selectionError = ""; this.state.error = "";
         if (mode === "whole") input.area = {kind: "wholeRaster"};
         else if (mode === "captured") input.area = structuredClone(input.capturedArea);
         else if (["viewport", "samplingArea", "mapPolygons"].includes(mode)) { this.refreshMapArea(); return; }
@@ -567,11 +571,12 @@ export class ModelsController {
     }
 
     /** Combine map inputs with this session's published raster results.
+     * Request committed drawn layers only for Ecosystem Condition setup.
      * @param {Object} model Recipe whose input contract controls eligible choices.
      * @return {Object} Existing map context with available completed-run inputs.
      */
     inputContext(model) {
-        const context = this.getContext();
+        const context = this.getContext({includeDrawnPolygons: model.id === "habitat-condition"});
         const acceptsResults = Object.values(model.inputs).some(input => ["raster", "optional_raster", "habitat_references", "habitat_stack"].includes(input.type));
         const choices = [...(context.rasters ?? []).filter(source => acceptsResults || source.kind !== "runArtifact"),
             ...(acceptsResults ? modelResultSources([...this.runSnapshots.values()]) : [])];
@@ -579,6 +584,7 @@ export class ModelsController {
     }
 
     /** Refresh map choices and recheck live vector inputs when their view filter changes.
+     * Drawn layer choices read the latest committed shapes matching the layer filter.
      * Captured run areas and accepted submissions retain their original predicates.
      * Removed live inputs must be added to the map again or replaced before a new run.
      * @return {void}
@@ -587,6 +593,7 @@ export class ModelsController {
         const draft = this.state.draft;
         if (!draft || this.destroyed || this.state.submitting || this.state.pending) return;
         const context = this.inputContext(draft.model);
+        draft.drawnPolygonLayers = draft.model.id === "habitat-condition" ? context.drawnPolygonLayers ?? [] : [];
         if (draft.temporal) {
             draft.temporal.datasets = structuredClone(context.temporalDatasets ?? []);
             if (draft.temporal.datasetKey && !draft.temporal.datasets.some(source => modelSourceKey(source) === draft.temporal.datasetKey)) {
@@ -631,13 +638,17 @@ export class ModelsController {
         this.refreshRasterPreparation(); this.render();
     }
 
-    /** Submit once, or recover an uncertain response using its original request ID.
+    /** Submit once, or recover an uncertain response using its original request ID and inputs.
+     * Upload drawn polygons only after capturing the whole setup. Release temporary
+     * inputs when preparation fails or admission is rejected. Accepted and uncertain
+     * requests keep their references for the input store's ordinary lifetime.
      * @param {boolean} [retry=false] Retry the saved immutable request.
      * @return {Promise<void>}
      */
     async submit(retry = false) {
         if (this.state.submitting || this.state.pending && !retry) return;
         const draft = this.state.draft; const revision = this.revision;
+        const uploadedPolygonAreaIds = [];
         this.state.error = "";
         try {
             if (!retry && Object.values(draft.inputs).some(input => input.filterEditing)) throw new Error("Apply or close the filter before running the tool.");
@@ -645,12 +656,33 @@ export class ModelsController {
             const submission = retry ? this.state.pending : captureModelSubmission(draft, this.newId());
             if (!submission) return;
             if (!this.storage) throw new Error("Enable session storage to submit a recoverable run.");
+            if (!retry) {
+                const drawn = Object.entries(submission.inputs).filter(([, value]) => value?.kind === "drawnPolygons");
+                if (drawn.length) {
+                    this.state.submitting = true; this.render();
+                    const references = new Map();
+                    for (const [name, layer] of drawn) {
+                        let reference = references.get(layer.key);
+                        if (!reference) {
+                            // Let the reply settle so a superseded setup can release its input.
+                            const area = await this.api.uploadPolygonArea(layer.polygons);
+                            reference = area.polygonArea;
+                            uploadedPolygonAreaIds.push(reference.id);
+                            if (this.destroyed || revision !== this.revision) return;
+                            references.set(layer.key, reference);
+                        }
+                        submission.inputs[name] = {kind: "polygonArea", reference};
+                    }
+                }
+            }
             const serialized = JSON.stringify(submission);
             if (new TextEncoder().encode(serialized).length > 16384) throw new Error("Tool inputs exceed the 16 KiB submission limit.");
             this.storage.setItem(RECOVERY_KEY, serialized);
+            if (!retry) this.pendingPolygonAreaIds = uploadedPolygonAreaIds.splice(0);
             this.state.pending = submission; this.state.submitting = true; this.render();
             const job = await this.api.submitModelRun(submission);
             this.state.pending = null;
+            this.pendingPolygonAreaIds = [];
             try { this.storage.removeItem(RECOVERY_KEY); } catch { /* The saved ID still safely recovers this same accepted run. */ }
             this.rememberRun(job); this.jobs.accept(job);
             if (revision === this.revision) await this.showRun(job.jobId);
@@ -658,10 +690,25 @@ export class ModelsController {
             // A definite rejection allows editing. Transport/5xx failures retain
             // the exact request because the server may already have accepted it.
             if (error instanceof ProcessingRequestError && error.status >= 400 && error.status < 500) {
+                this.discardPolygonAreas(this.pendingPolygonAreaIds);
+                this.pendingPolygonAreaIds = [];
                 this.state.pending = null; try { this.storage?.removeItem(RECOVERY_KEY); } catch { /* Retry identity remains harmless. */ }
             }
-            this.state.error = `${error.message}${this.state.pending ? " Use Recover submission to retry the same request." : ""}`;
-        } finally { this.state.submitting = false; this.render(); }
+            if (revision === this.revision && !this.destroyed)
+                this.state.error = `${error.message}${this.state.pending ? " Use Recover submission to retry the same request." : ""}`;
+        } finally {
+            this.discardPolygonAreas(uploadedPolygonAreaIds);
+            this.state.submitting = false; this.render();
+        }
+    }
+
+    /** Release polygon uploads made by this tab after an abandoned or rejected submission.
+     * The ordinary input expiry also removes references when a release cannot reach the server.
+     * @param {string[]} ids Private input IDs created by this controller.
+     * @return {void}
+     */
+    discardPolygonAreas(ids) {
+        for (const id of ids) void this.api.discardPolygonArea(id).catch(() => {});
     }
 
     /** Retain authoritative run state while hiding deleted runs from the interface.
@@ -904,6 +951,9 @@ export class ModelsController {
      * a captured area to that view's current filter.
      * @return {Promise<void>}
      */
+    /** Open a saved invocation in editable setup, retaining its exact polygon references.
+     * @return {Promise<void>} Completion after the copied setup loads its current source choices.
+     */
     async duplicateRun() {
         const saved = this.state.invocation; if (!saved) return;
         this.resetRasterPreparation();
@@ -946,9 +996,11 @@ export class ModelsController {
                 input.area = null; input.areaMode = "raster";
                 input.maskRaster = structuredClone(saved.inputs[name].source);
             } else if (["summary_area", "clip_area", "mask_source", "habitat_references"].includes(definition.type)) {
-                input.area = definition.type === "habitat_references" ? {kind: "catalogSelection", selection: structuredClone(saved.inputs[name].selection)} : structuredClone(saved.inputs[name]);
+                const value = saved.inputs[name];
+                input.area = definition.type === "habitat_references" && value.kind === "vector"
+                    ? {kind: "catalogSelection", selection: structuredClone(value.selection)} : structuredClone(value);
                 input.capturedArea = structuredClone(input.area); input.areaMode = input.area.kind === "wholeRaster" ? "whole" : "captured"; input.areaOrigin = "run";
-                input.areaDescription = "Exact area and filter copied from the original run.";
+                input.areaDescription = input.area.kind === "polygonArea" ? "Exact polygons from the original run." : "Exact area and filter copied from the original run.";
             }
         }
         const preparationName = Object.keys(model.inputs).find(name => model.inputs[name].type === "raster_preparation");

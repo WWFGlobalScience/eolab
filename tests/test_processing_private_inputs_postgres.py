@@ -169,13 +169,13 @@ def additional_raster_model(
         )
 
     def queue_comparison_summary(
-        request: SummaryWithAdditionalRasters, polygons: AggregateArea | None
+        request: SummaryWithAdditionalRasters, polygons: dict[str, AggregateArea]
     ) -> PreparedJobPlan:
         """Persist the comparison sources with the existing summary submission.
 
         Args:
             request: Summary and named raster references selected for the run.
-            polygons: Ordinary owned-polygon area, when supplied.
+            polygons: Ordinary owned-polygon inputs keyed by role.
 
         Returns:
             Queued summary plan preserving the additional raster descriptors.
@@ -183,7 +183,7 @@ def additional_raster_model(
         return replace(
             original.queue(request, polygons),
             specification=QueuedSummaryWithAdditionalRasters(
-                request=request, polygonArea=polygons
+                request=request, polygonArea=polygons.get("area")
             ).model_dump(mode="json", by_alias=True),
         )
 

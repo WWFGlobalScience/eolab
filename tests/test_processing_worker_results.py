@@ -216,7 +216,7 @@ def test_model_worker_executes_native_results_and_exports_yaml(
     calculation, invocation = build_model_calculation_request(request, registry)
     operation = get_model_operation(definition.steps[0].operation)
     prepared = build_model_job_submission(
-        operation.queue(calculation, None),
+        operation.queue(calculation, {}),
         invocation,
         tuple(signature.to_catalog()),
     )

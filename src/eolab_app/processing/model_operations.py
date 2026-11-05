@@ -86,6 +86,20 @@ Queued = TypeVar("Queued", bound=BaseModel)
 Prepared = TypeVar("Prepared", bound=BaseModel)
 
 
+def _area_polygon_inputs(
+    reference: PolygonAreaReference | None,
+) -> dict[str, PolygonAreaReference]:
+    """Name the single polygon input accepted by an area-only operation.
+
+    Args:
+        reference: An owned polygon reference, or None for another area kind.
+
+    Returns:
+        The reference under the area role, or an empty mapping.
+    """
+    return {"area": reference} if reference is not None else {}
+
+
 @dataclass(frozen=True)
 class OperationOutput:
     """The result type a registered operation produces, independent of recipe naming.
@@ -129,11 +143,13 @@ class ModelOperation(Generic[Request, Queued, Prepared]):
         source: Extract the primary Catalog or owned run-file reference. None
             declares that the operation needs no pre-existing primary raster;
             primary_input must also be None.
-        polygon: Identify an owned polygon upload that admission must copy.
+        polygon_inputs: Return owned polygon references by input role so
+            admission can copy their geometry into the queued plan.
         vector_selections: Return selected vectors keyed by operation input name;
             admission retains their uploaded sources. Return an empty mapping
             when the request has no vector selections.
-        queue: Capture inputs and ordinary sharing identity; model admission removes it.
+        queue: Capture inputs, including copied polygons keyed by role, and
+            ordinary sharing identity. Model admission removes sharing identity.
         prepare: Resolve captured inputs into a native calculation plan. Receives
             None as its primary source when source is None.
         execution: Select the native target, action and execution settings.
@@ -174,9 +190,9 @@ class ModelOperation(Generic[Request, Queued, Prepared]):
         ]
         | None
     )
-    polygon: Callable[[Request], PolygonAreaReference | None]
+    polygon_inputs: Callable[[Request], dict[str, PolygonAreaReference]]
     vector_selections: Callable[[Request], dict[str, VectorSelection]]
-    queue: Callable[[Request, AggregateArea | None], PreparedJobPlan]
+    queue: Callable[[Request, dict[str, AggregateArea]], PreparedJobPlan]
     prepare: Callable[
         [
             OperationContext,
@@ -263,9 +279,11 @@ OPERATIONS = MappingProxyType(
                 policy_type=HabitatInputPreparationInputs,
                 bind=habitat_inputs.bind_habitat_input_preparation,
                 source=None,
-                polygon=lambda request: None,
+                polygon_inputs=lambda request: {},
                 vector_selections=lambda request: {"area": request.selection},
-                queue=habitat_inputs.build_habitat_input_preparation_submission,
+                queue=lambda request, polygons: (
+                    habitat_inputs.build_habitat_input_preparation_submission(request)
+                ),
                 prepare=habitat_inputs.prepare_habitat_input_preparation,
                 execution=lambda spec, context: (
                     habitat_inputs.habitat_input_preparation_process_target,
@@ -320,7 +338,7 @@ OPERATIONS = MappingProxyType(
                 policy_type=HabitatSettings,
                 bind=habitat.bind_habitat,
                 source=None,
-                polygon=habitat.get_habitat_polygon,
+                polygon_inputs=habitat.get_habitat_polygon_inputs,
                 vector_selections=habitat.get_habitat_vector_selections,
                 queue=habitat.build_habitat_submission,
                 prepare=habitat.prepare_habitat,
@@ -380,13 +398,17 @@ OPERATIONS = MappingProxyType(
                 policy_type=stack.TemporalStackNumericalPolicy,
                 bind=stack.bind_temporal_stack,
                 source=series.get_series_source,
-                polygon=series.get_series_polygon,
+                polygon_inputs=lambda request: _area_polygon_inputs(
+                    series.get_series_polygon(request)
+                ),
                 vector_selections=lambda request: (
                     {"area": request.catalogSelection}
                     if request.catalogSelection is not None
                     else {}
                 ),
-                queue=stack.build_stack_submission,
+                queue=lambda request, polygons: stack.build_stack_submission(
+                    request, polygons.get("area")
+                ),
                 prepare=stack.prepare_temporal_stack,
                 execution=stack.select_stack_execution,
                 policy=stack.describe_stack_policy,
@@ -421,13 +443,17 @@ OPERATIONS = MappingProxyType(
                 policy_type=series.TemporalSeriesNumericalPolicy,
                 bind=series.bind_temporal_series,
                 source=series.get_series_source,
-                polygon=series.get_series_polygon,
+                polygon_inputs=lambda request: _area_polygon_inputs(
+                    series.get_series_polygon(request)
+                ),
                 vector_selections=lambda request: (
                     {"area": request.catalogSelection}
                     if request.catalogSelection is not None
                     else {}
                 ),
-                queue=series.build_series_submission,
+                queue=lambda request, polygons: series.build_series_submission(
+                    request, polygons.get("area")
+                ),
                 prepare=series.prepare_temporal_series,
                 execution=series.select_series_execution,
                 policy=series.describe_series_policy,
@@ -470,13 +496,17 @@ OPERATIONS = MappingProxyType(
                 policy_type=temporal.TemporalMapNumericalPolicy,
                 bind=temporal.bind_temporal_map,
                 source=temporal.get_temporal_source,
-                polygon=temporal.get_temporal_polygon,
+                polygon_inputs=lambda request: _area_polygon_inputs(
+                    temporal.get_temporal_polygon(request)
+                ),
                 vector_selections=lambda request: (
                     {"area": request.catalogSelection}
                     if request.catalogSelection is not None
                     else {}
                 ),
-                queue=temporal.build_temporal_submission,
+                queue=lambda request, polygons: temporal.build_temporal_submission(
+                    request, polygons.get("area")
+                ),
                 prepare=temporal.prepare_temporal_map,
                 execution=temporal.select_temporal_execution,
                 policy=temporal.describe_temporal_policy,
@@ -552,13 +582,15 @@ OPERATIONS = MappingProxyType(
                 policy_type=ClosedEdgeDownstreamNumericalPolicy,
                 bind=downstream.bind_downstream,
                 source=downstream.get_values_source,
-                polygon=downstream.get_uploaded_polygon,
+                polygon_inputs=lambda request: {},
                 vector_selections=lambda request: (
                     {"starting_mask": request.starting_mask.selection}
                     if isinstance(request.starting_mask, VectorStartingMask)
                     else {}
                 ),
-                queue=downstream.build_downstream_submission,
+                queue=lambda request, polygons: downstream.build_downstream_submission(
+                    request, None
+                ),
                 prepare=downstream.prepare_downstream,
                 execution=downstream.select_downstream_execution,
                 policy=downstream.describe_downstream_policy,
@@ -587,13 +619,17 @@ OPERATIONS = MappingProxyType(
                 policy_type=raster.SummaryNumericalPolicy,
                 bind=raster.bind_summary,
                 source=raster.get_summary_source,
-                polygon=raster.get_summary_polygon,
+                polygon_inputs=lambda request: _area_polygon_inputs(
+                    raster.get_summary_polygon(request)
+                ),
                 vector_selections=lambda request: (
                     {"area": request.catalogSelection}
                     if request.catalogSelection is not None
                     else {}
                 ),
-                queue=raster.build_summary_submission,
+                queue=lambda request, polygons: raster.build_summary_submission(
+                    request, polygons.get("area")
+                ),
                 prepare=raster.prepare_summary,
                 execution=raster.select_summary_execution,
                 policy=raster.describe_summary_policy,
@@ -616,13 +652,15 @@ OPERATIONS = MappingProxyType(
                 policy_type=raster.ClipNumericalPolicy,
                 bind=raster.bind_clip,
                 source=raster.get_clip_source,
-                polygon=raster.get_clip_polygon,
+                polygon_inputs=lambda request: {},
                 vector_selections=lambda request: (
                     {"area": request.catalogSelection}
                     if request.catalogSelection is not None
                     else {}
                 ),
-                queue=raster.build_clip_submission,
+                queue=lambda request, polygons: raster.build_clip_submission(
+                    request, None
+                ),
                 prepare=raster.prepare_clip,
                 execution=raster.select_clip_execution,
                 policy=raster.describe_clip_policy,

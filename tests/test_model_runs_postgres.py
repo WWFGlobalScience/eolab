@@ -18,6 +18,7 @@ import psycopg
 import pytest
 
 from eolab_app.processing.model_definitions import ModelDefinition, ModelRegistry
+from eolab_app.processing.habitat_models import QueuedHabitat
 from eolab_app.processing.model_run_contracts import RunDocument
 from eolab_app.processing.model_yaml import parse_yaml
 from eolab_app.processing.models import PreparedJobPlan, ProcessingError
@@ -1446,6 +1447,89 @@ def test_model_whole_raster_and_owned_polygon_inputs(
     assert ready["status"] == "ready", ready
     export = client.get(f"/api/processing/jobs/{job['jobId']}/run-yaml")
     assert export.status_code == 200 and "coordinates:" not in export.text
+
+
+def test_habitat_admission_retains_both_owned_polygon_roles(
+    model_boundary: Any, store: PostgresJobStore
+) -> None:
+    """Keep independent drawn geometry after release and deny foreign inputs.
+
+    Args:
+        model_boundary: Real model HTTP service with authorized raster inputs.
+        store: Disposable PostgreSQL job and polygon-input store.
+    """
+    client, _, _ = model_boundary
+    endpoint = "/api/processing/polygon-areas"
+    assessment = rectangle(0.1, 9.1, 0.5, 9.5)
+    references = rectangle(0.2, 9.2, 0.3, 9.3)
+
+    def upload(browser: TestClient, geometry: dict[str, Any]) -> dict[str, Any]:
+        """Upload one browser-owned polygon and return its model input value.
+
+        Args:
+            browser: Browser with its own Processing session.
+            geometry: Valid GeoJSON polygon to upload.
+
+        Returns:
+            Model input carrying only the opaque reference.
+        """
+        response = browser.post(
+            endpoint, headers=HEADERS, json={"polygons": [geometry]}
+        )
+        assert response.status_code == 200, response.text
+        return {"kind": "polygonArea", "reference": response.json()["polygonArea"]}
+
+    area = upload(client, assessment)
+    sites = upload(client, references)
+    body = model_request(
+        client,
+        "habitat-condition",
+        inputs={
+            "stack": {
+                "predictors": [{"name": "land_cover", "source": SOURCE}],
+                "responses": [{"name": "cover", "source": SOURCE}],
+                "categoricalPredictor": "land_cover",
+            },
+            "area": area,
+            "references": sites,
+            "habitat_mask": None,
+            "preparation": {
+                "crs": "EPSG:6933",
+                "pixelSize": [500, 500],
+                "origin": [0, 0],
+                "resampling": {"predictor_0": "nearest", "response_0": "nearest"},
+            },
+        },
+    )
+    owner = hashlib.sha256(client.cookies.get(COOKIE).encode()).hexdigest()
+    with TestClient(client.app, base_url="https://testserver") as other:
+        foreign = upload(other, references)
+        for role in ("area", "references"):
+            response = client.post(
+                "/api/processing/model-runs",
+                headers=HEADERS,
+                json={**body, "inputs": {**body["inputs"], role: foreign}},
+            )
+            assert response.status_code == 409, response.text
+            assert store.find_request(owner, body["requestId"]) is None
+
+    job = submit(client, body)
+    for value in (area, sites):
+        identifier = value["reference"]["id"]
+        assert (
+            client.delete(f"{endpoint}/{identifier}", headers=HEADERS).status_code
+            == 200
+        )
+    assert submit(client, body)["jobId"] == job["jobId"]
+    queued = QueuedHabitat.model_validate(
+        store.get(job["jobId"], owner)["spec"]["calculation"]
+    )
+    assert queued.polygonArea is not None
+    assert queued.polygonArea.geometries == (assessment,)
+    assert queued.referencePolygons is not None
+    assert queued.referencePolygons.geometries == (references,)
+    run_yaml = client.get(f"/api/processing/jobs/{job['jobId']}/run-yaml")
+    assert run_yaml.status_code == 200 and "coordinates:" not in run_yaml.text
 
 
 @pytest.mark.parametrize("model_id", ["raster-summary", "raster-clip"])

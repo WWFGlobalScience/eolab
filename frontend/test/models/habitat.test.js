@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ModelsController } from "../../src/models/controller.js";
 import { ModelsView } from "../../src/models/view.js";
 import { captureModelSubmission, createModelDraft, modelSourceKey } from "../../src/models/inputs.js";
+import { ProcessingRequestError } from "../../src/processing/api.js";
 import { SummaryControlDocument } from "../../test-support/processing/summary-document.js";
 import { model, selection, job, fileManifest, clipResult } from "../../test-support/models/fixtures.js";
 
@@ -53,6 +54,7 @@ function edit(control, value, event = "change") {
  */
 async function fixture(contextOverrides = {}) {
     const requests = [], filters = [], values = new Map();
+    const uploads = [], released = [];
     const context = {
         rasters: ["Environment", "Habitat class", "Productivity", "Reference mask", "Assessment mask"].map((label, index) =>
             ({collectionId: "eolab-mounted-geotiffs", itemId: `geotiff-${index.toString(16).padStart(24, "0")}`, label, visible: false})),
@@ -64,6 +66,11 @@ async function fixture(contextOverrides = {}) {
     };
     const api = {discoverModels: async () => [model, habitat], listModelRuns: async () => ({jobs: [], nextCursor: null}),
         getHabitatEarthEngineOptions: async () => structuredClone(earthEngineOptions),
+        uploadPolygonArea: async polygons => {
+            const polygonArea = {id: String(uploads.length + 1).padStart(32, "0"), sha256: "a".repeat(64)};
+            uploads.push({polygons, polygonArea}); return {polygonArea};
+        },
+        discardPolygonArea: async id => { released.push(id); },
         submitModelRun: async request => { requests.push(request); return job({model: habitat}); },
         getJob: async () => job({model: habitat}),
         readModelInvocation: async () => ({...requests[0], model: {...habitat, definition: habitat}})};
@@ -87,7 +94,7 @@ async function fixture(contextOverrides = {}) {
     assert.deepEqual(controller.state.library.map(recipe => recipe.id), [model.id, habitat.id]);
     controller.setActive(true); controller.chooseModel(habitat);
     await settle();
-    return {controller, view, doc, context, api, jobs, requests, filters};
+    return {controller, view, doc, context, api, jobs, requests, filters, uploads, released};
 }
 
 /** Select a vector and review the named input's filter using the composed editor.
@@ -606,6 +613,129 @@ test("direct spatial choices retain opaque view identity, independent filters an
     assert.equal(h.view.setup.inputs.references.resampling.disabled, true);
     assert.equal(h.view.setup.run.disabled, true);
     assert.deepEqual(h.requests[0].inputs, captured);
+});
+
+/** Supply a committed annotation snapshot with one polygon matching the map filter.
+ * @param {string} label Layer name displayed by the chooser.
+ * @param {number} west Left edge of its matched polygon.
+ * @return {{key:string,label:string,polygons:Array<{type:string,coordinates:number[][][]}>,total:number}} Drawn layer with three committed polygons.
+ */
+function drawnPolygonLayer(label, west) {
+    return {key: `local:annotation:${label}`, label, total: 3,
+        polygons: [{type: "Polygon", coordinates: [[[west, 0], [west + 1, 0], [west, 1], [west, 0]]]}]};
+}
+
+test("both Ecosystem inputs select filtered drawn layers and capture them together at Run", async t => {
+    const study = drawnPolygonLayer("Study", 0), references = drawnPolygonLayer("Forest", 2);
+    const h = await fixture({drawnPolygonLayers: [study, references]}); t.after(() => h.controller.destroy());
+    const {area, references: sites} = h.view.setup.inputs;
+    edit(area.source, `drawn:${study.key}`); edit(sites.source, `drawn:${references.key}`);
+    assert.equal(area.source.value, `drawn:${study.key}`);
+    assert.equal(sites.source.value, `drawn:${references.key}`);
+    assert.equal(sites.selectedCount.textContent, "1 of 3 polygons selected");
+    assert.match(sites.filterDescription.textContent, /layer's filter/);
+    assert.equal(sites.editFilter.hidden, true);
+    assert.equal(sites.resampling.disabled, true);
+    assert.equal(h.view.setup.run.disabled, false);
+    assert.deepEqual(h.uploads, []);
+
+    h.context.drawnPolygonLayers = [study]; h.controller.refreshMapLayers();
+    assert.equal(sites.source.value, "");
+    assert.equal(area.source.value, `drawn:${study.key}`);
+    h.context.drawnPolygonLayers.push({...references, polygons: []}); h.controller.refreshMapLayers();
+    assert.equal(sites.selectedCount.textContent, "0 of 3 polygons selected");
+    assert.match(sites.vectorStatus.textContent, /No polygons match/);
+    assert.equal(h.view.setup.run.disabled, true);
+    await h.controller.submit();
+    assert.deepEqual(h.uploads, [], "an invalid second choice is checked before uploading the first");
+
+    h.context.drawnPolygonLayers[1] = references;
+    const captured = structuredClone(references.polygons);
+    let finishUpload;
+    const firstUpload = new Promise(resolve => { finishUpload = resolve; });
+    const upload = h.api.uploadPolygonArea;
+    h.api.uploadPolygonArea = async polygons => {
+        const reply = await upload(polygons);
+        if (h.uploads.length === 1) await firstUpload;
+        return reply;
+    };
+    const submitting = h.controller.submit();
+    assert.equal(h.uploads.length, 1);
+    references.polygons[0].coordinates[0][1][0] += 0.5;
+    finishUpload(); await submitting;
+    assert.deepEqual(h.uploads[1].polygons, captured, "both choices were copied before the first upload");
+    assert.deepEqual(h.requests[0].inputs.area, {kind: "polygonArea", reference: h.uploads[0].polygonArea});
+    assert.deepEqual(h.requests[0].inputs.references, {kind: "polygonArea", reference: h.uploads[1].polygonArea});
+    assert.deepEqual(h.released, []);
+
+    h.controller.chooseModel(model);
+    assert.equal(h.view.setup.inputs.area.source.querySelectorAll("optgroup").some(group => group.label === "Drawn polygons"), false);
+});
+
+test("one drawn layer used for both inputs uploads once and duplication keeps the exact accepted reference", async t => {
+    const layer = drawnPolygonLayer("Forest", 2);
+    const h = await fixture({drawnPolygonLayers: [layer]}); t.after(() => h.controller.destroy());
+    for (const name of ["area", "references"]) edit(h.view.setup.inputs[name].source, `drawn:${layer.key}`);
+    await h.controller.submit();
+    assert.equal(h.uploads.length, 1);
+    assert.deepEqual(h.requests[0].inputs.area, h.requests[0].inputs.references);
+    h.context.drawnPolygonLayers = [];
+    await h.controller.duplicateRun();
+    assert.equal(h.view.setup.inputs.area.source.value, "captured");
+    assert.equal(h.view.setup.inputs.references.source.value, "captured");
+    assert.deepEqual(captureModelSubmission(h.controller.state.draft, "duplicate").inputs, h.requests[0].inputs);
+    h.api.submitModelRun = async request => {
+        h.requests.push(request);
+        throw new ProcessingRequestError("This calculation area expired or is unavailable. Select the layer again.", 409);
+    };
+    await h.controller.submit();
+    assert.deepEqual(h.requests[1].inputs, h.requests[0].inputs);
+    assert.equal(h.uploads.length, 1);
+    assert.deepEqual(h.released, [], "a duplicated request does not own the original run's reference");
+    assert.match(h.controller.state.error, /Select the layer again/);
+    assert.equal(h.controller.state.pending, null);
+});
+
+for (const obsolete of [false, true]) test(`drawn polygon preparation releases partial uploads when ${obsolete ? "setup changes" : "the second upload fails"}`, async t => {
+    const study = drawnPolygonLayer("Study", 0), references = drawnPolygonLayer("Forest", 2);
+    const h = await fixture({drawnPolygonLayers: [study, references]}); t.after(() => h.controller.destroy());
+    edit(h.view.setup.inputs.area.source, `drawn:${study.key}`);
+    edit(h.view.setup.inputs.references.source, `drawn:${references.key}`);
+    let finishUpload;
+    const firstUpload = new Promise(resolve => { finishUpload = resolve; });
+    const upload = h.api.uploadPolygonArea;
+    h.api.uploadPolygonArea = async polygons => {
+        if (h.uploads.length) throw new Error("Could not upload the second layer");
+        const reply = await upload(polygons); await firstUpload; return reply;
+    };
+    const submitting = h.controller.submit();
+    if (obsolete) h.controller.chooseModel(habitat);
+    finishUpload(); await submitting;
+    assert.deepEqual(h.requests, []);
+    assert.deepEqual(h.released, [h.uploads[0].polygonArea.id]);
+    assert.equal(h.controller.state.pending, null);
+    if (obsolete) assert.equal(h.controller.state.error, "");
+    else assert.match(h.controller.state.error, /Could not upload the second layer/);
+});
+
+test("uncertain admission retries the captured drawn references and releases them on definite rejection", async t => {
+    const layer = drawnPolygonLayer("Forest", 2);
+    const h = await fixture({drawnPolygonLayers: [layer]}); t.after(() => h.controller.destroy());
+    for (const name of ["area", "references"]) edit(h.view.setup.inputs[name].source, `drawn:${layer.key}`);
+    h.api.submitModelRun = async request => {
+        h.requests.push(request);
+        if (h.requests.length === 1) throw new TypeError("Connection lost");
+        throw new ProcessingRequestError("Invalid reference sites", 422);
+    };
+    await h.controller.submit();
+    assert.deepEqual(h.controller.state.pending, h.requests[0]);
+    assert.deepEqual(h.released, []);
+    h.context.drawnPolygonLayers = [];
+    await h.controller.submit(true);
+    assert.deepEqual(h.requests[1], h.requests[0]);
+    assert.equal(h.uploads.length, 1);
+    assert.deepEqual(h.released, [h.uploads[0].polygonArea.id]);
+    assert.equal(h.controller.state.pending, null);
 });
 
 test("an expired selected reference output stays identified and explained by the direct chooser", async t => {
