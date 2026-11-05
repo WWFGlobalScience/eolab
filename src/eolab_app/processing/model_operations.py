@@ -491,6 +491,7 @@ OPERATIONS = MappingProxyType(
                 ),
                 progress_descriptions=(
                     ("reducing", "Calculating the period map"),
+                    ("ordering", "Calculating the period statistic"),
                     ("creating_cog", "Preparing result rasters"),
                 ),
             ),

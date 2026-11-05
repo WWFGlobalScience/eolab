@@ -1,10 +1,12 @@
 """Verify period-map calculations using native GeoTIFF inputs and completed COGs."""
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+from itertools import count
 import json
 from pathlib import Path
+from types import SimpleNamespace, TracebackType
 from typing import Literal
 
 import numpy as np
@@ -17,6 +19,7 @@ from rasterio.crs import CRS
 from rasterio.windows import Window
 
 from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregateLimits
+from eolab_app.processing.models import ProcessingError
 from eolab_app.processing.polygon_areas import PolygonSummaryInput
 from eolab_app.processing.temporal_models import (
     PrecipitationConversion,
@@ -27,16 +30,21 @@ from eolab_app.processing.temporal_models import (
 )
 from eolab_app.processing.temporal_operation import describe_temporal_policy
 from eolab_app.processing.temporal_reduce import create_temporal_map
+import eolab_app.processing.temporal_reduce as temporal_reduce
 from eolab_app.processing.temporal_grid import plan_temporal_grid
 from eolab_app.raster.source_models import TemporalIntervalSelection
-from eolab_app.raster.temporal import ResolvedTemporalInterval, TemporalObservation
+from eolab_app.raster.temporal import (
+    ResolvedTemporalInterval,
+    TemporalObservation,
+    TemporalRasterDataset,
+)
 from eolab_app.vector.filters import VectorFilter
 from catalog_selection_support import write_selection
 
 
 def _write_observation(
     path: Path,
-    values: NDArray[np.float32],
+    values: NDArray[np.float32] | NDArray[np.float64],
     transform: Affine,
     nodata: float | None,
 ) -> Path:
@@ -44,7 +52,7 @@ def _write_observation(
 
     Args:
         path: New GeoTIFF location inside the isolated archive.
-        values: Native observation values in published column order.
+        values: Native float32 or float64 values in published column order.
         transform: Affine mapping native pixel edges to EPSG:4326.
         nodata: Declared invalid value, or None when no explicit value is declared.
 
@@ -62,7 +70,7 @@ def _write_observation(
         height=values.shape[0],
         width=values.shape[1],
         count=1,
-        dtype="float32",
+        dtype=values.dtype.name,
         crs="EPSG:4326",
         transform=transform,
         nodata=nodata,
@@ -167,6 +175,419 @@ def _calculate(
         lastObservation=interval.observations[-1].time,
     )
     return spec, create_temporal_map(interval, spec, directory, limits)
+
+
+@pytest.fixture
+def tiled_interval(
+    interval: ResolvedTemporalInterval, tmp_path: Path
+) -> tuple[ResolvedTemporalInterval, NDArray[np.float32]]:
+    """Repeat real observations across four native tiles, retaining invalid cells.
+
+    Args:
+        interval: Three admitted observations with mixed validity.
+        tmp_path: Isolated archive root.
+
+    Returns:
+        A 32-by-32 interval and its stored values, including one cell whose
+        floating-point sum distinguishes chronological addition from reordering.
+    """
+    native_values = []
+    for observation in interval.observations:
+        with rasterio.open(observation.path) as source:
+            native_values.append(source.read(1))
+    values = np.tile(np.stack(native_values), (1, 16, 8))
+    values[:, 0, 0] = [2**60, -(2**60), 1]
+    transform = Affine(0.1, 0, 10, 0, -0.1, 12)
+    observations = tuple(
+        replace(
+            observation,
+            path=_write_observation(
+                tmp_path / "tiled-archive" / f"weather-{index}.tif",
+                values[index],
+                transform,
+                -9999,
+            ),
+            transform=transform,
+        )
+        for index, observation in enumerate(interval.observations)
+    )
+    return replace(interval, observations=observations), values
+
+
+@dataclass(frozen=True)
+class TemporalProgressSnapshot:
+    """Record reported work alongside completed native reads and output files.
+
+    Attributes:
+        phase: Operation-owned stage being reported.
+        completed: Reported completed work for that stage.
+        total: Reported total work for that stage.
+        unit: Work unit carried by the existing progress contract.
+        reads: Native observation-window reads completed when reported.
+        result_exists: Whether the primary COG exists at this update.
+        count_exists: Whether the count COG exists at this update.
+    """
+
+    phase: str
+    completed: int
+    total: int
+    unit: str
+    reads: int
+    result_exists: bool
+    count_exists: bool
+
+
+@dataclass
+class TemporalExecutionTrace:
+    """Retain real observation-handle lifetimes, native reads and progress.
+
+    Attributes:
+        opened: Observation paths in native-handle creation order.
+        active: Observation handles not yet closed; output writers are separate.
+        maximum_active: Most observation handles open simultaneously.
+        reads: Source paths and native windows read in execution order.
+        progress: Reported work and the corresponding actual execution state.
+    """
+
+    opened: list[Path] = field(default_factory=list)
+    active: set[TemporalRasterDataset] = field(default_factory=set)
+    maximum_active: int = 0
+    reads: list[tuple[Path, tuple[int, int, int, int]]] = field(default_factory=list)
+    progress: list[TemporalProgressSnapshot] = field(default_factory=list)
+
+
+def _trace_temporal_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> TemporalExecutionTrace:
+    """Observe the real period-map entrypoint without replacing source reads.
+
+    Args:
+        monkeypatch: Isolated wrappers around this operation's existing providers.
+
+    Returns:
+        Mutable trace populated by native reads, handle closure and real progress
+        writes. A local clock advances each call so throttled updates need no sleep.
+    """
+    trace = TemporalExecutionTrace()
+    read_window = temporal_reduce.read_native_raster_window
+    write_progress = temporal_reduce.write_progress
+    ticks = count(1)
+
+    class TrackedTemporalRasterDataset(TemporalRasterDataset):
+        """Count only observation handles while retaining the real native reader."""
+
+        def __init__(self, observation: TemporalObservation) -> None:
+            """Open the admitted source and record its active native handle.
+
+            Args:
+                observation: Unchanged admitted GeoTIFF observation.
+
+            Raises:
+                rasterio.errors.RasterioError: If the native source cannot open.
+            """
+            super().__init__(observation)
+            trace.opened.append(observation.path)
+            trace.active.add(self)
+            trace.maximum_active = max(trace.maximum_active, len(trace.active))
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            """Close the native source and record that its handle was released.
+
+            Args:
+                exc_type: Exception type passed by the real context manager.
+                exc_value: Active exception, if any.
+                traceback: Active exception traceback, if any.
+            """
+            try:
+                super().__exit__(exc_type, exc_value, traceback)
+            finally:
+                trace.active.remove(self)
+
+    def record_read(
+        dataset: TemporalRasterDataset, window: Window
+    ) -> np.ma.MaskedArray:
+        """Read native values and record the successfully completed source window.
+
+        Args:
+            dataset: Open observation using the existing native validity contract.
+            window: Native window selected by the operation.
+
+        Returns:
+            The real reader's finite, non-NoData masked values.
+
+        Raises:
+            rasterio.errors.RasterioError: If the native values cannot be read.
+        """
+        values = read_window(dataset, window)
+        trace.reads.append(
+            (
+                Path(dataset.name),
+                (
+                    int(window.col_off),
+                    int(window.row_off),
+                    int(window.width),
+                    int(window.height),
+                ),
+            )
+        )
+        return values
+
+    def record_progress(
+        directory: Path, phase: str, complete: int, total: int, *, unit: str = "blocks"
+    ) -> None:
+        """Publish the real progress record and capture its corresponding work.
+
+        Args:
+            directory: Attempt-owned output directory.
+            phase: Operation-owned stage.
+            complete: Completed work for this stage.
+            total: Total work for this stage.
+            unit: Work unit passed to the existing progress writer.
+
+        Raises:
+            OSError: If the actual progress file cannot be written.
+        """
+        write_progress(directory, phase, complete, total, unit=unit)
+        trace.progress.append(
+            TemporalProgressSnapshot(
+                phase,
+                complete,
+                total,
+                unit,
+                len(trace.reads),
+                (directory / "result.tif").exists(),
+                (directory / "count.tif").exists(),
+            )
+        )
+
+    def advance_progress_clock() -> float:
+        """Return advancing operation-local seconds so each read can report work.
+
+        Returns:
+            One more second than the previous call, without changing library clocks.
+        """
+        return float(next(ticks))
+
+    monkeypatch.setattr(
+        temporal_reduce, "TemporalRasterDataset", TrackedTemporalRasterDataset
+    )
+    monkeypatch.setattr(temporal_reduce, "read_native_raster_window", record_read)
+    monkeypatch.setattr(temporal_reduce, "write_progress", record_progress)
+    monkeypatch.setattr(
+        temporal_reduce, "time", SimpleNamespace(monotonic=advance_progress_clock)
+    )
+    return trace
+
+
+def _expected_tiled_reduction(
+    values: NDArray[np.float32] | NDArray[np.float64],
+    reducer: str,
+    durations: tuple[float, ...],
+    nodata: float = -9999,
+    factor: float = 1.0,
+) -> tuple[NDArray[np.float64], NDArray[np.uint64]]:
+    """Calculate independent scalar references from the actual stored observations.
+
+    Args:
+        values: Chronological native values, including NaN and declared NoData.
+        reducer: Statistic requested by the test.
+        durations: Seconds represented by each observation for precipitation totals.
+        nodata: Declared missing value to exclude alongside nonfinite values.
+        factor: Precipitation conversion applied after multiplying by duration.
+
+    Returns:
+        Statistic and valid-observation counts for every native cell. Sum and
+        precipitation use chronological scalar float64 addition; other references
+        use NumPy's independent scalar statistical functions.
+    """
+    valid = np.isfinite(values) & (values != nodata)
+    counts = valid.sum(axis=0, dtype="uint64")
+    expected = np.full(values.shape[1:], np.nan, dtype="float64")
+    for row, column in np.ndindex(expected.shape):
+        selected = valid[:, row, column]
+        current = values[:, row, column].astype("float64")[selected]
+        if not current.size:
+            continue
+        if reducer in {"sum", "precipitation_total"}:
+            if reducer == "precipitation_total":
+                current = current * np.asarray(durations)[selected] * factor
+            total = 0.0
+            for value in current:
+                total += float(value)
+            expected[row, column] = total
+        elif reducer == "percentile":
+            expected[row, column] = np.percentile(current, 25, method="linear")
+        elif reducer == "stdev":
+            expected[row, column] = np.std(current, ddof=0)
+        else:
+            expected[row, column] = getattr(np, reducer)(current)
+    return expected, counts
+
+
+@pytest.mark.parametrize(
+    "reducer",
+    [
+        "sum",
+        "mean",
+        "min",
+        "max",
+        "stdev",
+        "precipitation_total",
+        "median",
+        "percentile",
+    ],
+)
+def test_tiled_period_maps_reuse_observation_handles_and_report_actual_work(
+    tiled_interval: tuple[ResolvedTemporalInterval, NDArray[np.float32]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reducer: str,
+) -> None:
+    """Preserve real multi-tile results while reusing handles and reporting reads.
+
+    Args:
+        tiled_interval: Three observations spanning four native source tiles.
+        tmp_path: Isolated attempt output root.
+        monkeypatch: Operation-local tracing and a small scratch-batch target.
+        reducer: Every streaming statistic and both exact order statistics.
+    """
+    interval, values = tiled_interval
+    conversion = None
+    durations = (3600.0, 7200.0, 3600.0)
+    if reducer == "precipitation_total":
+        origin = interval.observations[0].time
+        interval = replace(
+            interval,
+            unit="kg m**-2 s**-1",
+            time_support="mean_rate",
+            observations=tuple(
+                replace(
+                    observation,
+                    time=origin + timedelta(hours=end),
+                    interval_start=origin + timedelta(hours=start),
+                    interval_end=origin + timedelta(hours=end),
+                )
+                for observation, (start, end) in zip(
+                    interval.observations, ((0, 1), (1, 3), (5, 6))
+                )
+            ),
+        )
+        conversion = PrecipitationConversion(
+            inputUnit=interval.unit, outputUnit="mm", factor=1
+        )
+    trace = _trace_temporal_execution(monkeypatch)
+    monkeypatch.setattr(temporal_reduce, "STREAMING_BATCH_PIXELS", 512)
+    directory = tmp_path / "tiled-output"
+    spec, _ = _calculate(
+        interval,
+        TemporalReduction(
+            reducer=reducer, percentile=25 if reducer == "percentile" else None
+        ),
+        AggregateArea(kind="wholeRaster"),
+        directory,
+        conversion,
+    )
+    expected, counts = _expected_tiled_reduction(values, reducer, durations)
+    with (
+        rasterio.open(directory / "result.tif") as result,
+        rasterio.open(directory / "count.tif") as count_raster,
+    ):
+        np.testing.assert_allclose(result.read(1), expected, equal_nan=True)
+        np.testing.assert_array_equal(result.read_masks(1) != 0, counts > 0)
+        np.testing.assert_array_equal(count_raster.read(1), counts)
+        assert (count_raster.read_masks(1) == 255).all()
+        if reducer == "sum":
+            assert result.read(1)[0, 0] == 1.0
+    assert spec.grid.tileCount == 4
+    batches = 4 if reducer in {"median", "percentile"} else 2
+    paths = [observation.path for observation in interval.observations]
+    assert trace.opened == [paths[0], *(path for _ in range(batches) for path in paths)]
+    assert trace.maximum_active <= 2
+    assert not trace.active
+    windows = {window for _, window in trace.reads}
+    assert len(windows) == spec.grid.tileCount
+    for window in windows:
+        assert [
+            path for path, read_window in trace.reads if read_window == window
+        ] == paths
+    reads = len(interval.observations) * spec.grid.tileCount
+    assert len(trace.reads) == reads
+    reducing = [update for update in trace.progress if update.phase == "reducing"]
+    assert reducing[0].completed == reducing[0].reads == 0
+    assert reducing[-1].completed == reducing[-1].reads == reads
+    assert all(
+        update.total == reads and update.unit == "raster reads" for update in reducing
+    )
+    assert [update.completed for update in reducing] == sorted(
+        update.completed for update in reducing
+    )
+    assert all(update.completed == update.reads for update in reducing)
+    first_read_update = next(update for update in reducing if update.completed)
+    assert first_read_update.reads < len(interval.observations)
+    ordering = [update for update in trace.progress if update.phase == "ordering"]
+    if reducer in {"median", "percentile"}:
+        assert ordering[0].completed == 0
+        assert ordering[-1].completed == spec.grid.width * spec.grid.height
+        assert all(
+            update.total == spec.grid.width * spec.grid.height
+            and update.unit == "pixels"
+            for update in ordering
+        )
+        assert [update.completed for update in ordering] == sorted(
+            update.completed for update in ordering
+        )
+        assert ordering[0].reads == len(interval.observations)
+    else:
+        assert not ordering
+    preparing = [update for update in trace.progress if update.phase == "creating_cog"]
+    assert [(update.completed, update.total, update.unit) for update in preparing] == [
+        (0, 2, "files"),
+        (1, 2, "files"),
+        (2, 2, "files"),
+    ]
+    assert [(update.result_exists, update.count_exists) for update in preparing] == [
+        (False, False),
+        (True, False),
+        (True, True),
+    ]
+    assert not (directory / "ordered-values.bin").exists()
+
+
+def test_native_tile_larger_than_streaming_batch_target_is_still_processed(
+    tiled_interval: tuple[ResolvedTemporalInterval, NDArray[np.float32]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat the scratch-batch target as a grouping choice, not an input ceiling.
+
+    Args:
+        tiled_interval: Four native 256-cell tiles with real observations.
+        tmp_path: Isolated attempt output root.
+        monkeypatch: Scratch target smaller than one native source tile.
+    """
+    interval, values = tiled_interval
+    trace = _trace_temporal_execution(monkeypatch)
+    monkeypatch.setattr(temporal_reduce, "STREAMING_BATCH_PIXELS", 128)
+    directory = tmp_path / "larger-native-tile"
+    spec, _ = _calculate(
+        interval,
+        TemporalReduction(reducer="sum"),
+        AggregateArea(kind="wholeRaster"),
+        directory,
+    )
+    expected, counts = _expected_tiled_reduction(values, "sum", ())
+    with rasterio.open(directory / "result.tif") as result:
+        np.testing.assert_allclose(result.read(1), expected, equal_nan=True)
+        np.testing.assert_array_equal(result.read_masks(1) != 0, counts > 0)
+    assert spec.grid.tileCount == 4
+    assert len(trace.opened) == 1 + len(interval.observations) * spec.grid.tileCount
+    assert trace.maximum_active <= 2
+    assert not trace.active
 
 
 @pytest.mark.parametrize(
@@ -451,21 +872,25 @@ def test_single_observation_has_zero_population_deviation(
         np.testing.assert_array_equal(count.read(1), [[1, 1, 0, 0], [0, 0, 1, 1]])
 
 
-def test_unreadable_observation_fails_without_publishing_a_partial_median(
-    interval: ResolvedTemporalInterval, tmp_path: Path
+@pytest.mark.parametrize("reducer", ["sum", "median"])
+def test_unreadable_observation_fails_without_publishing_partial_outputs(
+    interval: ResolvedTemporalInterval,
+    tmp_path: Path,
+    reducer: Literal["sum", "median"],
 ) -> None:
-    """Expose an actual native read failure instead of publishing a partial median.
+    """Expose native read failures without publishing streaming or ordered outputs.
 
     Args:
         interval: Admitted regional observations whose second TIFF will be unreadable.
         tmp_path: Isolated attempt root.
+        reducer: Streaming sum or exact disk-backed median.
     """
     interval.observations[1].path.write_bytes(b"unreadable GeoTIFF")
     directory = tmp_path / "corrupt"
     with pytest.raises((OSError, ValueError)):
         _calculate(
             interval,
-            TemporalReduction(reducer="median"),
+            TemporalReduction(reducer=reducer),
             AggregateArea(kind="wholeRaster"),
             directory,
         )
@@ -551,6 +976,213 @@ def test_precipitation_total_uses_recorded_durations_and_valid_cells(
         (item.interval_start.isoformat(), item.interval_end.isoformat())
         for item in rates.observations
     ]
+
+
+@pytest.mark.parametrize("source_dtype", ["float32", "float64"])
+@pytest.mark.parametrize("reducer", ["sum", "precipitation_total"])
+def test_streaming_arithmetic_preserves_native_validity_and_float64_operations(
+    interval: ResolvedTemporalInterval,
+    tmp_path: Path,
+    source_dtype: Literal["float32", "float64"],
+    reducer: Literal["sum", "precipitation_total"],
+) -> None:
+    """Skip masked native values and retain ordered float64 rate conversion.
+
+    Args:
+        interval: Metadata used to create admitted observations with mixed validity.
+        tmp_path: Isolated native archive and output root.
+        source_dtype: Native precision, including float32 values whose duration
+            product exceeds float32 but is valid in float64.
+        reducer: Ordinary summation or duration-weighted precipitation total.
+    """
+    nodata = float(np.finfo("float32").max) if source_dtype == "float32" else 1e308
+    large_value = 1e38 if source_dtype == "float32" else 1e290
+    values = np.array(
+        [
+            [
+                [1.2345678901234567, 0.1, np.inf, nodata],
+                [0, large_value, 2**60, np.nan],
+            ],
+            [[nodata, 0.15, -np.inf, np.nan], [0, large_value, -(2**60), nodata]],
+            [[np.nan, -0.2, np.nan, nodata], [0, large_value, 1, np.inf]],
+        ],
+        dtype=source_dtype,
+    )
+    origin = interval.observations[0].time
+    observations = tuple(
+        replace(
+            observation,
+            path=_write_observation(
+                tmp_path / "arithmetic-archive" / f"observation-{index}.tif",
+                values[index],
+                observation.transform,
+                nodata,
+            ),
+            nodata=nodata,
+            time=origin + timedelta(hours=end),
+            interval_start=origin + timedelta(hours=start),
+            interval_end=origin + timedelta(hours=end),
+        )
+        for index, (observation, (start, end)) in enumerate(
+            zip(interval.observations, ((0, 1), (1, 3), (5, 6)))
+        )
+    )
+    interval = replace(
+        interval,
+        observations=observations,
+        unit="kg m**-2 s**-1",
+        time_support="mean_rate",
+    )
+    factor = 0.12345678901234567
+    conversion = (
+        PrecipitationConversion(inputUnit=interval.unit, outputUnit="mm", factor=factor)
+        if reducer == "precipitation_total"
+        else None
+    )
+    directory = tmp_path / "arithmetic-output"
+    _calculate(
+        interval,
+        TemporalReduction(reducer=reducer),
+        AggregateArea(kind="wholeRaster"),
+        directory,
+        conversion,
+    )
+    expected, counts = _expected_tiled_reduction(
+        values, reducer, (3600.0, 7200.0, 3600.0), nodata=nodata, factor=factor
+    )
+    with (
+        rasterio.open(directory / "result.tif") as result,
+        rasterio.open(directory / "count.tif") as count_raster,
+    ):
+        np.testing.assert_array_equal(result.read(1), expected)
+        np.testing.assert_array_equal(result.read_masks(1) != 0, counts > 0)
+        np.testing.assert_array_equal(count_raster.read(1), counts)
+        if reducer == "precipitation_total":
+            rate = float(values[0, 0, 0])
+            assert (rate * 3600.0) * factor != rate * (3600.0 * factor)
+            assert result.read(1)[0, 0] == (rate * 3600.0) * factor
+        else:
+            assert result.read(1)[1, 2] == 1.0
+
+
+def test_precipitation_total_keeps_only_valid_observation_contributions(
+    interval: ResolvedTemporalInterval, tmp_path: Path
+) -> None:
+    """Ignore later NoData, Inf and NaN after an extreme but valid conversion.
+
+    Args:
+        interval: Metadata for three observations on one shared native grid.
+        tmp_path: Isolated archive and completed output root.
+    """
+    nodata, factor = 1e308, 1e308
+    values = np.array(
+        [
+            [[1e-308, 1e-308, 1e-308, 0]],
+            [[nodata, np.inf, np.nan, 0]],
+            [[np.nan, nodata, -np.inf, 0]],
+        ],
+        dtype="float64",
+    )
+    origin = interval.observations[0].time
+    observations = tuple(
+        replace(
+            observation,
+            path=_write_observation(
+                tmp_path / "masked-rate-archive" / f"observation-{index}.tif",
+                values[index],
+                observation.transform,
+                nodata,
+            ),
+            nodata=nodata,
+            time=origin + timedelta(hours=index + 1),
+            interval_start=origin + timedelta(hours=index),
+            interval_end=origin + timedelta(hours=index + 1),
+        )
+        for index, observation in enumerate(interval.observations)
+    )
+    interval = replace(
+        interval,
+        observations=observations,
+        unit="kg m**-2 s**-1",
+        time_support="mean_rate",
+    )
+    directory = tmp_path / "masked-rate-output"
+    _calculate(
+        interval,
+        TemporalReduction(reducer="precipitation_total"),
+        AggregateArea(kind="wholeRaster"),
+        directory,
+        PrecipitationConversion(
+            inputUnit=interval.unit, outputUnit="mm", factor=factor
+        ),
+    )
+    expected, counts = _expected_tiled_reduction(
+        values, "precipitation_total", (3600.0,) * 3, nodata=nodata, factor=factor
+    )
+    with (
+        rasterio.open(directory / "result.tif") as result,
+        rasterio.open(directory / "count.tif") as count_raster,
+    ):
+        np.testing.assert_array_equal(result.read(1), expected)
+        assert (result.read_masks(1) == 255).all()
+        np.testing.assert_array_equal(count_raster.read(1), [[1, 1, 1, 3]])
+        np.testing.assert_array_equal(count_raster.read(1), counts)
+
+
+@pytest.mark.parametrize("reducer", ["sum", "precipitation_total"])
+def test_valid_streaming_overflow_fails_without_publishing_partial_outputs(
+    interval: ResolvedTemporalInterval,
+    tmp_path: Path,
+    reducer: Literal["sum", "precipitation_total"],
+) -> None:
+    """Keep numerical errors for overflowing valid additions or rate products.
+
+    Args:
+        interval: Metadata used to admit finite float64 observations.
+        tmp_path: Isolated archive and failed attempt root.
+        reducer: Summation overflows on addition; precipitation overflows on its
+            first multiplication even though reassociating its tiny factor would fit.
+    """
+    origin = interval.observations[0].time
+    observations = tuple(
+        replace(
+            observation,
+            path=_write_observation(
+                tmp_path / "overflow-archive" / f"observation-{index}.tif",
+                np.array([[1e308]], dtype="float64"),
+                observation.transform,
+                None,
+            ),
+            nodata=None,
+            time=origin + timedelta(hours=index + 1),
+            interval_start=origin + timedelta(hours=index),
+            interval_end=origin + timedelta(hours=index + 1),
+        )
+        for index, observation in enumerate(interval.observations)
+    )
+    interval = replace(
+        interval,
+        observations=observations,
+        unit="kg m**-2 s**-1",
+        time_support="mean_rate",
+    )
+    conversion = (
+        PrecipitationConversion(inputUnit=interval.unit, outputUnit="mm", factor=1e-308)
+        if reducer == "precipitation_total"
+        else None
+    )
+    directory = tmp_path / "overflow-output"
+    with pytest.raises(ProcessingError) as failure:
+        _calculate(
+            interval,
+            TemporalReduction(reducer=reducer),
+            AggregateArea(kind="wholeRaster"),
+            directory,
+            conversion,
+        )
+    assert failure.value.code == "numerical_error"
+    assert not (directory / "result.tif").exists()
+    assert not (directory / "count.tif").exists()
 
 
 def test_precipitation_total_requires_whole_utc_hours_at_request_boundary() -> None:
