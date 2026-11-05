@@ -447,16 +447,22 @@
                       aria-hidden="false"
                     >
                     <p class="models-help" data-private-result-notice hidden>Result previews are temporary and private. Saved and shared maps omit them. Reopen them from Data tools → Runs.</p>
-                    <div class="map-layer-source-actions">
-                    <button class="secondary-button" id="upload-polygons" type="button">Polygon uploads…</button>
+                    <div class="map-layer-source-actions" role="group" aria-label="Add polygon layers">
+                    <button class="secondary-button" id="draw-private-polygon" type="button" title="Draw a polygon in a private layer saved on this device" disabled>Draw polygon</button>
+                    <details class="annotation-layer-tools">
+                      <summary>Upload polygons</summary>
+                      <div class="annotation-layer-actions" role="group" aria-label="Upload polygons">
+                      <button class="secondary-button" id="upload-polygons" type="button">GeoPackage uploads…</button>
+                      <button class="secondary-button" id="import-annotation-geojson" type="button" disabled>Import GeoJSON…</button>
+                      <input id="annotation-geojson-file" type="file" accept=".geojson,.json,application/geo+json,application/json" aria-label="Import polygons from a GeoJSON file" hidden>
+                      </div>
+                    </details>
                     <details class="annotation-layer-tools">
                       <summary>Shared layers</summary>
                       <div class="annotation-layer-actions" role="group" aria-label="Shared layers">
-                      <button class="secondary-button" id="create-shared-annotation-layer" type="button" aria-label="Create layer">Create layer</button>
-                      <button class="secondary-button" id="join-shared-annotation-layer" type="button" aria-label="Join layer">Join layer</button>
-                      <button class="secondary-button" id="open-joined-annotation-layers" type="button">Your layers</button>
-                      <button class="secondary-button" id="import-annotation-geojson" type="button" disabled>Import GeoJSON</button>
-                      <input id="annotation-geojson-file" type="file" accept=".geojson,.json,application/geo+json,application/json" aria-label="Import polygons from a GeoJSON file" hidden>
+                      <button class="secondary-button" id="create-shared-annotation-layer" type="button">Create shared layer…</button>
+                      <button class="secondary-button" id="join-shared-annotation-layer" type="button">Join shared layer…</button>
+                      <button class="secondary-button" id="open-joined-annotation-layers" type="button">Your shared layers…</button>
                       </div>
                     </details>
                     </div>
@@ -485,7 +491,7 @@
                     ></p>
                     </section>
                     <p class="map-layers-empty-state">
-                      No map layers yet. Add an item from Catalog, upload polygons, or create a shared layer to draw on the map.
+                      No map layers yet. Add an item from Catalog, upload polygons, or draw your own polygon.
                     </p>
                     <div
                       class="raster-layer-stack"

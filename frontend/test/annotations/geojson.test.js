@@ -181,7 +181,7 @@ test("model refuses imports during edits or beyond capacity without mutating exi
     annotations.cancelPolygon();
     while (annotations.layers.length < MAX_ANNOTATION_LAYERS) annotations.createLayer();
     const before = annotations.document();
-    assert.throws(() => annotations.importLayer(imported), /32 shared layers/);
+    assert.throws(() => annotations.importLayer(imported), /32 polygon layers/);
     assert.deepEqual(annotations.document(), before);
     const full = model();
     const existing = full.createLayer();

@@ -284,7 +284,7 @@ test("creating and loading annotations enforce the same layer limit", () => {
     const saved = annotations.document();
     assert.equal(readAnnotationLayers(saved).length, MAX_ANNOTATION_LAYERS);
     assert.throws(() => annotations.createLayer(), {
-        message: `This device already has ${MAX_ANNOTATION_LAYERS} shared layers.`,
+        message: `This device already has ${MAX_ANNOTATION_LAYERS} polygon layers.`,
     });
     assert.deepEqual(annotations.document(), saved);
     saved.layers.push({ ...structuredClone(saved.layers[0]), id: "extra-layer" });

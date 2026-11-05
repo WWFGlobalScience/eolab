@@ -81,7 +81,7 @@ export class AnnotationMapEditor {
         this.polygonName.addEventListener("input", () => onTextChange(this.polygonName.value, this.polygonNote.value));
         this.polygonNote.addEventListener("input", () => onTextChange(this.polygonName.value, this.polygonNote.value));
         const saveHelp = this.document.createElement("p");
-        saveHelp.textContent = "Save shares the shape, name and notes together. Cancel discards all edits.";
+        saveHelp.textContent = "Save stores the shape, name and notes together. Cancel discards all edits.";
         this.strip.append(this.heading, nameField, noteField, this.instruction, actions, this.error, saveHelp, help);
         this.strip.addEventListener("keydown", event => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey || event.target === this.polygonName)) {
