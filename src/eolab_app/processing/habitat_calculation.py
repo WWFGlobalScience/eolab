@@ -190,17 +190,21 @@ def read_habitat_area(
 
 
 def prepare_habitat_inputs(
-    sources: HabitatSources, request: HabitatRequest, area: AggregateArea
+    sources: HabitatSources,
+    request: HabitatRequest,
+    area: AggregateArea,
+    reference_polygons: AggregateArea | None,
 ) -> HabitatCalculationInputs:
     """Calculate the AOI grid and collect the inputs for a Habitat calculation.
 
     Args:
         sources: Authorized input paths and AOI vector reader.
         request: Captured layer, preparation and model-owned scientific settings.
-        area: Prepared area descriptor; filtered geometry is not persisted.
+        area: Assessment descriptor, with exact geometry for a drawn area.
+        reference_polygons: Drawn reference sites captured at admission, if selected.
 
     Returns:
-        Selected inputs, area descriptor and output grid for Processing and Run YAML.
+        Calculation inputs, private polygon geometry and the aligned output grid.
 
     Raises:
         ValueError: If selected polygons are empty, cannot be projected, or the
@@ -234,7 +238,11 @@ def prepare_habitat_inputs(
         # serializable in the saved plan and native-process arguments.
         acquisition = replace(acquisition, datasets=dict(acquisition.datasets))
     return HabitatCalculationInputs(
-        inputs=request, area=area, grid=grid, earthEngine=acquisition
+        inputs=request,
+        area=area,
+        grid=grid,
+        earthEngine=acquisition,
+        referencePolygons=reference_polygons,
     )
 
 
@@ -365,10 +373,19 @@ def calculate_habitat(
             )
         )
         dataset = resources.enter_context(rasterio.open(rasters["predictor_0"]))
-        if request.references.kind == "vector":
-            polygons = read_habitat_polygons(
-                sources.vectors["reference_sites"], grid.crs
-            )
+        if request.references.kind == "raster":
+            reference_path = rasters["reference_mask"]
+        else:
+            if request.references.kind == "vector":
+                polygons = read_habitat_polygons(
+                    sources.vectors["reference_sites"], grid.crs
+                )
+            else:
+                if prepared.referencePolygons is None:
+                    raise ValueError("The run's reference polygons are unavailable.")
+                polygons = project_polygons_to_crs(
+                    "EPSG:4326", grid.crs, prepared.referencePolygons.geometries, None
+                )
             reference = resources.enter_context(
                 temporary_polygon_mask(
                     dataset,
@@ -379,8 +396,6 @@ def calculate_habitat(
                 )
             )
             reference_path = Path(reference.name)
-        else:
-            reference_path = rasters["reference_mask"]
         configuration = IntegrityConfiguration(
             **{
                 name: getattr(settings, name)

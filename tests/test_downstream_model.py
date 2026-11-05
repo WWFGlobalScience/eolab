@@ -691,7 +691,7 @@ def test_model_worker_publishes_downstream_outputs_and_run_yaml(tmp_path: Path) 
         for name, path in sources.rasters.items()
     }
     prepared = build_model_job_submission(
-        operation.queue(calculation, None),
+        operation.queue(calculation, {}),
         invocation,
         identities["values"],
         {name: identities[name] for name in ("dem", "starting_mask")},

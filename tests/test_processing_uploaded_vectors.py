@@ -20,6 +20,7 @@ from rasterio.transform import from_origin
 
 from eolab_app.catalog.geopackage import build_stac_items
 from eolab_app.catalog_selection import VectorSelection
+from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.artifacts import LocalJobArtifacts
 from eolab_app.processing.clip_models import ClipInputs, ClipJobRequest, UnpreparedClip
 from eolab_app.processing.job_store import PostgresJobStore
@@ -260,13 +261,13 @@ def reference_clip(
         )
 
     def queue_reference_clip(
-        request: ClipWithReferenceRequest, polygons: None
+        request: ClipWithReferenceRequest, polygons: dict[str, AggregateArea]
     ) -> PreparedJobPlan:
         """Save both vector descriptors with the ordinary queued clip plan.
 
         Args:
             request: Fixture request with independently named selections.
-            polygons: Unused owned-polygon input, as required by ordinary clipping.
+            polygons: Empty mapping because ordinary clipping uses vector selections.
 
         Returns:
             Queued plan whose persisted request retains both selections.

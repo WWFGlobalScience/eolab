@@ -323,6 +323,10 @@ environment and habitat responses at the reference sites inside that area, then
 compares observed responses elsewhere with those expected under reference
 conditions.
 
+Choose a layer under **Drawn polygons** for **Analysis area**, **Reference
+sites**, or both. Each input can use a different layer. The tool uses saved
+polygons that match the layer's filter when you run it.
+
 ![The top of the Ecosystem Condition setup card, showing Earth Engine inputs and assessment year 2018](docs/images/eolab-model-habitat-condition.jpg)
 
 *The Ecosystem Condition card starts with the input configuration. Earth Engine mode also offers

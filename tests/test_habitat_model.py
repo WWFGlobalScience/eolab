@@ -5,7 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import Mock
 from zipfile import ZipFile
 
@@ -15,7 +15,7 @@ import rasterio
 from rasterio.features import geometry_mask
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
-from rasterio.warp import transform
+from rasterio.warp import transform, transform_geom
 from shapely.geometry import Point, box, mapping
 
 from nhi_terrestrial_integrity_modeling.habitat_training import IntegrityConfiguration
@@ -42,6 +42,7 @@ from eolab_app.processing.model_runs import (
 from eolab_app.processing.model_yaml import parse_yaml
 from eolab_app.processing.models import JobInputFile, ProcessingError
 from eolab_app.processing.native_processes import create_native_process
+from eolab_app.processing.polygon_areas import PolygonSummaryInput
 from eolab_app.processing.service import serialize_processing_job
 from eolab_app.processing.worker import ProcessingWorker
 from eolab_app.raster.models import AuthorizedRaster, CatalogRasterRequest
@@ -104,17 +105,19 @@ def test_whole_raster_aoi_preserves_curved_projected_edges(tmp_path: Path) -> No
     assert aoi.bounds[3] == pytest.approx(y[1])
 
 
-@pytest.mark.parametrize("vector_references", [False, True])
+@pytest.mark.parametrize("reference_kind", ["raster", "vector", "polygonArea"])
 def test_habitat_worker_matches_library_and_publishes_outputs(
-    tmp_path: Path, habitat_definition: ModelDefinition, vector_references: bool
+    tmp_path: Path,
+    habitat_definition: ModelDefinition,
+    reference_kind: Literal["raster", "vector", "polygonArea"],
 ) -> None:
     """Align mismatched inputs and match an independently prepared library run.
 
     Args:
         tmp_path: Isolated source files, direct library outputs and worker artifacts.
         habitat_definition: Installed recipe with settings suitable for this fixture.
-        vector_references: Use independently filtered reference polygons and an
-            assessment mask instead of the coarse reference raster alone.
+        reference_kind: Coarse raster, filtered vector, or admitted drawing.
+            The drawn case uses independent polygons for both area and references.
     """
     rows, columns = np.indices((16, 24))
     environment = rows * 0.3 + columns * 0.07
@@ -197,6 +200,7 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
             rules=[{"field": "selected", "operator": "eq", "value": 1}],
         ),
     )
+    uses_assessment_mask = reference_kind != "raster"
     selections = {item.selection.item_id: item for item in (area, selected_references)}
     inputs = {
         "stack": {
@@ -221,10 +225,10 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
                     mode="json", by_alias=True
                 ),
             }
-            if vector_references
+            if uses_assessment_mask
             else {"kind": "raster", "source": sources["references"]}
         ),
-        "habitat_mask": sources["assessment"] if vector_references else None,
+        "habitat_mask": sources["assessment"] if uses_assessment_mask else None,
         "preparation": {
             "crs": "EPSG:6933",
             "pixelSize": [1000, 1000],
@@ -234,10 +238,41 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
                 "predictor_1": "nearest",
                 "response_0": "nearest",
                 "response_1": "nearest",
-                ("habitat_mask" if vector_references else "reference_mask"): "nearest",
+                (
+                    "habitat_mask" if uses_assessment_mask else "reference_mask"
+                ): "nearest",
             },
         },
     }
+    polygon_inputs = {}
+    if reference_kind == "polygonArea":
+        # Four drawable polygons reproduce the vector AOI's single interior hole.
+        assessment_polygons = (
+            box(100, 100, 6000, 15900),
+            box(10000, 100, 23900, 15900),
+            box(6000, 100, 10000, 2000),
+            box(6000, 5000, 10000, 15900),
+        )
+        for field, role, identifier, shapes in (
+            ("area", "area", "a" * 32, assessment_polygons),
+            ("references", "reference_sites", "b" * 32, (box(0, 10000, 24000, 16000),)),
+        ):
+            geometries = tuple(
+                transform_geom("EPSG:6933", "EPSG:4326", mapping(polygon))
+                for polygon in shapes
+            )
+            payload = PolygonSummaryInput(polygons=geometries)
+            checksum = payload.geometry_hash()
+            inputs[field] = {
+                "kind": "polygonArea",
+                "reference": {"id": identifier, "sha256": checksum},
+            }
+            polygon_inputs[role] = AggregateArea(
+                kind="polygons",
+                bounds=payload.bounds(),
+                geometryHash=checksum,
+                geometries=geometries,
+            )
     request = ModelRunRequest(
         requestId="habitat-boundary-run",
         label="Habitat fixture",
@@ -259,7 +294,7 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
         for item_id, path in catalog_paths.items()
     }
     submission = build_model_job_submission(
-        operation.queue(calculation, None),
+        operation.queue(calculation, polygon_inputs),
         invocation,
         None,
         {
@@ -369,7 +404,9 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
     assert diagnostics.role == "intermediate"
     assert diagnostics.mediaType == "application/zip"
     assert habitat_definition.outputs["diagnostics"].presentation == "download"
-    assert str(tmp_path) not in export_model_job_yaml(ready, run=True).decode()
+    run_yaml = export_model_job_yaml(ready, run=True).decode()
+    assert str(tmp_path) not in run_yaml
+    assert "coordinates:" not in run_yaml
 
     settings = calculation.settings
     expected = run_habitat_condition(
@@ -396,7 +433,7 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
         covariance_shrinkage=settings.covariance_shrinkage,
         assessment_mask=(
             RasterBand("assessment", prepared_paths["assessment"])
-            if vector_references
+            if uses_assessment_mask
             else None
         ),
     )
@@ -417,7 +454,7 @@ def test_habitat_worker_matches_library_and_publishes_outputs(
         assert 0 <= similarity_values.min() <= similarity_values.max() <= 1
         assert similarity_values.mask[outside].all()
         assert similarity_values.mask[references].all()
-        if vector_references:
+        if uses_assessment_mask:
             assert similarity_values.mask[:, 22:].all()
     with ZipFile(
         artifacts.artifact_path(row["attempt_id"], "diagnostics.zip")
@@ -578,7 +615,7 @@ def test_habitat_exports_private_predictor_source(
     )
     operation = get_model_operation("habitat.condition.v1")
     submission = build_model_job_submission(
-        operation.queue(calculation, None),
+        operation.queue(calculation, {}),
         invocation,
         None,
         {

@@ -3,7 +3,7 @@ import { ACTIVE_JOB_STATES } from "../processing/jobs.js";
 import { processingDownloadUrl } from "../processing/api.js";
 import { describeModelProgress } from "../processing/presentation.js";
 import { renderModelResult, updateModelFileActions, describeAreaStatistic } from "./result-view.js";
-import { modelSourceKey, describeModelFilter, modelSupportsArea, modelHasInput, getHabitatEarthEngineInput } from "./inputs.js";
+import { modelSourceKey, describeModelFilter, modelSupportsArea, modelHasInput, getHabitatEarthEngineInput, selectedDrawnPolygonLayer } from "./inputs.js";
 import { TemporalModelInputsView } from "./temporal-view.js";
 import { HabitatStackView } from "./habitat-stack-view.js";
 import { RasterGridView } from "./raster-grid-view.js";
@@ -34,7 +34,7 @@ export function describeModelArea(area) {
         return `Box · W ${b.west}°, S ${b.south}°, E ${b.east}°, N ${b.north}°`;
     }
     if (area.kind === "catalogSelection") return `${area.selection.layerName} · ${describeModelFilter(area.selection.filter)}`;
-    return "Previously selected polygons; the server checks that the input is still available.";
+    return "Saved polygon selection";
 }
 
 /** Describe a saved raster using its Catalog identity or completed-run file label.
@@ -335,7 +335,7 @@ export class ModelsView {
         return optional && !value.raster || Boolean(value.raster) && value.raster.available !== false;
     }
 
-    /** List eligible concrete spatial sources and show only the selected source's controls.
+    /** List eligible spatial sources and show the selected source's controls or drawn polygon count.
      * @param {Object} controls Stable controls for this spatial input.
      * @param {{type:string,label:string}} input Declared area, mask or reference input.
      * @param {Object} value This input's area, filter and selection feedback.
@@ -346,6 +346,8 @@ export class ModelsView {
         const draft = state.draft;
         const references = input.type === "habitat_references";
         const usesRasterOrVector = input.type === "mask_source" || references;
+        const drawn = value.areaMode === "drawnPolygons";
+        const drawnLayer = drawn ? selectedDrawnPolygonLayer(draft, value) : null;
         const runLabel = "Run tool";
         const areaChoices = [{value: "", label: references ? "Choose reference sites…" : input.type === "mask_source" ? "Choose a starting area…" : "Choose an area…"}];
         if (!usesRasterOrVector) areaChoices.push({value: "viewport", label: "Visible map area"}, {value: "samplingArea", label: "Sampling box"});
@@ -355,9 +357,13 @@ export class ModelsView {
         }
         if (value.capturedArea && value.capturedArea.kind !== "wholeRaster" &&
             (value.areaOrigin === "run" || value.capturedArea.kind === "catalogSelection")) {
-            areaChoices.push({value: "captured", label: value.areaOrigin === "run" ? "Area from original run" : "Selected features"});
+            const originalLabel = references && value.capturedArea.kind === "polygonArea" ? "Reference sites from original run" : "Area from original run";
+            areaChoices.push({value: "captured", label: value.areaOrigin === "run" ? originalLabel : "Selected features"});
         }
         areaChoices.push(...value.vectors.map(source => ({value: `vector:${source.key}`, label: source.label, group: "Vector layers"})));
+        if (references || input.type === "summary_area") {
+            areaChoices.push(...draft.drawnPolygonLayers.map(layer => ({value: `drawn:${layer.key}`, label: layer.label, group: "Drawn polygons"})));
+        }
         if (usesRasterOrVector) {
             const rasters = draft.sources.filter(source => references || source.kind !== "runArtifact");
             if (value.maskRaster && !rasters.some(source => modelSourceKey(source) === modelSourceKey(value.maskRaster))) rasters.push({...value.maskRaster, available: false});
@@ -365,8 +371,10 @@ export class ModelsView {
                 label: (source.label ?? "Previously selected raster") + (source.available === false ? " (unavailable)" : source.visible === false ? " (hidden on map)" : ""),
                 group: source.kind === "runArtifact" ? "Completed runs" : "Raster layers", disabled: source.available === false})));
         }
-        const selected = value.areaMode === "vector" ? value.vectorKey ? `vector:${value.vectorKey}` : ""
-            : value.areaMode === "raster" ? value.maskRaster ? `raster:${modelSourceKey(value.maskRaster)}` : "" : value.areaMode;
+        let selected = value.areaMode;
+        if (drawn) selected = drawnLayer ? `drawn:${drawnLayer.key}` : "";
+        else if (value.areaMode === "vector") selected = value.vectorKey ? `vector:${value.vectorKey}` : "";
+        else if (value.areaMode === "raster") selected = value.maskRaster ? `raster:${modelSourceKey(value.maskRaster)}` : "";
         this.options(controls.source, areaChoices, selected);
         const rasterActive = usesRasterOrVector && value.areaMode === "raster";
         controls.maskGroup.hidden = !rasterActive;
@@ -376,18 +384,38 @@ export class ModelsView {
             controls.resampling.disabled = !rasterActive;
         }
         controls.rasterReason.textContent = value.maskRaster?.available === false ? "This raster is no longer available. Choose another input." : "";
+        controls.editFilter.hidden = drawn;
+        if (drawn) {
+            controls.vectorGroup.hidden = !drawnLayer;
+            controls.selectionCard.hidden = !drawnLayer;
+            controls.filterHost.hidden = true;
+            controls.mapHelp.hidden = true;
+            controls.mapFilterStatus.textContent = "";
+            controls.areaDescription.hidden = Boolean(drawnLayer);
+            controls.areaDescription.textContent = "Choose a drawn polygon layer from Map layers.";
+            if (!drawnLayer) return false;
+            const matched = drawnLayer.polygons.length;
+            controls.selectedCount.textContent = `${matched} of ${drawnLayer.total} polygons selected`;
+            controls.filterDescription.textContent = "Uses the layer's filter in Map layers.";
+            controls.vectorStatus.textContent = matched ? "" : "No polygons match. Add a polygon or change the layer's filter.";
+            return matched > 0;
+        }
         const rasterReady = Boolean(value.maskRaster) && value.maskRaster.available !== false;
         controls.vectorGroup.hidden = value.areaMode !== "vector";
         controls.mapHelp.hidden = !["viewport", "samplingArea", "mapPolygons", "captured"].includes(value.areaMode);
+        let capturedHelp = "Uses the exact area from the original run. Choose another area above to change it.";
+        if (value.capturedArea?.kind === "polygonArea") {
+            capturedHelp = "Uses the original polygons while they are available. Choose another source if the selection has expired.";
+        } else if (value.capturedArea?.kind === "catalogSelection") {
+            capturedHelp = value.areaOrigin === "run"
+                ? "Uses the original area and filter. Choose a vector layer above to use its current filter."
+                : "Uses the selected features. Choose a vector layer above to follow its current filter.";
+        }
         controls.mapHelp.textContent = ({
             viewport: `Uses the visible map area when you choose ${runLabel}. Pan or zoom to change it.`,
             samplingArea: `Uses the sampling box shown in Histograms. Click the map to move the box. ${runLabel} uses its latest position and size.`,
             mapPolygons: `Uses the polygons selected on the map when you choose ${runLabel}.`,
-            captured: value.capturedArea?.kind !== "catalogSelection"
-                ? "Uses the exact area from the original run. Choose another area above to change it."
-                : value.areaOrigin === "run"
-                    ? "Uses the original area and filter. Choose a vector layer above to use its current filter."
-                    : "Uses the selected features. Choose a vector layer above to follow its current filter.",
+            captured: capturedHelp,
         })[value.areaMode] ?? "";
         const vectorSource = value.vectors.find(source => source.key === value.vectorKey);
         controls.selectionCard.hidden = !vectorSource;
@@ -609,7 +637,7 @@ export class ModelsView {
                 }
                 const description = input.type === "optional_raster" ? value ? describeModelRaster(value, state.runs) : "None" :
                     input.type === "habitat_references" ? value.kind === "raster" ? `${describeModelRaster(value.source, state.runs)} · cells equal to 1` :
-                        describeModelArea({kind: "catalogSelection", selection: value.selection}) :
+                        describeModelArea(value.kind === "vector" ? {kind: "catalogSelection", selection: value.selection} : value) :
                     input.type === "mask_source" && value.kind === "catalogRaster" ?
                     `${value.source.collectionId} / ${value.source.itemId} · valid cells greater than zero` :
                     ["raster", "catalog_raster"].includes(input.type) ? describeModelRaster(value, state.runs) :

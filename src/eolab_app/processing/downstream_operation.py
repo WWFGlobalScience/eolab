@@ -101,18 +101,6 @@ def get_additional_sources(
     return result
 
 
-def get_uploaded_polygon(request: DownstreamRequest) -> None:
-    """Report that downstream masks use catalog selections rather than polygon uploads.
-
-    Args:
-        request: Validated operation request.
-
-    Returns:
-        None; there is no upload to copy during admission.
-    """
-    return None
-
-
 def build_downstream_submission(
     request: DownstreamRequest, polygons: AggregateArea | None
 ) -> PreparedJobPlan:

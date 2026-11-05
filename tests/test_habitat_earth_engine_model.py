@@ -245,7 +245,7 @@ def test_earth_engine_run_uses_cache_and_normal_worker_lifecycle(
     assert operation.source is None and operation.primary_input is None
     assert operation.extra_sources(calculation) == {}
     submission = build_model_job_submission(
-        operation.queue(calculation, None), invocation, None, {}
+        operation.queue(calculation, {}), invocation, None, {}
     )
     cache = tmp_path / "habitat-cache"
     runtime = HabitatEarthEngineRuntime(

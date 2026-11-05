@@ -113,8 +113,22 @@ class VectorReferenceSites(HabitatSchema):
     selection: VectorSelection
 
 
+class PolygonReferenceSites(HabitatSchema):
+    """Use a private polygon input as reference sites for this run.
+
+    Attributes:
+        kind: Selects the literal string "polygonArea".
+        reference: Expiring polygon reference owned by the submitting session.
+            Admission copies its geometry before queueing the run.
+    """
+
+    kind: Literal["polygonArea"]
+    reference: PolygonAreaReference
+
+
 HabitatReferences = Annotated[
-    RasterReferenceSites | VectorReferenceSites, Field(discriminator="kind")
+    RasterReferenceSites | VectorReferenceSites | PolygonReferenceSites,
+    Field(discriminator="kind"),
 ]
 
 
@@ -270,11 +284,16 @@ class HabitatRequest(HabitatSchema):
 
 
 class QueuedHabitat(HabitatSchema):
-    """Accepted Habitat inputs awaiting worker preparation and source resolution."""
+    """Keep accepted inputs and both owned polygon roles until worker preparation.
+
+    polygonArea holds drawn assessment geometry. referencePolygons holds
+    drawn reference sites. Each is absent when its role uses another source.
+    """
 
     operation: Literal["habitat.condition.v1"] = OPERATION
     request: HabitatRequest
     polygonArea: AggregateArea | None = None
+    referencePolygons: AggregateArea | None = None
 
 
 class HabitatCalculationInputs(HabitatSchema):
@@ -286,6 +305,8 @@ class HabitatCalculationInputs(HabitatSchema):
     The window starts at zero; nativeBlocks counts 512-pixel preparation tiles.
     earthEngine captures the packaged scientific source definitions for automatic
     inputs; it contains no credentials, local paths or generated reference sites.
+    referencePolygons retains the admitted drawing for the worker to rasterize
+    as reference sites on this grid.
     """
 
     operation: Literal["habitat.condition.v1"] = OPERATION
@@ -293,3 +314,4 @@ class HabitatCalculationInputs(HabitatSchema):
     area: AggregateArea
     grid: ClipGrid
     earthEngine: RasterStackConfiguration | None = None
+    referencePolygons: AggregateArea | None = None

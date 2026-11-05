@@ -1166,9 +1166,11 @@ async function initializeCatalog(
             if (job.status === "deleted") mapLayerController.forgetUnavailableRemoval(snapshot => snapshot.local?.jobId === job.jobId);
         },
         /** Supply original-source choices and current map areas independently of rendering.
-         * @return {Object} Independent raster, temporal dataset, vector, selected area and visible map bounds.
+         * @param {Object} [options] Additional input choices requested by model setup.
+         * @param {boolean} [options.includeDrawnPolygons=false] Include detached, filtered snapshots of committed polygon layers.
+         * @return {Object} Independent raster, temporal dataset, vector, polygon layer, selected area and visible map bounds.
          */
-        getContext: () => {
+        getContext: ({includeDrawnPolygons = false} = {}) => {
             const viewport = leafletMap.getBounds();
             const layers = mapLayerController.snapshots();
             return {
@@ -1176,6 +1178,10 @@ async function initializeCatalog(
                     .map(layer => ({...describeCalculationSource(layer.source, layer.label), visible: layer.visible})),
                 temporalDatasets: temporalDatasets(layers),
                 vectors: getPolygonTargets().map(target => ({...target.item, key: target.key, label: target.label, filter: target.filter, fields: target.fields})),
+                drawnPolygonLayers: includeDrawnPolygons ? (annotations?.summaryTargets() ?? []).map(target => ({
+                    key: target.key, label: target.label, total: target.polygons.length,
+                    polygons: annotationSummaryPolygons(target.polygons, target.filter),
+                })) : [],
                 area: modelArea, areaDescription: modelAreaDescription,
                 viewportBounds: {west: viewport.getWest(), south: viewport.getSouth(), east: viewport.getEast(), north: viewport.getNorth()},
             };

@@ -618,9 +618,9 @@ class ProcessingService:
         """Start a model run, or recover a previously accepted submission.
 
         Checks the selected model and its declared sources, fills in defaults,
-        and saves the inputs before queueing work. Repeating the same request ID
-        and inputs returns the original run even if its model or source is no
-        longer installed.
+        and copies each owned polygon input by role before queueing work.
+        Repeating the same request ID and inputs returns the original run even
+        if its model or source is no longer installed.
 
         Args:
             owner: Hash of the requesting browser's Processing session cookie.
@@ -654,8 +654,14 @@ class ProcessingService:
         )
         operation = get_model_operation(invocation.model.definition.steps[0].operation)
         source = operation.source(calculation) if operation.source is not None else None
-        reference = operation.polygon(calculation)
-        polygons = await self.read_polygon_area(owner, reference) if reference else None
+        polygons: dict[str, AggregateArea] = {}
+        polygons_by_reference: dict[PolygonAreaReference, AggregateArea] = {}
+        for role, reference in operation.polygon_inputs(calculation).items():
+            if reference not in polygons_by_reference:
+                polygons_by_reference[reference] = await self.read_polygon_area(
+                    owner, reference
+                )
+            polygons[role] = polygons_by_reference[reference]
         operation_plan = operation.queue(calculation, polygons)
         source_metadata: (
             tuple[int, int, int, int] | TemporalVariableMetadata | JobInputFile | None
@@ -1192,7 +1198,7 @@ class ProcessingService:
             ).encode()
         ).hexdigest()
         operation = get_model_operation("raster.clip.v1")
-        prepared = operation.queue(request, None)
+        prepared = operation.queue(request, {})
         try:
             prepared = await self.capture_input_file(
                 owner, operation.source(request), prepared
@@ -1332,7 +1338,7 @@ class ProcessingService:
                     request.requestId, request_hash, "raster.aggregate.v1", polygons
                 )
         operation = get_model_operation("raster.aggregate.v1")
-        prepared = operation.queue(request, polygons)
+        prepared = operation.queue(request, {"area": polygons} if polygons else {})
         try:
             prepared = await self.capture_input_file(
                 owner, operation.source(request), prepared
