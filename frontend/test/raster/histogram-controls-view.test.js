@@ -343,11 +343,11 @@ test("another raster completing preserves a pending axis edit and its focused co
     view.renderLayerHistograms([first, second], "first");
     const list = doc.querySelector("#raster-histogram-list");
     const card = list.children[0];
-    const editor = card.children.find(child => child.className === "histogram-axis-controls");
+    const { root: editor, rows } = view.summaryCards.get("first").axisControls;
+    assert.equal(editor.children[1].children[0].textContent, "Bar height (% of pixels)");
     editor.open = true;
     editor.dispatchEvent(new Event("toggle"));
-    const range = editor.children[2].children[2].children[1];
-    const maximum = editor.children[2].children[4].children[1];
+    const { bounds: { input: range }, maximum: { input: maximum } } = rows.get("y").fields;
     range.value = "values";
     range.dispatchEvent(new Event("change"));
     maximum.focus();

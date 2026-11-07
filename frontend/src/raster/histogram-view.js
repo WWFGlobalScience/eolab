@@ -12,6 +12,7 @@ import { getRasterStyleColor } from "./style.js";
 import { scaleLinear } from "d3";
 import { bindChartInspection, createChartTooltip, drawChartAxes } from "../charts/chart-presentation.js";
 import { formatHistogramTick, histogramScales } from "./histogram-axes.js";
+import { appendHistogramThresholdMarkers } from "./histogram-threshold-markers.js";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const HISTOGRAM_CHART_WIDTH = 640;
@@ -39,7 +40,7 @@ function formatHistogramBinTooltip(
 }
 
 /**
- * Draw candidate style thresholds over a histogram without changing its data.
+ * Draw candidate style thresholds above the plot.
  *
  * @param {SVGSVGElement} chart Histogram chart element.
  * @param {Object} plot Plot coordinates in SVG units.
@@ -47,7 +48,7 @@ function formatHistogramBinTooltip(
  * @param {Array<{label:string,value:number,color:string}>} markers Candidate
  * style thresholds.
  * @param {Document} documentContext DOM document; injectable for tests.
- * @return {void}
+ * @return {SVGElement[]} Focusable threshold markers.
  */
 function drawHistogramThresholdMarkers(
     chart,
@@ -56,41 +57,23 @@ function drawHistogramThresholdMarkers(
     markers,
     documentContext
 ) {
-    if (markers.length === 0) return;
+    if (markers.length === 0) return [];
     const group = documentContext.createElementNS(SVG_NAMESPACE, "g");
     group.classList.add("raster-histogram-thresholds");
-    group.setAttribute("aria-hidden", "true");
-    for (const marker of markers) {
+    const right = plot.left + plot.width;
+    const projected = markers.flatMap((marker, index) => {
         const fraction = scales.xAxis.position(marker.value);
-        if (!Number.isFinite(fraction)) continue;
-        const x = Math.max(
-            plot.left,
-            Math.min(
-                plot.left + plot.width,
-                plot.left + fraction * plot.width
-            )
-        );
-        const outline = documentContext.createElementNS(SVG_NAMESPACE, "line");
-        outline.classList.add("raster-histogram-threshold-outline");
-        outline.setAttribute("x1", String(x));
-        outline.setAttribute("x2", String(x));
-        outline.setAttribute("y1", String(plot.top));
-        outline.setAttribute("y2", String(plot.bottom));
-        const line = documentContext.createElementNS(SVG_NAMESPACE, "line");
-        line.classList.add("raster-histogram-threshold");
-        line.setAttribute("x1", String(x));
-        line.setAttribute("x2", String(x));
-        line.setAttribute("y1", String(plot.top));
-        line.setAttribute("y2", String(plot.bottom));
-        line.style.stroke = marker.color;
-        const label = documentContext.createElementNS(SVG_NAMESPACE, "text");
-        label.classList.add("raster-histogram-threshold-label");
-        label.setAttribute("x", String(x));
-        label.setAttribute("y", String(plot.top + 11));
-        label.textContent = marker.label.slice(0, 1).toUpperCase();
-        group.append(outline, line, label);
-    }
+        return Number.isFinite(fraction) ? [{
+            ...marker, id: String(index), label: marker.label.slice(0, 1).toUpperCase(),
+            description: `${marker.label} at ${formatRasterPixelValue(marker.value)}`,
+            position: Math.max(plot.left, Math.min(right, plot.left + fraction * plot.width)),
+        }] : [];
+    });
+    const targets = appendHistogramThresholdMarkers(documentContext, group, projected, {
+        axis: "x", edge: plot.top, guideEnd: plot.bottom, minimum: plot.left, maximum: right, glyphSize: 10,
+    });
     chart.append(group);
+    return targets;
 }
 
 /**
@@ -120,8 +103,9 @@ function drawRasterHistogramChart(
     markers,
     axes
 ) {
-    const focusedBin = chart.contains(documentContext.activeElement)
-        ? documentContext.activeElement.getAttribute("data-bin-index") : null;
+    const focusedElement = chart.contains(documentContext.activeElement) ? documentContext.activeElement : null;
+    const focusedBin = focusedElement?.getAttribute("data-bin-index");
+    const focusedMarker = focusedElement?.getAttribute("data-threshold-id");
     const { counts, edges } = statistics.histogram;
     const plot = { left: 48, top: 28, width: width - 60, height: HISTOGRAM_PLOT_HEIGHT, bottom: 28 + HISTOGRAM_PLOT_HEIGHT };
     const scales = histogramScales(statistics, plot.width, axes);
@@ -161,7 +145,7 @@ function drawRasterHistogramChart(
         {scale: scaleLinear([0, 1], [plot.bottom, plot.top]), values: yTicks,
             format: fraction => formatHistogramTick(scales.yAxis.valueAt(fraction), scales.yAxis.scale === "log" ?
                 scales.yAxis.valueAt(fraction) / 10 : (scales.yAxis.maximum - scales.yAxis.minimum) / 2)}, [
-            {text: `Sampled pixels (%)${scales.yAxis.scale === "log" ? " · log" : ""}`, x: plot.left, y: 15, anchor: "start"},
+            {text: `Sampled pixels (%)${scales.yAxis.scale === "log" ? " · log" : ""}`, x: plot.left, y: markers.length ? 12 : 15, anchor: "start"},
             {text: (scales.offset === 0 ? valueLabel : `${valueLabel} (offset ${scales.offset >= 0 ? "+" : ""}${scales.offset})`) +
                 (scales.xAxis.scale === "log" ? " · log" : ""), x: plot.left + plot.width / 2, y: plot.bottom + 38},
         ]);
@@ -200,7 +184,7 @@ function drawRasterHistogramChart(
         chart.append(bar);
         bars.push({ binIndex, bar, center: x + barWidth * 0.45 });
     }
-    drawHistogramThresholdMarkers(
+    const thresholdTargets = drawHistogramThresholdMarkers(
         chart,
         plot,
         scales,
@@ -229,7 +213,10 @@ function drawRasterHistogramChart(
     }
     chart.setAttribute("aria-label", title.textContent);
     chart.removeAttribute("hidden");
-    if (focusedBin !== null) {
+    if (focusedMarker != null) {
+        (thresholdTargets.find(marker => marker.getAttribute("data-threshold-id") === focusedMarker) ?? chart)
+            .focus({preventScroll: true});
+    } else if (focusedBin != null) {
         (bars.find(item => String(item.binIndex) === focusedBin)?.bar ?? chart).focus({preventScroll: true});
     }
 }
@@ -271,7 +258,8 @@ export function renderRasterHistogramChart(
     ) {
         throw new TypeError("Raster histogram threshold markers are invalid");
     }
-    clearRasterHistogramChart(chart);
+    chartObservers.get(chart)?.disconnect();
+    chartObservers.delete(chart);
     let width = Math.max(180, chart.clientWidth || HISTOGRAM_CHART_WIDTH);
     drawRasterHistogramChart(
         chart,

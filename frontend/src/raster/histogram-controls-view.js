@@ -645,8 +645,8 @@ export class RasterHistogramControlsView {
             chart, statistics, getStyle(), this.documentContext, valueLabel, getMarkers(), axes,
         );
         const controls = new HistogramAxisControls(this.documentContext, [
-            { ...distribution, key: "x", label: valueLabel },
             { ...distribution, key: "y", label: "Bar height (% of pixels)", frequency: true, nice: true },
+            { ...distribution, key: "x", label: valueLabel },
         ], this.axisStates.get(key), draw);
         draw(controls.axes);
         return { controls, redraw: () => draw(controls.axes) };

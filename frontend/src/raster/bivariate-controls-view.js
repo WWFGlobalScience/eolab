@@ -13,6 +13,7 @@ import {
     getHighestDensityPairedCell,
 } from "./paired-statistics.js";
 import { formatHistogramTick } from "./histogram-axes.js";
+import { appendHistogramThresholdMarkers } from "./histogram-threshold-markers.js";
 import { formatRasterPixelValue } from "./value-format.js";
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -345,7 +346,7 @@ export class BivariateRasterControlsView {
         this.boundPaletteChange = this.#handlePaletteChange.bind(this);
         this.boundSwap = this.#handleSwap.bind(this);
         this.boundRetry = this.#handleRetry.bind(this);
-        this.boundRangeToggle = this.#renderThresholdMarkers.bind(this);
+        this.boundRangeToggle = () => this.#renderThresholdMarkers();
         this.downloadButtons = ["x", "y"].flatMap(axis => [
             { axis, calculate: true, button: requireRasterControl(documentContext, `#calculate-bivariate-${axis}`),
                 onClick: () => this.handlers?.onCalculatePairedHistogram?.(axis) }, {
@@ -603,6 +604,7 @@ export class BivariateRasterControlsView {
 
     /** Redraw the current paired sample using the current display transforms. @return {void} */
     #drawStatistics() {
+        const focusedThresholdId = this.#focusedThresholdId();
         const statistics = this.statistics, presentation = this.labels;
         const { x: xAxis, y: yAxis, xFrequency, yFrequency } = this.axes;
         this.cells.clear();
@@ -1063,12 +1065,11 @@ export class BivariateRasterControlsView {
         });
         this.thresholdMarkers = svgElement(this.documentContext, "g", {
             class: "raster-bivariate-thresholds",
-            "aria-hidden": "true",
         });
         children.push(this.thresholdMarkers, tooltip.element);
 
         this.histogram.replaceChildren(...children);
-        this.#renderThresholdMarkers();
+        this.#renderThresholdMarkers(focusedThresholdId);
         this.histogram.setAttribute("aria-label", summary);
         this.histogram.removeAttribute("aria-busy");
         this.histogram.removeAttribute("hidden");
@@ -1090,12 +1091,19 @@ export class BivariateRasterControlsView {
      * hover, keyboard focus, and sampled-cell state. Drafts are shown only
      * while the disclosure is open and the paired sample is current.
      *
+     * @param {string|null} [focusedId] Focused marker before an enclosing chart redraw.
      * @return {void}
      */
-    #renderThresholdMarkers() {
+    #renderThresholdMarkers(focusedId = this.#focusedThresholdId()) {
         if (this.thresholdMarkers === null) return;
         this.thresholdMarkers.replaceChildren();
-        if (!this.statisticsIsCurrent || this.statistics === null) return;
+        if (!this.statisticsIsCurrent || this.statistics === null) {
+            if (focusedId !== null) this.histogram.focus({preventScroll: true});
+            return;
+        }
+        let focusTarget = null;
+        const plotRight = HISTOGRAM_PLOT_X + HISTOGRAM_PLOT_SIZE;
+        const plotBottom = HISTOGRAM_PLOT_Y + HISTOGRAM_PLOT_SIZE;
         for (const axis of ["x", "y"]) {
             const style = this.labels[`${axis}Style`];
             const preview = this.styleRanges.open ? this.rangePreviews[axis] : null;
@@ -1105,41 +1113,37 @@ export class BivariateRasterControlsView {
                 "data-threshold-axis": axis,
                 "data-threshold-mode": preview === null ? "committed" : "preview",
             });
-            for (const [index, name] of ["minimum", "midpoint", "maximum"].entries()) {
-                const rawFraction = displayAxis.position(range[name]);
-                if (!Number.isFinite(rawFraction)) continue;
-                const fraction = Math.max(0, Math.min(1, rawFraction));
-                const position = axis === "x"
-                    ? HISTOGRAM_PLOT_X + fraction * HISTOGRAM_PLOT_SIZE
-                    : HISTOGRAM_PLOT_Y + (1 - fraction) * HISTOGRAM_PLOT_SIZE;
-                const coordinates = axis === "x"
-                    ? { x1: position, x2: position,
-                        y1: HISTOGRAM_PLOT_Y - HISTOGRAM_MARGINAL_SIZE,
-                        y2: HISTOGRAM_PLOT_Y }
-                    : { x1: HISTOGRAM_PLOT_X + HISTOGRAM_PLOT_SIZE,
-                        x2: HISTOGRAM_PLOT_X + HISTOGRAM_PLOT_SIZE + HISTOGRAM_MARGINAL_SIZE,
-                        y1: position, y2: position };
-                const outline = svgElement(this.documentContext, "line", {
-                    ...coordinates, class: "raster-histogram-threshold-outline",
+            const markers = [["minimum", "L", "Lower"], ["midpoint", "M", "Middle"], ["maximum", "U", "Upper"]]
+                .flatMap(([name, label, description]) => {
+                    const value = range[name];
+                    const rawFraction = displayAxis.position(value);
+                    if (!Number.isFinite(rawFraction)) return [];
+                    const fraction = Math.max(0, Math.min(1, rawFraction));
+                    const position = axis === "x"
+                        ? HISTOGRAM_PLOT_X + fraction * HISTOGRAM_PLOT_SIZE
+                        : HISTOGRAM_PLOT_Y + (1 - fraction) * HISTOGRAM_PLOT_SIZE;
+                    return [{
+                        id: name, label, position, value, color: style[`${name}Color`],
+                        description: `${description} threshold for ${this.labels[`${axis}Label`]} (${axis.toUpperCase()}) at ${formatRasterPixelValue(value)}`,
+                    }];
                 });
-                const line = svgElement(this.documentContext, "line", {
-                    ...coordinates, class: "raster-histogram-threshold",
-                    "data-threshold": name, "data-value": range[name],
-                });
-                line.style.stroke = style[`${name}Color`];
-                const label = svgElement(this.documentContext, "text", {
-                    x: axis === "x" ? position
-                        : HISTOGRAM_PLOT_X + HISTOGRAM_PLOT_SIZE + 12 + index * 16,
-                    y: axis === "x"
-                        ? HISTOGRAM_PLOT_Y - HISTOGRAM_MARGINAL_SIZE + 14 + index * 16
-                        : position + 5,
-                    class: "raster-histogram-threshold-label",
-                });
-                label.textContent = ["L", "M", "U"][index];
-                group.append(outline, line, label);
-            }
+            const targets = appendHistogramThresholdMarkers(this.documentContext, group, markers, axis === "x"
+                ? {axis, edge: HISTOGRAM_PLOT_Y - HISTOGRAM_MARGINAL_SIZE, guideEnd: HISTOGRAM_PLOT_Y,
+                    minimum: HISTOGRAM_PLOT_X, maximum: plotRight, glyphSize: 14}
+                : {axis, edge: plotRight + HISTOGRAM_MARGINAL_SIZE, guideEnd: plotRight,
+                    minimum: HISTOGRAM_PLOT_Y, maximum: plotBottom, glyphSize: 14});
+            focusTarget ??= targets.find(marker => marker.getAttribute("data-threshold-id") === focusedId);
             this.thresholdMarkers.append(group);
         }
+        if (focusedId !== null) (focusTarget ?? this.histogram).focus({preventScroll: true});
+    }
+
+    /** Identify the focused marker without disturbing cell or slider focus.
+     * @return {string|null} Axis and threshold name, or null.
+     */
+    #focusedThresholdId() {
+        const focused = this.documentContext.activeElement;
+        return focused && this.thresholdMarkers?.contains(focused) ? focused.getAttribute("data-threshold-id") : null;
     }
 
     /**

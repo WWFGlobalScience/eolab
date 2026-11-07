@@ -23,6 +23,7 @@ const FOCUSED_VIEW_IMPORTS = {
         "./bivariate.js",
         "./histogram-axes.js",
         "./histogram-axis-controls.js",
+        "./histogram-threshold-markers.js",
         "./paired-statistics.js",
         "./required-control.js",
         "./value-format.js",
@@ -135,10 +136,11 @@ test("focused raster views validate only their semantic subgroup roots", async (
     assert.doesNotMatch(bivariateSource, /"#raster-appearance-controls"/);
 });
 
-test("histogram axis controls and transforms have only local presentation dependencies", async () => {
+test("histogram axis controls, transforms and markers have only local presentation dependencies", async () => {
     for (const [moduleName, expected] of [
         ["histogram-axis-controls.js", ["./histogram-axis-scale.js", "./value-format.js"]],
         ["histogram-axis-scale.js", []],
+        ["histogram-threshold-markers.js", []],
     ]) {
         const source = await readFile(
             new URL(`../../src/raster/${moduleName}`, import.meta.url), "utf8"

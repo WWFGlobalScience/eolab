@@ -1427,18 +1427,40 @@ h5 {
   vector-effect: non-scaling-stroke;
 }
 
-.raster-histogram-threshold-outline,
-.raster-histogram-threshold {
+.raster-histogram-thresholds,
+.raster-bivariate-thresholds {
+  pointer-events: none;
+}
+
+.raster-histogram-threshold-tick,
+.raster-histogram-threshold-guide {
+  filter: drop-shadow(0 0 0.55px var(--text-1));
+  stroke-width: 1.5px;
   vector-effect: non-scaling-stroke;
 }
 
-.raster-histogram-threshold-outline {
-  stroke: rgb(255 255 255 / 88%);
-  stroke-width: 4px;
+.raster-histogram-threshold-guide {
+  stroke-dasharray: 4 3;
+  visibility: hidden;
 }
 
-.raster-histogram-threshold {
-  stroke-width: 2px;
+.raster-histogram-threshold-marker:is(:hover, :focus-visible) .raster-histogram-threshold-guide {
+  visibility: visible;
+}
+
+.raster-histogram-threshold-marker:focus {
+  outline: none;
+}
+
+.raster-histogram-threshold-target {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.raster-histogram-threshold-marker:focus-visible .raster-histogram-threshold-target {
+  stroke: var(--brand-hover);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
 }
 
 .raster-histogram-threshold-label {
@@ -1447,7 +1469,8 @@ h5 {
   stroke-width: 3px;
   paint-order: stroke;
   text-anchor: middle;
-  font: 700 10px/1 system-ui, sans-serif;
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
 }
 
 .raster-histogram-tooltip,
@@ -3621,10 +3644,6 @@ article.raster-histogram-summary {
   stroke-width: 1px;
 }
 
-.raster-bivariate-thresholds {
-  pointer-events: none;
-}
-
 /* Keep both marginal previews visible while scrolling the axis controls. */
 .raster-bivariate-statistics:has(.raster-bivariate-style-ranges[open]) > .raster-bivariate-histogram {
   position: sticky;
@@ -3635,11 +3654,6 @@ article.raster-histogram-summary {
 
 #map-histogram-panel:has(.raster-bivariate-style-ranges[open]) {
   scroll-padding-top: calc(44dvh + 64px);
-}
-
-.raster-bivariate-thresholds .raster-histogram-threshold-label {
-  font-size: 18px;
-  stroke-width: 4px;
 }
 
 .raster-bivariate-style-ranges {
