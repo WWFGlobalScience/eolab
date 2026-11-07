@@ -15,6 +15,7 @@ import { VectorFilterControls } from "../../src/vector/filter-controls.js";
 import { EMPTY_VECTOR_FILTER, normalizeVectorFilter } from "../../src/vector/filter.js";
 import { FakeRasterControlDocument } from "../../test-support/raster/fake-controls-document.js";
 import { RasterSeriesView } from "../../src/raster/series-view.js";
+import { RasterSeriesPlotsView } from "../../src/raster/series-plots-view.js";
 import { RasterSamplingAreaControlsView } from "../../src/raster/sampling-area-controls-view.js";
 
 /** @param {number} west Longitude. @return {Object} Valid sampling box. */
@@ -360,6 +361,37 @@ test("rapid area changes cancel submitted work and never mix old-area rows",asyn
     assert.equal(h.area.results.size,2);
     for(const result of h.area.results.values())assert.equal(result.calculationInputs.area.selectedBounds.west,20);
     h.close();
+});
+
+test("a waiting Sum plot shows raster stack progress until its first result arrives", async () => {
+    const h = fixture();
+    const plots = new RasterSeriesPlotsView(new FakeRasterControlDocument(), {});
+    try {
+        await h.open(); await h.finish(); await h.finish();
+        h.view.actions.onAddPlot();
+        h.view.actions.onAddFormula("sum");
+        h.view.actions.onStatisticDisplay(2, {plotId: 2});
+        await h.tick(700);
+
+        plots.renderPlots(h.view.state);
+        const sum = plots.cards.get(2);
+        assert.equal(plots.cards.get(1).chart.querySelectorAll(".series-chart-point").length, 2);
+        assert.equal(sum.chart.hidden, true);
+        assert.equal(sum.pendingProgress.hidden, false);
+        assert.match(sum.pendingDetail.textContent, /0 of 2 rasters complete/);
+        assert.equal(sum.pendingBar.getAttribute("value"), null, "raster completion does not estimate work inside a job");
+
+        await h.finish("ready", false, "1");
+        plots.renderPlots(h.view.state);
+        assert.equal(h.view.state.busy, true);
+        assert.equal(sum.pendingProgress.hidden, true);
+        assert.equal(sum.chart.querySelectorAll(".series-chart-point").length, 1);
+
+        await h.finish("ready", false, "2");
+        plots.renderPlots(h.view.state);
+        assert.equal(h.view.state.busy, false);
+        assert.equal(sum.chart.querySelectorAll(".series-chart-point").length, 2);
+    } finally { h.close(); }
 });
 
 test("committed areas submit on the next turn and coalesce synchronous replacements",async()=>{
