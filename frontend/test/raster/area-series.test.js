@@ -347,6 +347,34 @@ test("formulas share one job per source, retain exact scalar/unit CSV, and prese
 
 
 
+test("removing all secondary plots makes the next one Plot 2 with fresh controls", () => {
+    const h = fixture();
+    try {
+        const { onAddPlot, onRemovePlot, onPlotOptions, onStatisticDisplay } = h.view.actions;
+        const requestCount = h.requests.length;
+        onAddPlot();
+        onAddPlot();
+        const [primary, second, third] = h.view.state.plots;
+        onPlotOptions(third.id, { scale: "log", bounds: [1, 30], xBounds: null });
+        onStatisticDisplay(1, { plotId: third.id });
+
+        onRemovePlot(second.id);
+        assert.deepEqual(h.view.state.plots.map(plot => plot.displayNumber), [1, 3]);
+        assert.deepEqual(h.view.state.plots[1].bounds, [1, 30]);
+        assert.equal(h.view.state.statistics[0].plotId, third.id);
+
+        onRemovePlot(third.id);
+        onAddPlot();
+        const replacement = h.view.state.plots[1];
+        assert.equal(replacement.displayNumber, 2);
+        assert.ok(![primary.id, second.id, third.id].includes(replacement.id));
+        assert.equal(replacement.scale, "linear");
+        assert.equal(replacement.bounds, null);
+        assert.equal(h.view.state.statistics[0].plotId, primary.id);
+        assert.equal(h.requests.length, requestCount);
+    } finally { h.close(); }
+});
+
 test("rapid area changes cancel submitted work and never mix old-area rows",async()=>{
     const h=fixture();await h.open();await h.finish();await h.finish();
     h.controller.setArea(box(10),"Second");await h.tick();

@@ -33,6 +33,19 @@ const STATES = { waiting: "Waiting", error: "Unavailable", no_matches: "No match
  */
 
 /**
+ * @typedef {Object} SeriesPlot
+ * @property {number} id Stable identity for assignments, settings and retained controls.
+ * @property {number} displayNumber Plot number shown in the UI.
+ * @property {"linear"|"log"} scale Y-axis scale.
+ * @property {[number,number]|null} bounds Custom Y bounds, or null for automatic bounds.
+ * @property {[number,number]|null} xBounds Custom UTC bounds, or null for automatic bounds.
+ * @property {number} [pointSize] Point size in pixels.
+ * @property {number} [xTickCount] Requested X-axis tick count.
+ * @property {number} [yTickCount] Requested Y-axis tick count.
+ * @property {number} [axisFontSize] Axis font size in pixels.
+ */
+
+/**
  * @typedef {Object} SeriesPresentation
  * @property {boolean} active Whether the panel is open.
  * @property {{key:string,label:string,selected:boolean,hasSnapshot?:boolean,temporalDatasetKey?:string,rangeSelected?:boolean}[]} sources Named snapshot choices and temporal-range actions.
@@ -45,7 +58,7 @@ const STATES = { waiting: "Waiting", error: "Unavailable", no_matches: "No match
  * @property {boolean} canDownload Whether current values can be exported.
  * @property {{formulas:SeriesStatistic[],sources:object[],areaChoice:string,area:object|null,areaLabel:string,hasPendingVectorArea:boolean,hasErrors:boolean,recoverable:boolean}} area Selected scope and retry/recovery availability.
  * @property {SeriesStatistic[]} statistics Statistic presentation.
- * @property {{id:number,scale:"linear"|"log",bounds:[number,number]|null,xBounds:[number,number]|null}[]} plots Independent display bounds and scale; null chooses automatic bounds.
+ * @property {SeriesPlot[]} plots Display numbers and settings in plot order.
  * @property {"forward"|"reverse"} direction Display direction; temporal data and CSV retain observation order.
  * @property {boolean} showingPrevious Whether plots use retained results.
  * @property {Object|null} [temporal] Dataset, variable and period controls; absent for ordinary raster layers.
@@ -490,7 +503,7 @@ export class RasterSeriesView {
                 plot.dataset.optionsKey = plotsKey;
                 plot.replaceChildren(...state.plots.map(item => {
                     const option = this.document.createElement("option"); option.value = String(item.id);
-                    option.textContent = `Plot ${item.id}`; return option;
+                    option.textContent = `Plot ${item.displayNumber}`; return option;
                 }));
             }
             const label = `Plot for ${name}`;
