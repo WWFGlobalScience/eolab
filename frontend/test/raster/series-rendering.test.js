@@ -264,6 +264,39 @@ test("previous numerical results remain visible while their replacements are pen
     assert.equal(h.view.plots.hidden, true, "NoData outcomes keep the table without an empty graph");
 });
 
+test("pending raster comparisons keep plot setup available without an empty chart", () => {
+    const h = controlsFixture();
+    const second = { key: "b", label: "Raster B", selected: true };
+    h.state.sources.push(second);
+    h.state.area.sources.push(second);
+    h.state.area.area = { kind: "wholeRaster" };
+    h.state.rows.push({ ...h.state.rows[0], label: second.label });
+    h.draw();
+
+    assert.equal(h.view.results.hidden, false, "the plot toolbar is reachable while waiting");
+    assert.equal(h.view.chartToolbar.hidden, false);
+    assert.equal(h.view.addPlot.hidden, false);
+    assert.equal(h.view.plots.hidden, true);
+    assert.equal(h.view.plotHeading.hidden, true);
+    assert.equal(h.view.values.hidden, true);
+    const assignment = h.view.formulaRows.querySelector("select");
+    assert.equal(assignment.hidden, true, "only Plot 1 is available");
+
+    h.state.plots.push({ id: 2, scale: "linear" });
+    h.draw();
+    assert.equal(assignment.hidden, false);
+    assert.deepEqual(assignment.children.map(option => option.value), ["1", "2"]);
+    h.state.statistics[0].plotId = 2;
+    h.draw();
+    assert.equal(assignment.value, "2");
+    assert.equal(h.plots.length, 0, "plot setup does not draw empty charts");
+
+    Object.assign(h.state.rows[0], { state: "value", value: 2, rawValue: "2" });
+    h.draw();
+    assert.equal(h.view.plots.hidden, false);
+    assert.equal(h.plots.at(-1).statistics[0].plotId, 2);
+});
+
 test("one temporal observation uses values; several timestamps in the same dataset use plots", () => {
     const h = controlsFixture();
     h.view.renderTemporalControls = () => {};
