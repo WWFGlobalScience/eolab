@@ -1280,8 +1280,7 @@ export class CatalogFootprintController {
      * @return {void}
      */
     select(item) {
-        this.clearPreview();
-        this.removeLayer(this.selectedLayer);
+        this.clear();
         this.selectedItemKey = this.itemKey(item);
         this.selectedLayer = this.layerFactory(item, "selected").addTo(
             this.leafletMap
@@ -1313,12 +1312,20 @@ export class CatalogFootprintController {
         this.previewLayer = null;
     }
 
-    /** Removes every Catalog footprint and selection. */
-    clear() {
-        this.clearPreview();
+    /**
+     * Remove the solid outline and allow the item to show a preview again.
+     * @return {void}
+     */
+    clearSelectedFootprint() {
         this.removeLayer(this.selectedLayer);
         this.selectedLayer = null;
         this.selectedItemKey = null;
+    }
+
+    /** Remove both Catalog footprints. @return {void} */
+    clear() {
+        this.clearPreview();
+        this.clearSelectedFootprint();
     }
 
     /**
