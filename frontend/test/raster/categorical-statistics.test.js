@@ -39,6 +39,26 @@ test("category API sends only sorted codes and rejects stale or missing classifi
         async () => new Response(JSON.stringify(RASTER_STATISTICS)), [0, 41]), /different category classification/);
 });
 
+test("a categorical histogram sends the drawing reference and rejects stale polygon provenance", async () => {
+    const polygonArea = {id: "a".repeat(32), sha256: "b".repeat(64)};
+    const area = {kind: "polygonArea", polygonArea};
+    const response = {...RASTER_STATISTICS, scope: "polygonArea", polygonArea, categoricalDistribution: distribution};
+    const result = await loadRasterStatistics(MOUNTED_GEOTIFF_ITEM, area, undefined, async (_url, options) => {
+        assert.deepEqual(JSON.parse(options.body), {
+            collectionId: MOUNTED_GEOTIFF_ITEM.collection, itemId: MOUNTED_GEOTIFF_ITEM.id,
+            polygonArea, categoryValues: [0, 41],
+        });
+        assert.equal(options.headers["X-EOLab-Processing"], "1");
+        assert.equal(options.credentials, "same-origin");
+        return Response.json(response);
+    }, [41, 0]);
+    assert.deepEqual(result.polygonArea, polygonArea);
+    assert.deepEqual(result.categoricalDistribution, distribution);
+    await assert.rejects(loadRasterStatistics(MOUNTED_GEOTIFF_ITEM, area, undefined,
+        async () => Response.json({...response, polygonArea: {...polygonArea, sha256: "c".repeat(64)}}), [0, 41]),
+        /polygon-area response identity/);
+});
+
 test("category presentation sorts area, retains transparent data and uses valid-area denominator", () => {
     const model = presentCategoricalRasterDistribution({ ...RASTER_STATISTICS, categoricalDistribution: distribution }, style);
     assert.deepEqual(model.rows.map(row => row.label), ["Forest <b>literal</b>", "Background", "Unmapped"]);

@@ -36,7 +36,7 @@ from eolab_app.processing.aggregate_models import (
     MAX_CALCULATION_BATCH_BYTES,
     MAX_CALCULATION_ITEM_BYTES,
 )
-from eolab_app.processing.polygon_areas import (
+from eolab_app.polygon_areas import (
     MAX_POLYGON_AREA_BYTES,
     PolygonSummaryInput,
     PolygonAreaUploadResponse,

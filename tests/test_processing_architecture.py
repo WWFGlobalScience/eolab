@@ -51,6 +51,26 @@ def test_processing_has_no_histogram_renderer_or_aoi_implementation_dependency()
         }, path
 
 
+def test_histogram_polygon_reads_have_no_processing_implementation_dependency() -> None:
+    """Keep histogram reads on the neutral area contract and the injected owner check."""
+    app = Path("src/eolab_app")
+    paths = (
+        app / "polygon_areas.py",
+        app / "sampling_area.py",
+        app / "routes/raster_analysis.py",
+        *(app / "raster").glob("*statistics*.py"),
+        app / "raster/models.py",
+    )
+    for path in paths:
+        assert not {
+            module
+            for module in imports(path)
+            if module.startswith(
+                ("eolab_app.processing", "eolab_app.routes.processing")
+            )
+        }, path
+
+
 def test_hydrology_sources_use_neutral_readers_without_sibling_services() -> None:
     """Hydrology source access stays independent of renderer and catalog storage."""
     for name in (

@@ -44,10 +44,10 @@ export const WHOLE_RASTER_SAMPLING_AREA = Object.freeze({
 });
 
 /**
- * Validate and freeze a whole-raster, rectangular, geodesic-box or filtered-vector area.
+ * Validate and freeze a whole-raster, rectangular, geodesic-box or polygon area.
  *
  * @param {Object} [samplingArea=WHOLE_RASTER_SAMPLING_AREA] Candidate whole,
- * selected-bounds, center/size sampling-box or catalog-selection area.
+ * selected bounds, center/size sampling box, catalog selection or private polygon reference.
  * @return {Readonly<Object>} Validated immutable sampling area.
  * @throws {TypeError|RangeError} If the shape is invalid or a sampling box
  * crosses its supported pole/date-line boundary.
@@ -88,7 +88,33 @@ export function normalizeRasterSamplingArea(
         keys[0] === "catalogSelection" && keys[1] === "kind") {
         return Object.freeze({ kind: "catalogSelection", catalogSelection: validateVectorSelection(samplingArea.catalogSelection) });
     }
+    if (samplingArea.kind === "polygonArea" && keys.join() === "kind,polygonArea") {
+        return Object.freeze({ kind: "polygonArea", polygonArea: validatePolygonAreaReference(samplingArea.polygonArea) });
+    }
     throw new TypeError("Raster statistics sampling area is invalid.");
+}
+
+/** Validate the opaque ID and checksum of an uploaded polygon snapshot.
+ * @param {Object} reference Candidate browser-owned polygon input.
+ * @return {Readonly<{id:string,sha256:string}>} Independent immutable reference.
+ * @throws {TypeError} If the reference has unexpected or malformed fields.
+ */
+export function validatePolygonAreaReference(reference) {
+    if (!reference || Object.keys(reference).sort().join() !== "id,sha256" ||
+        typeof reference.id !== "string" || !/^[a-f0-9]{32}$/.test(reference.id) ||
+        typeof reference.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(reference.sha256)) {
+        throw new TypeError("Invalid polygon calculation area.");
+    }
+    return Object.freeze({ id: reference.id, sha256: reference.sha256 });
+}
+
+/** Compare two validated references for an exact polygon snapshot.
+ * @param {{id:string,sha256:string}|null|undefined} left First polygon reference.
+ * @param {{id:string,sha256:string}|null|undefined} right Second polygon reference.
+ * @return {boolean} Whether both identify the same upload and geometry.
+ */
+export function polygonAreaReferencesEqual(left, right) {
+    return !!left && !!right && left.id === right.id && left.sha256 === right.sha256;
 }
 
 /** Validate and copy the source identity and filter for selected vector features.

@@ -862,15 +862,18 @@ async function initializeCatalog(
         ).map(/** @param {Object} layer Raster candidate. @return {Object} Source identity. */
             layer => describeCalculationSource(layer.source, layer.label));
     }
-    /** Read committed raster inputs independently of rendering eligibility.
+    /** Read raster clip inputs independently of rendering eligibility.
      * @return {{sources:Object[],area:Object|null,pixelPoint:{longitude:number,latitude:number}|null}} Current Processing context.
      */
-    const processingContext = () => ({
-        sources: mapLayerController.snapshots().filter(layer => layer.capabilities?.calculations)
-            .map(layer => describeCalculationSource(layer.source, layer.label)),
-        area: rasterVisualization?.getSelectedArea() ?? null,
-        pixelPoint,
-    });
+    const processingContext = () => {
+        const area = rasterVisualization?.getSelectedArea() ?? null;
+        return {
+            sources: mapLayerController.snapshots().filter(layer => layer.capabilities?.calculations)
+                .map(layer => describeCalculationSource(layer.source, layer.label)),
+            area: area?.kind === "polygonArea" ? null : area,
+            pixelPoint,
+        };
+    };
     const rasterControls = new RasterControlsView(document);
     let activeSamplingTool = null;
     let statisticsSamplingContext = null;
@@ -960,7 +963,10 @@ async function initializeCatalog(
             rasterSeries.selectSource(describeCalculationSource(item, label), area, key);
             mapInspection.showRasterSeries();
         },
-        onSamplingAreaChange: area => {
+        onSamplingAreaChange: (area, {waitingForPolygons, invalidatedArea}) => {
+            // A drawing reference belongs to this histogram selection and is released with it.
+            if (area?.kind === "polygonArea" || invalidatedArea?.kind === "polygonArea" ||
+                (waitingForPolygons && vectorSampling?.getSelectedTarget()?.item === null)) return;
             rasterClips.setSelection(area);
             updateRasterSeriesArea(area, area?.kind === "catalogSelection" ? "Selected polygons" : ["selectedArea", "samplingBox"].includes(area?.kind) ? "Sampling box" : "Sample area");
         },
@@ -1132,6 +1138,33 @@ async function initializeCatalog(
                 fields: source.fields, filter: record.adapter.exportFilterState(record),
             }] : [];
         });
+    /** List retained source layers and committed drawings for the polygon pickers.
+     * @return {Object[]} Independent vector descriptors and drawing snapshots.
+     */
+    const getSamplingPolygonTargets = () => [...getPolygonTargets(), ...(annotations?.summaryTargets() ?? [])];
+    /** Prepare an original vector selection or upload the matching saved drawing geometry.
+     * @param {Object|null} item Catalog or uploaded source identity, or null for a drawing.
+     * @param {Object} filter Applied field conditions.
+     * @param {AbortSignal} signal Cancellation of a superseded vector read.
+     * @param {Object} target Committed layer snapshot.
+     * @return {Promise<Object>} Area descriptor or private reference and feature counts.
+     * @throws {Error} If preparation fails or no drawing polygons match the filter.
+     */
+    const createPolygonSamplingArea = async (item, filter, signal, target) => {
+        if (item) return createVectorSamplingArea(item, filter, signal);
+        const polygons = annotationSummaryPolygons(target.polygons, filter);
+        if (!polygons.length) throw new Error("No polygons match this filter. Add a polygon or change the conditions.");
+        // Let the upload reply settle so the owner can release a superseded reference.
+        const area = await processingApi.uploadPolygonArea(polygons);
+        return { ...area, label: target.label, total: target.polygons.length, filter };
+    };
+    /** Release the private reference owned by a superseded picker selection.
+     * @param {Object} area Prepared polygon area.
+     * @return {void}
+     */
+    const releasePolygonSamplingArea = area => {
+        if (area.polygonArea) void processingApi.discardPolygonArea(area.polygonArea.id).catch(() => {});
+    };
     models = new ModelsController({
         api: processingApi, jobs: processingJobs, view: new ModelsView(document), storage: browserSessionStorage(),
         describeSource: (source, signal, targetCrs) => describeRasterSource(source, signal, undefined, targetCrs),
@@ -1234,48 +1267,42 @@ async function initializeCatalog(
     };
     leafletMap.on("moveend resize", () => models.refreshMapArea());
     vectorSampling = new VectorSamplingController({
-        view: new VectorSamplingView(),
-        getTargets: getPolygonTargets,
-        createArea: createVectorSamplingArea,
+        view: new VectorSamplingView(document, {
+            polygonAreaHelp: "For calculations, choose this layer in Raster statistics. For clips, choose a sampling box or a Catalog or uploaded polygon layer.",
+        }),
+        getTargets: getSamplingPolygonTargets,
+        createArea: createPolygonSamplingArea,
+        releaseArea: releasePolygonSamplingArea,
         onEditFilter: key => vectorFilterControls.open(key),
-        onSelectionState: selection => rasterSeries.setVectorSelectionState({...selection, explicit: false}, "map"),
-        /** Adopt filtered features through the shared map-area calculation lifecycle.
-         * @param {Object} area Authoritative vector descriptor and selection metadata.
+        onSelectionState: selection => {
+            if (selection.phase !== "reading" || vectorSampling?.getSelectedTarget()?.item) {
+                rasterSeries.setVectorSelectionState({...selection, explicit: false}, "map");
+            }
+        },
+        /** Adopt filtered polygons through the interactive histogram lifecycle.
+         * @param {Object} area Authoritative vector descriptor or private polygon reference and selection metadata.
          * @return {void}
          */
         onActivate: area => {
-            void vectorSamplingOverlay.load(area);
+            if (area.selection) void vectorSamplingOverlay.load(area);
             const label = `${area.label} · ${area.matched} of ${area.total} features`;
             rasterVisualization.setVectorSelection({ ...area, label });
         },
-        onInvalidate: id => {
-            vectorSamplingOverlay.clear();
-            modelArea = null; modelAreaDescription = "";
-            models.refreshMapArea();
+        onInvalidate: selection => {
+            if (selection) {
+                vectorSamplingOverlay.clear();
+                modelArea = null; modelAreaDescription = "";
+                models.refreshMapArea();
+            }
             rasterVisualization.setVectorSelection(null);
-            rasterSeries.invalidateArea({kind: "catalogSelection", catalogSelection: id}, "map");
+            if (selection) rasterSeries.invalidateArea({kind: "catalogSelection", catalogSelection: selection}, "map");
         },
     });
     summarySampling = new VectorSamplingController({
         view: new VectorSamplingView(document, { root: "#raster-series-vector-area" }),
-        getTargets: () => [...getPolygonTargets(), ...(annotations?.summaryTargets() ?? [])],
-        /** Select source features or prepare the exact matched annotation polygons.
-         * @param {Object|null} item Catalog or uploaded source identity; null for browser annotations.
-         * @param {Object} filter Applied field conditions.
-         * @param {AbortSignal} signal Cancellation of a superseded vector selection.
-         * @param {Object} target Committed layer snapshot supplied above.
-         * @return {Promise<Object>} Area reference and feature counts.
-         * @throws {Error} If no polygons match, annotation upload fails or source selection fails.
-         */
-        createArea: async (item, filter, signal, target) => {
-            if (item) return createVectorSamplingArea(item, filter, signal);
-            const polygons = annotationSummaryPolygons(target.polygons, filter);
-            if (!polygons.length) throw new Error("No polygons match this filter. Add a polygon or change the conditions.");
-            // Let an accepted upload reply settle so an obsolete input can be released.
-            const area = await processingApi.uploadPolygonArea(polygons);
-            return { ...area, label: target.label, total: target.polygons.length, filter };
-        },
-        releaseArea: area => { if (area.polygonArea) void processingApi.discardPolygonArea(area.polygonArea.id).catch(() => {}); },
+        getTargets: getSamplingPolygonTargets,
+        createArea: createPolygonSamplingArea,
+        releaseArea: releasePolygonSamplingArea,
         onEditFilter: key => vectorFilterControls.open(key, null, {
             // Editing the statistics area's filter is an explicit new area choice.
             // Map-origin edits keep the existing background calculation untouched.
@@ -1550,6 +1577,7 @@ async function initializeCatalog(
         try {
             rasterClickSelected = rasterVisualization.exploreAt(event.latlng, {
                 onSelected: area => {
+                    if (area?.kind === "polygonArea") return;
                     updateRasterSeriesArea(area, area?.kind === "catalogSelection" ? "Selected polygons" : ["selectedArea", "samplingBox"].includes(area?.kind) ? "Sampling box" : "Sample area");
                 },
             });
@@ -1577,7 +1605,7 @@ async function initializeCatalog(
             onColor: (id, color) => annotationSessions.setContributorColor(id, color),
             onRenameContributor: id => annotationSessions.editContributorName(id),
             requestEditing: id => annotationSessions.requestDrawing(id),
-            onCommittedChange: () => { annotationSessions?.committedLayersChanged(); summarySampling.refresh(); vectorFilterControls.refresh(); },
+            onCommittedChange: () => { annotationSessions?.committedLayersChanged(); vectorSampling.refresh(); summarySampling.refresh(); vectorFilterControls.refresh(); },
             onFilter: key => vectorFilterControls.open(key),
             onHoverInvalidated: () => mapFeatureHover?.hide(),
             onEditingChange: editing => {
@@ -1597,12 +1625,13 @@ async function initializeCatalog(
             getLayers: () => annotations.sharableLayers(),
             isLayerOnMap: id => annotations.isLayerOnMap(id),
             present: (id, data) => {
-                if (annotations.updateSharedLayer(id, data)) { summarySampling.refresh(); vectorFilterControls.refresh(); }
+                if (annotations.updateSharedLayer(id, data)) { vectorSampling.refresh(); summarySampling.refresh(); vectorFilterControls.refresh(); }
             },
         });
         void annotationSessions.start({ restoreBindings: false, refreshImmediately: false }).then(async () => {
             await annotations.load({ attachSavedLayers: !isSharedViewer && editableMapSlug === null,
                 sharedLayerIds: annotationSessions.bookmarkedLayerIds() });
+            vectorSampling.refresh();
             summarySampling.refresh();
             await savedMapViewController.restoreStartupView(globalThis.location.hash);
             annotations.restoreLayerOrder({ useSavedPositions: !isSharedViewer && editableMapSlug === null && !globalThis.location.hash,

@@ -54,6 +54,7 @@ from eolab_app.sampling_area import (
     SelectedBoundsSamplingArea,
     SamplingBoxArea,
     CatalogSelectionSamplingArea,
+    PolygonInputSamplingArea,
     WholeRasterSamplingArea,
 )
 
@@ -247,6 +248,32 @@ def selected_raster_area_for_catalog_selection(
     )
 
 
+def selected_raster_area_for_polygon_input(
+    dataset: RasterDataset, sampling_area: PolygonInputSamplingArea
+) -> SelectedRasterArea:
+    """Project a saved polygon selection within the histogram coordinate budget.
+
+    Args:
+        dataset: Open, georeferenced source raster.
+        sampling_area: Authorized temporary input containing exact WGS84 polygons.
+
+    Returns:
+        Polygon mask geometries and the integral source window covering them.
+
+    Raises:
+        ValueError: If projection fails or exceeds the coordinate budget.
+        NoRasterBoundsOverlapError: If the selection misses the raster.
+    """
+    return selected_raster_area_for_wgs84_polygons(
+        dataset,
+        tuple(
+            polygon.model_dump(mode="json")
+            for polygon in sampling_area.polygons.polygons
+        ),
+        RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
+    )
+
+
 def read_raster_statistics(
     source: RasterData,
     sampling_area: RasterSamplingArea,
@@ -264,7 +291,7 @@ def read_raster_statistics(
 
     Args:
         source: Authorized raster file or selected temporal observation.
-        sampling_area: Whole-raster, rectangle, geodesic-box or resolved vector selection.
+        sampling_area: Whole-raster, rectangle, geodesic box or authorized polygon selection.
         cancellation_requested: Optional thread-safe check that returns true when the read is cancelled.
 
     Returns:
@@ -302,6 +329,10 @@ def read_raster_statistics(
                 dataset,
                 sampling_area,
                 cancellation_requested,
+            )
+        elif isinstance(sampling_area, PolygonInputSamplingArea):
+            selected_area = selected_raster_area_for_polygon_input(
+                dataset, sampling_area
             )
         elif isinstance(sampling_area, WholeRasterSamplingArea):
             selected_area = None
@@ -435,6 +466,11 @@ def summarize_raster_sample(
         scope=sampling_area.kind,
         selectedBounds=selected_bounds_model,
         catalogSelection=catalog_selection,
+        polygonArea=(
+            sampling_area.reference
+            if isinstance(sampling_area, PolygonInputSamplingArea)
+            else None
+        ),
         samplingBox=(
             sampling_area.box if isinstance(sampling_area, SamplingBoxArea) else None
         ),

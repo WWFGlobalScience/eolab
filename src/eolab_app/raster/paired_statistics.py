@@ -2,6 +2,7 @@
 
 from eolab_app.bounded_vector import pixels_inside_area, selection_summary
 import math
+from typing import Literal
 
 import numpy
 import rasterio
@@ -9,7 +10,10 @@ from rasterio.transform import array_bounds, xy
 from rasterio.warp import transform
 from rasterio.windows import Window, transform as window_transform
 from eolab_app.sampling_box import Wgs84SamplingBox, sampling_box_bounds
-from eolab_app.sampling_area import CatalogSelectionSamplingArea
+from eolab_app.sampling_area import (
+    CatalogSelectionSamplingArea,
+    PolygonInputSamplingArea,
+)
 from eolab_app.raster.geographic_bounds import (
     normalize_wgs84_bounds,
     transform_bounds_to_wgs84,
@@ -53,6 +57,7 @@ from eolab_app.raster.source_contract import (
 from eolab_app.raster.statistics import (
     NoValidRasterSamplesError,
     selected_raster_area_for_catalog_selection,
+    selected_raster_area_for_polygon_input,
     RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
     RASTER_STATISTICS_SELECTION_ALL_TOUCHED,
 )
@@ -292,6 +297,7 @@ def read_raster_paired_statistics(
     cancellation_requested: RasterReadCancellationCheck | None = None,
     catalog_selection: CatalogSelectionSamplingArea | None = None,
     sampling_box: Wgs84SamplingBox | None = None,
+    polygon_input: PolygonInputSamplingArea | None = None,
 ) -> RasterPairedStatistics:
     """Read bounded paired values on X and align Y with nearest neighbor.
 
@@ -308,6 +314,7 @@ def read_raster_paired_statistics(
         selected_bounds: Optional canonical WGS 84 sampling rectangle.
         catalog_selection: Optional immutable polygon selection; exclusive of bounds.
         sampling_box: Optional geodesic box, exclusive of bounds and vector selections.
+        polygon_input: Optional authorized WGS84 polygons, exclusive of other areas.
         cancellation_requested: Optional thread-safe check that returns true when the read is cancelled.
 
     Returns:
@@ -344,6 +351,8 @@ def read_raster_paired_statistics(
                     "bbox"
                 ],
             )
+        elif polygon_input is not None:
+            overlap_inputs = (*overlap_inputs, polygon_input.polygons.bounds())
         if selected_bounds is not None:
             overlap_inputs = (*overlap_inputs, selected_bounds)
         elif sampling_box is not None:
@@ -353,21 +362,33 @@ def read_raster_paired_statistics(
             x_dataset,
             overlap_bounds,
         )
-        polygon_area = (
-            selected_raster_area_for_catalog_selection(
+        scope: Literal[
+            "wholeOverlap",
+            "selectedArea",
+            "catalogSelection",
+            "samplingBox",
+            "polygonArea",
+        ] = (
+            "selectedArea" if selected_bounds is not None else "wholeOverlap"
+        )
+        polygon_area = None
+        if catalog_selection is not None:
+            scope = catalog_selection.kind
+            polygon_area = selected_raster_area_for_catalog_selection(
                 x_dataset, catalog_selection, cancellation_requested
             )
-            if catalog_selection
-            else (
-                selected_raster_area_for_sampling_box(
-                    x_dataset,
-                    sampling_box,
-                    RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
-                )
-                if sampling_box is not None
-                else None
+        elif polygon_input is not None:
+            scope = polygon_input.kind
+            polygon_area = selected_raster_area_for_polygon_input(
+                x_dataset, polygon_input
             )
-        )
+        elif sampling_box is not None:
+            scope = "samplingBox"
+            polygon_area = selected_raster_area_for_sampling_box(
+                x_dataset,
+                sampling_box,
+                RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
+            )
         x_window = x_area.source_window
         x_plan = plan_source_window_sample_grid(x_dataset, x_window)
         y_positions = _aligned_y_positions(
@@ -480,18 +501,11 @@ def read_raster_paired_statistics(
         else None
     )
     return RasterPairedStatistics(
-        scope=(
-            "catalogSelection"
-            if catalog_selection
-            else (
-                "samplingBox"
-                if sampling_box is not None
-                else "selectedArea" if selected_bounds is not None else "wholeOverlap"
-            )
-        ),
+        scope=scope,
         catalogSelection=(
             catalog_selection.resolved.selection if catalog_selection else None
         ),
+        polygonArea=polygon_input.reference if polygon_input is not None else None,
         selectedBounds=selected_bounds_model,
         samplingBox=sampling_box,
         sourceWidth=source_width,

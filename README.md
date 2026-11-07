@@ -403,10 +403,11 @@ styles are not imported.
 Use **Upload polygons → GeoPackage uploads…** for a GeoPackage whose attributes
 you want to retain.
 
-Drawn or imported polygons can define supported analysis areas. Save edits
-before calculating or exporting. **Export GeoJSON** downloads all saved
-polygons in the layer, including those hidden by its filter, so you can keep a
-copy outside EOLab. Private local polygons are not included in map links; share
+To sample histograms or calculate raster statistics using a drawing, save it,
+then choose its layer under **Sample area → Polygon layer**. The calculation uses
+the saved polygons that match the layer's filter. **Export GeoJSON** downloads
+all saved polygons in the layer, including those hidden by its filter, so you
+can keep a copy outside EOLab. Map links omit private local polygons. Share
 them in a shared layer when collaborators need to see them.
 
 #### Bring your own polygons

@@ -87,7 +87,7 @@ import { RasterControlsView } from "./controls-view.js";
  * @property {"idle"|"loading"|"ready"|"error"} wholeRasterStatisticsState Request status.
  * @property {Error|null} wholeRasterStatisticsError Current whole-raster failure.
  * @property {Readonly<Object>|null} selectedRasterBounds Read-window envelope; a box retains its separate center and size.
- * @property {Readonly<Object>|null} selectedCatalogSelection Catalog predicate and label.
+ * @property {Readonly<Object>|null} selectedPolygonSampling Polygon area reference and display label.
  * @property {Readonly<{longitude:number,latitude:number}>|null} selectedRasterCenter Original click.
  * @property {number|null} selectedRasterWindowSizeKm Selected map-window side length.
  * @property {Object|null} selectedRasterStatistics Last successful selected-area result.
@@ -203,6 +203,8 @@ function canRetryRasterStatistics(error) {
  * Receives current histogram participation, owned source/area labels and status without exposing analysis state.
  * @property {(method:"box"|"whole"|"vector")=>void} [onSamplingMethodChange]
  * Notify composition when the user chooses an area method, so obsolete vector reads can be cancelled.
+ * @property {(area:Readonly<Object>|null,change:{waitingForPolygons:boolean,invalidatedArea:Readonly<Object>|null})=>void} [onSamplingAreaChange]
+ * Report the presented area and an in-flight polygon choice or removed area to composition.
  * @property {(key:string) => void} [onStyleRequested] Notifies the composition
  * root that a histogram action should open one retained layer's style editor.
  * @property {(item:Object,area:Readonly<Object>|null,label:string)=>void} [onDownloadRequested]
@@ -377,7 +379,7 @@ export function initializeRasterViewer(
     let bivariateStatistics = null;
     let pairedHistogramState = "idle";
     let bivariateSelectedBounds = null;
-    let bivariateCatalogSelection = null;
+    let bivariatePolygonSampling = null;
     let vectorSelection = null;
     let invalidVectorSamplingId = null;
     let pendingVectorSelection = false;
@@ -390,7 +392,7 @@ export function initializeRasterViewer(
      * Whole-raster and selected-area results are separate caches. The presented
      * result may remain visible as a reference while a replacement is pending.
      *
-     * @param {Readonly<Object>|null} [selection=null] Initial catalog selection.
+     * @param {Readonly<Object>|null} [selection=null] Initial polygon area and display label.
      * @return {RasterAnalysisState} Mutable state owned by one raster session.
      */
     function createRasterAnalysisState(selection = null) {
@@ -403,7 +405,7 @@ export function initializeRasterViewer(
             // Bounds only screen/read candidate sources; box membership uses its
             // captured center and size, independently of the display outline.
             selectedRasterBounds: null,
-            selectedCatalogSelection: selection,
+            selectedPolygonSampling: selection,
             selectedRasterCenter: null,
             selectedRasterWindowSizeKm: null,
             selectedRasterStatistics: null,
@@ -894,11 +896,11 @@ export function initializeRasterViewer(
      * One sampling scope's result, lifecycle and failure for analysis/style presentation.
      */
     function getLayerHistogramPresentation(session) {
-        if (session.analysis.selectedCatalogSelection !== null) {
+        if (session.analysis.selectedPolygonSampling !== null) {
             return {
                 state: session.analysis.selectedRasterStatisticsState,
                 statistics: session.analysis.selectedRasterStatistics,
-                scope: `Selected polygons · ${session.analysis.selectedCatalogSelection.filename}`,
+                scope: `Selected polygons · ${session.analysis.selectedPolygonSampling.filename}`,
                 error: session.analysis.selectedRasterStatisticsError,
             };
         }
@@ -1031,7 +1033,7 @@ export function initializeRasterViewer(
         const percentiles = getHistogramPercentileContext(session);
         const categorical = session.appearanceMode === "categorical";
         const counts = presentation.statistics?.histogram?.counts;
-        const error = session.analysis.selectedCatalogSelection !== null || session.analysis.selectedRasterBounds !== null
+        const error = session.analysis.selectedPolygonSampling !== null || session.analysis.selectedRasterBounds !== null
             ? session.analysis.selectedRasterStatisticsError : session.analysis.wholeRasterStatisticsError;
         return {
             key: session.key,
@@ -1054,7 +1056,8 @@ export function initializeRasterViewer(
             percentileMessage: percentiles.message,
             errorMessage: presentation.state === "error" ? error?.message ?? "" : "",
             canRetry: presentation.state === "error" && canRetryRasterStatistics(error),
-            canCalculate: session.item.capabilities?.calculations !== false,
+            canCalculate: session.item.capabilities?.calculations !== false &&
+                session.analysis.selectedPolygonSampling?.area.kind !== "polygonArea",
         };
     }
 
@@ -1410,7 +1413,7 @@ export function initializeRasterViewer(
         const loading = resizing || states.some(state => state === "loading" || state === "idle");
         const failures = states.filter(state => state === "error").length;
         const state = loading ? "loading" : failures ? "error" : "ready";
-        const selection = bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection;
+        const selection = bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling;
         const scope = bivariateMode.active
             ? selection ? `Selected polygons · ${selection.filename}` : bivariateSelectedBounds ? "Sampling box · 2D comparison" : "Whole overlap · 2D comparison"
             : presentations[0].scope;
@@ -1434,7 +1437,7 @@ export function initializeRasterViewer(
     function setSessionSamplingArea(session, samplingArea) {
         if (samplingArea.kind === "wholeRaster") {
             session.analysis.selectedRasterBounds = null;
-            session.analysis.selectedCatalogSelection = null;
+            session.analysis.selectedPolygonSampling = null;
             session.analysis.selectedRasterCenter = null;
             session.analysis.selectedRasterWindowSizeKm = null;
             session.analysis.selectedRasterStatistics = null;
@@ -1445,8 +1448,8 @@ export function initializeRasterViewer(
         session.analysis.selectedRasterBounds = samplingArea.kind === "samplingBox"
             ? samplingBoxBounds(samplingArea.samplingBox)
             : samplingArea.kind === "selectedArea" ? samplingArea.selectedBounds : null;
-        session.analysis.selectedCatalogSelection = samplingArea.kind === "catalogSelection"
-            ? rasterAnalysis.selectedCatalogSelection
+        session.analysis.selectedPolygonSampling = ["catalogSelection", "polygonArea"].includes(samplingArea.kind)
+            ? rasterAnalysis.selectedPolygonSampling
             : null;
         session.analysis.selectedRasterCenter = samplingArea.kind === "samplingBox"
             ? samplingArea.samplingBox.center
@@ -1464,7 +1467,7 @@ export function initializeRasterViewer(
      * Mark one raster's requested scope as loading without discarding prior data.
      *
      * @param {RasterAnalysisState} analysis Authoritative per-raster state.
-     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"} scope Requested scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"|"polygonArea"} scope Requested scope.
      * @return {void}
      */
     function markRasterStatisticsLoading(analysis, scope) {
@@ -1482,7 +1485,7 @@ export function initializeRasterViewer(
      *
      * @param {RasterAnalysisState} analysis Authoritative per-raster state.
      * @param {Object} statistics Validated current response.
-     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"} scope Response scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"|"polygonArea"} scope Response scope.
      * @return {void}
      */
     function storeRasterStatisticsResult(analysis, statistics, scope) {
@@ -1502,7 +1505,7 @@ export function initializeRasterViewer(
      *
      * @param {RasterAnalysisState} analysis Authoritative per-raster state.
      * @param {Error} error Current non-abort request failure.
-     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"} scope Failed scope.
+     * @param {"wholeRaster"|"selectedArea"|"samplingBox"|"catalogSelection"|"polygonArea"} scope Failed scope.
      * @return {void}
      */
     function storeRasterStatisticsError(analysis, error, scope) {
@@ -1684,14 +1687,11 @@ export function initializeRasterViewer(
     /**
      * Return the normalized area selected by the parent viewer.
      *
-     * @return {Readonly<Object>} Strict whole-raster, rectangle, geodesic-box or vector-selection area.
+     * @return {Readonly<Object>} Strict whole-raster, rectangle, geodesic box or polygon area.
      */
     function currentRasterSamplingArea() {
-        if (rasterAnalysis.selectedCatalogSelection !== null) {
-            return normalizeRasterSamplingArea({
-                kind: "catalogSelection",
-                catalogSelection: rasterAnalysis.selectedCatalogSelection.selection
-            });
+        if (rasterAnalysis.selectedPolygonSampling !== null) {
+            return rasterAnalysis.selectedPolygonSampling.area;
         }
         if (rasterAnalysis.selectedRasterBounds !== null) {
             return samplingAreaForWindow(rasterAnalysis.selectedRasterBounds,
@@ -1705,48 +1705,66 @@ export function initializeRasterViewer(
      * Whole-raster/overlap sampling deliberately has no clip selection.
      * @param {string|null} [key=null] Optional 1D session key.
      * @param {"presented"|"1d"|"2d"} [mode="presented"] Selection owner.
-     * @return {Readonly<Object>|null} Frozen rectangle, geodesic box or vector descriptor, or no explicit area.
+     * @return {Readonly<Object>|null} Frozen rectangle, geodesic box or polygon area, or no explicit area.
      */
     function getSelectedArea(key = null, mode = "presented") {
         if (pendingVectorSelection) return null;
-        if (invalidVectorSamplingId && (bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection)?.id === invalidVectorSamplingId) return null;
+        if (invalidVectorSamplingId && (bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling)?.id === invalidVectorSamplingId) return null;
         if (mode === "2d" || (mode === "presented" && bivariateMode.active)) {
-            if (bivariateCatalogSelection) return normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection: bivariateCatalogSelection.selection });
+            if (bivariatePolygonSampling) return bivariatePolygonSampling.area;
             return samplingAreaForWindow(bivariateSelectedBounds,bivariateSelectedCenter,bivariateSelectedWindowSizeKm);
         }
         const analysis = key === null || key === activeLayerKey
             ? rasterAnalysis : getBivariateCandidateSession(key)?.analysis;
         if (!analysis) return null;
-        if (analysis.selectedCatalogSelection) return normalizeRasterSamplingArea({
-            kind: "catalogSelection", catalogSelection: analysis.selectedCatalogSelection.selection,
-        });
+        if (analysis.selectedPolygonSampling) return analysis.selectedPolygonSampling.area;
         return samplingAreaForWindow(analysis.selectedRasterBounds,analysis.selectedRasterCenter,analysis.selectedRasterWindowSizeKm);
     }
 
-    /** Forward a 1D calculation intent. @param {string} key Source key. @return {void} */
+    /** Open Raster statistics for a histogram whose area can be carried over.
+     * @param {string} key Histogram session.
+     * @return {void}
+     */
     function calculateHistogram(key) {
+        if (pendingVectorSelection) return;
         const session = key === activeLayerKey ? { item: activeRasterItem } : getBivariateCandidateSession(key);
-        if (session?.item) onCalculateRequested(session.item, getSelectedArea(key, "1d"),
+        const area = getSelectedArea(key, "1d");
+        if (session?.item && area?.kind !== "polygonArea") onCalculateRequested(session.item, area,
             mapLayers.getRecord(key)?.entry.label ?? getRasterDisplayName(session.item), key);
     }
 
-    /** Forward one paired axis for single-raster calculations. @param {string} axis X/Y. @return {void} */
+    /** Open Raster statistics for a paired axis whose area can be carried over.
+     * @param {"x"|"y"} axis Histogram axis.
+     * @return {void}
+     */
     function calculatePairedHistogram(axis) {
+        if (pendingVectorSelection) return;
         const pair = getBivariatePairCandidates();
-        if (pair) onCalculateRequested(pair[`${axis}Candidate`].item, getSelectedArea(null, "2d"), pair[`${axis}Candidate`].label, pair[`${axis}Candidate`].key);
+        const area = getSelectedArea(null, "2d");
+        if (pair && area?.kind !== "polygonArea") onCalculateRequested(pair[`${axis}Candidate`].item, area, pair[`${axis}Candidate`].label, pair[`${axis}Candidate`].key);
     }
 
-    /** Forward the exact 1D source and area through composition. @param {string} key Histogram session. @return {void} */
+    /** Open the clip dialog for a histogram whose area can be carried over.
+     * @param {string} key Histogram session.
+     * @return {void}
+     */
     function downloadHistogram(key) {
+        if (pendingVectorSelection) return;
         const session = key === activeLayerKey ? { item: activeRasterItem } : getBivariateCandidateSession(key);
-        if (session?.item) onDownloadRequested(session.item, getSelectedArea(key, "1d"),
+        const area = getSelectedArea(key, "1d");
+        if (session?.item && area?.kind !== "polygonArea") onDownloadRequested(session.item, area,
             mapLayers.getRecord(key)?.entry.label ?? getRasterDisplayName(session.item));
     }
 
-    /** Forward the selected X/Y source with the 2D box. @param {"x"|"y"} axis Histogram axis. @return {void} */
+    /** Open the clip dialog for a paired axis whose area can be carried over.
+     * @param {"x"|"y"} axis Histogram axis.
+     * @return {void}
+     */
     function downloadPairedHistogram(axis) {
+        if (pendingVectorSelection) return;
         const pair = getBivariatePairCandidates();
-        if (pair) onDownloadRequested(pair[`${axis}Candidate`].item, getSelectedArea(null, "2d"), pair[`${axis}Candidate`].label);
+        const area = getSelectedArea(null, "2d");
+        if (pair && area?.kind !== "polygonArea") onDownloadRequested(pair[`${axis}Candidate`].item, area, pair[`${axis}Candidate`].label);
     }
 
     /**
@@ -1767,21 +1785,21 @@ export function initializeRasterViewer(
     /**
      * Return whether the active raster uses a non-whole sampling area.
      *
-     * @return {boolean} Whether bounds or a catalog selection owns the histogram.
+     * @return {boolean} Whether bounds or polygons own the histogram.
      */
     function hasSelectedRasterSamplingArea() {
-        return rasterAnalysis.selectedRasterBounds !== null || rasterAnalysis.selectedCatalogSelection !== null;
+        return rasterAnalysis.selectedRasterBounds !== null || rasterAnalysis.selectedPolygonSampling !== null;
     }
 
     /**
      * Return the active sampling-area discriminator for control presentation.
      *
-     * @return {"wholeRaster"|"selectedArea"|"catalogSelection"} Active
+     * @return {"wholeRaster"|"selectedArea"|"catalogSelection"|"polygonArea"} Active
      * mode.
      */
     function getRasterSamplingAreaMode() {
-        if (rasterAnalysis.selectedCatalogSelection !== null) {
-            return "catalogSelection";
+        if (rasterAnalysis.selectedPolygonSampling !== null) {
+            return rasterAnalysis.selectedPolygonSampling.area.kind;
         }
         return rasterAnalysis.selectedRasterBounds === null ? "wholeRaster" : "selectedArea";
     }
@@ -1801,13 +1819,17 @@ export function initializeRasterViewer(
 
     /** Preserve an active vector area when adding a raster. @return {Object|null} Initial area. */
     function initialPolygonSamplingArea() {
-        const area = bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection;
+        const area = bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling;
         return area;
     }
 
-    /** Synchronize histogram-area choices with lifecycle state. @return {void} */
-    function renderRasterSamplingAreaControls() {
-        onSamplingAreaChange(getSelectedArea());
+    /** Synchronize histogram-area choices with lifecycle state.
+     * @param {Readonly<Object>|null} [invalidatedArea=null] Area whose removal prompted this update.
+     * @return {void}
+     */
+    function renderRasterSamplingAreaControls(invalidatedArea = null) {
+        onSamplingAreaChange(getSelectedArea(), {waitingForPolygons: pendingVectorSelection, invalidatedArea});
+        controlsView.setPairedAreaActionsAvailable?.(!pendingVectorSelection && bivariatePolygonSampling?.area.kind !== "polygonArea");
         if (pendingVectorSelection) {
             controlsView.setSamplingAreaMode("vector", "Polygon layer");
             renderRasterSampleWindowGuidance("");
@@ -1822,14 +1844,14 @@ export function initializeRasterViewer(
         const presentedMode = !canUseRasterMapInteractions()
             ? "none"
             : bivariateMode.active
-                ? (bivariateCatalogSelection ? "catalogSelection" : presentedBounds === null ? "wholeRaster" : "selectedArea")
+                ? (bivariatePolygonSampling?.area.kind ?? (presentedBounds === null ? "wholeRaster" : "selectedArea"))
                 : samplingMode;
-        const presentedSelection = bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection;
+        const presentedSelection = bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling;
         const samplingLabel = presentedSelection?.id === invalidVectorSamplingId ? "Polygon selection changed · choose a sample area" : presentedMode === "selectedArea"
             ? presentedWindowSizeKm === null
                 ? "Sampling box"
                 : `Sampling box · ${presentedWindowSizeKm} × ${presentedWindowSizeKm} km`
-            : presentedMode === "catalogSelection"
+            : ["catalogSelection", "polygonArea"].includes(presentedMode)
                 ? `Selected polygons · ${presentedSelection.filename}`
                 : presentedMode === "none"
                     ? "No raster selected"
@@ -1914,12 +1936,12 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Return the paired request area without accepting catalog selection state.
+     * Return the paired request area from the current polygon or window selection.
      *
-     * @return {Object} Whole-overlap or selected-bounds paired area.
+     * @return {Object} Whole overlap, selected bounds, geodesic box or polygon area.
      */
     function currentBivariateSamplingArea() {
-        if (bivariateCatalogSelection) return normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection: bivariateCatalogSelection.selection });
+        if (bivariatePolygonSampling) return bivariatePolygonSampling.area;
         return samplingAreaForWindow(bivariateSelectedBounds,bivariateSelectedCenter,bivariateSelectedWindowSizeKm)
             ?? WHOLE_RASTER_OVERLAP_SAMPLING_AREA;
     }
@@ -2068,7 +2090,7 @@ export function initializeRasterViewer(
         }
         cancelSampleWindowResize();
         refreshActiveSessionPresentation();
-        bivariateCatalogSelection = rasterAnalysis.selectedCatalogSelection;
+        bivariatePolygonSampling = rasterAnalysis.selectedPolygonSampling;
         bivariateSelectedBounds = rasterAnalysis.selectedRasterBounds === null
             ? null
             : { ...rasterAnalysis.selectedRasterBounds };
@@ -2848,7 +2870,8 @@ export function initializeRasterViewer(
         if (presentation.state === "ready" && statistics === presentation.statistics) return presentation.scope;
         const scope = statistics.scope === "catalogSelection"
             ? `Selected polygons · ${statistics.catalogSelection.layerName}`
-            : ["selectedArea", "samplingBox"].includes(statistics.scope) ? "Sampling box" : "Whole raster";
+            : statistics.scope === "polygonArea" ? "Selected polygons"
+                : ["selectedArea", "samplingBox"].includes(statistics.scope) ? "Sampling box" : "Whole raster";
         return `Previous histogram · ${scope}`;
     }
 
@@ -3313,10 +3336,12 @@ export function initializeRasterViewer(
             : "source-cell window";
         const approximation = statistics.estimated ? "approximate" : "exact";
         const scopeDescription = statistics.scope === "catalogSelection"
-            ? `Vector selection ${rasterAnalysis.selectedCatalogSelection?.filename ?? "area"}, ` +
-              `layer ${rasterAnalysis.selectedCatalogSelection?.selectedDataset ?? "selected"}, ` +
+            ? `Vector selection ${rasterAnalysis.selectedPolygonSampling?.filename ?? "area"}, ` +
+              `layer ${rasterAnalysis.selectedPolygonSampling?.selectedDataset ?? "selected"}, ` +
               `${approximation} bounded histogram`
-            : ["selectedArea", "samplingBox"].includes(statistics.scope)
+            : statistics.scope === "polygonArea"
+                ? `Selected polygons · ${rasterAnalysis.selectedPolygonSampling?.filename ?? "Polygon layer"}, ${approximation} bounded histogram`
+                : ["selectedArea", "samplingBox"].includes(statistics.scope)
                 ? `Selected-area ${approximation} bounded histogram`
                 : `Whole-raster ${approximation} bounded histogram`;
         const provenance = usesSampleGrid
@@ -3446,13 +3471,16 @@ export function initializeRasterViewer(
      * @return {string} Accessible loading announcement for bounds or polygon selection.
      */
     function selectedRasterStatisticsLoadingMessage() {
-        if (rasterAnalysis.selectedCatalogSelection === null) {
+        if (rasterAnalysis.selectedPolygonSampling === null) {
             return "Calculating a bounded histogram for the selected area...";
+        }
+        if (rasterAnalysis.selectedPolygonSampling.area.kind === "polygonArea") {
+            return `Calculating a bounded histogram for ${rasterAnalysis.selectedPolygonSampling.filename}…`;
         }
         return (
             `Calculating a bounded histogram for vector layer ` +
-            `${rasterAnalysis.selectedCatalogSelection.filename}, layer ` +
-            `${rasterAnalysis.selectedCatalogSelection.selectedDataset}...`
+            `${rasterAnalysis.selectedPolygonSampling.filename}, layer ` +
+            `${rasterAnalysis.selectedPolygonSampling.selectedDataset}...`
         );
     }
 
@@ -3484,10 +3512,12 @@ export function initializeRasterViewer(
             canRetryRasterStatistics(error)
         );
         if (activeAppearanceIsCategorical()) controlsView.clearHistogram();
-        const areaName = rasterAnalysis.selectedCatalogSelection === null
+        const areaName = rasterAnalysis.selectedPolygonSampling === null
             ? "Selected-area"
-            : `Vector selection ${rasterAnalysis.selectedCatalogSelection.filename}, layer ` +
-              rasterAnalysis.selectedCatalogSelection.selectedDataset;
+            : rasterAnalysis.selectedPolygonSampling.area.kind === "polygonArea"
+                ? rasterAnalysis.selectedPolygonSampling.filename
+                : `Vector selection ${rasterAnalysis.selectedPolygonSampling.filename}, layer ` +
+                    rasterAnalysis.selectedPolygonSampling.selectedDataset;
         controlsView.setStatisticsStatus(
             activeAppearanceIsCategorical()
                 ? `Categorical ground areas unavailable: ${error.message}`
@@ -3510,7 +3540,7 @@ export function initializeRasterViewer(
     function restoreWholeRasterStatistics() {
         rasterSampleWindowController.clearPreview();
         if (bivariateMode.active) {
-            bivariateCatalogSelection = null;
+            bivariatePolygonSampling = null;
             bivariateSelectedBounds = null;
             bivariateSelectedCenter = null;
             bivariateSelectedWindowSizeKm = null;
@@ -3523,7 +3553,7 @@ export function initializeRasterViewer(
         rasterStatisticsController.clear();
         resetPendingRasterStatisticsState();
         rasterAnalysis.selectedRasterBounds = null;
-        rasterAnalysis.selectedCatalogSelection = null;
+        rasterAnalysis.selectedPolygonSampling = null;
         rasterAnalysis.selectedRasterCenter = null;
         rasterAnalysis.selectedRasterWindowSizeKm = null;
         rasterAnalysis.selectedRasterStatistics = null;
@@ -3580,8 +3610,8 @@ export function initializeRasterViewer(
                         ? " The paired histogram uses this shared area."
                         : ""
                 }`;
-        } else if ((bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection) !== null) {
-            const area = bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection;
+        } else if ((bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling) !== null) {
+            const area = bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling;
             nextStatus = `Selected polygons: ${area.filename}. ` +
                 "Polygon boundaries and holes define the histogram selection.";
         } else if (bivariateMode.active) {
@@ -3610,7 +3640,7 @@ export function initializeRasterViewer(
         pendingVectorSelection = false;
         cancelRasterSampleWindowResize();
         if (bivariateMode.active) {
-            bivariateCatalogSelection = null;
+            bivariatePolygonSampling = null;
             bivariateSelectedCenter = center;
             bivariateSelectedBounds = bounds;
             bivariateSelectedWindowSizeKm =
@@ -3623,7 +3653,7 @@ export function initializeRasterViewer(
         }
         rasterAnalysis.selectedRasterCenter = center;
         rasterAnalysis.selectedRasterBounds = bounds;
-        rasterAnalysis.selectedCatalogSelection = null;
+        rasterAnalysis.selectedPolygonSampling = null;
         rasterAnalysis.selectedRasterWindowSizeKm = rasterSampleWindowController.windowSizeKm;
         renderRasterSamplingAreaControls();
         renderRasterSampleWindowGuidance("");
@@ -3657,7 +3687,7 @@ export function initializeRasterViewer(
         if (!canUseRasterMapInteractions() && rasterPointSampleParticipants().length === 0) {
             return false;
         }
-        if (vectorSelection && (bivariateMode.active ? bivariateCatalogSelection : rasterAnalysis.selectedCatalogSelection)?.id === vectorSelection.id) {
+        if (vectorSelection && (bivariateMode.active ? bivariatePolygonSampling : rasterAnalysis.selectedPolygonSampling)?.id === vectorSelection.id) {
             onSelected(getSelectedArea());
             return true;
         }
@@ -3672,7 +3702,7 @@ export function initializeRasterViewer(
         const participants = rasterPointSampleParticipants();
         const openHistogram = shouldOpenRasterHistogram(participants, point);
         if (openHistogram) {
-            if (rasterAnalysis.selectedCatalogSelection !== null) {
+            if (rasterAnalysis.selectedPolygonSampling !== null) {
                 restoreWholeRasterStatistics();
             }
             if (rasterSampleWindowController.selectAt(position) === null) {
@@ -3751,8 +3781,8 @@ export function initializeRasterViewer(
             renderRasterSamplingAreaControls();
             return;
         }
-        if (vectorSelection && (rasterAnalysis.selectedCatalogSelection?.id === vectorSelection.id || bivariateCatalogSelection?.id === vectorSelection.id)) {
-            rasterAnalysis.selectedCatalogSelection = null; bivariateCatalogSelection = null;
+        if (vectorSelection && (rasterAnalysis.selectedPolygonSampling?.id === vectorSelection.id || bivariatePolygonSampling?.id === vectorSelection.id)) {
+            rasterAnalysis.selectedPolygonSampling = null; bivariatePolygonSampling = null;
         }
         exploreAt(leafletMap.getCenter());
     }
@@ -3823,7 +3853,7 @@ export function initializeRasterViewer(
         rasterStatisticsController.clear();
         resetPendingRasterStatisticsState();
         rasterAnalysis.selectedRasterBounds = null;
-        rasterAnalysis.selectedCatalogSelection = null;
+        rasterAnalysis.selectedPolygonSampling = null;
         rasterAnalysis.selectedRasterCenter = null;
         rasterAnalysis.selectedRasterWindowSizeKm = null;
         rasterAnalysis.selectedRasterStatistics = null;
@@ -3835,24 +3865,24 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Select an explicit catalog vector and disable pointer-window previews.
+     * Select explicit polygons and disable pointer-window previews.
      *
-     * @param {Readonly<Object>} selection Catalog descriptor and display label.
+     * @param {Readonly<Object>} selection Polygon area snapshot and display label.
      *
      * @return {void}
      */
-    function useCatalogSelectionForRasterStatistics(selection) {
+    function usePolygonSamplingForRasterStatistics(selection) {
         invalidVectorSamplingId = null;
         cancelRasterSampleWindowResize();
         if (bivariateMode.active) {
             if (!selection) return;
-            rasterAnalysis.selectedCatalogSelection = selection;
+            rasterAnalysis.selectedPolygonSampling = selection;
             rasterAnalysis.selectedRasterBounds = null;
             for (const record of mapLayers.retainedRecords) {
-                if (record.adapter === rasterMapLayerAdapter) replaceSessionCatalogSelection(record.state, selection);
+                if (record.adapter === rasterMapLayerAdapter) replaceSessionPolygonSampling(record.state, selection);
             }
             refreshActiveSessionPresentation();
-            bivariateCatalogSelection = selection;
+            bivariatePolygonSampling = selection;
             bivariateSelectedBounds = null;
             rasterSampleWindowController.clear();
             renderRasterSamplingAreaControls();
@@ -3870,7 +3900,7 @@ export function initializeRasterViewer(
         rasterStatisticsController.clear();
         resetPendingRasterStatisticsState();
         rasterAnalysis.selectedRasterBounds = null;
-        rasterAnalysis.selectedCatalogSelection = selection;
+        rasterAnalysis.selectedPolygonSampling = selection;
         rasterAnalysis.selectedRasterCenter = null;
         rasterAnalysis.selectedRasterWindowSizeKm = null;
         rasterAnalysis.selectedRasterStatistics = null;
@@ -4576,7 +4606,7 @@ export function initializeRasterViewer(
         temporal.unit = unit;
         temporal.selection = {...selection};
         session.item = temporalRaster(temporal.item, selection, available);
-        session.analysis = {...createRasterAnalysisState(oldAnalysis.selectedCatalogSelection),
+        session.analysis = {...createRasterAnalysisState(oldAnalysis.selectedPolygonSampling),
             selectedRasterBounds: oldAnalysis.selectedRasterBounds,
             selectedRasterCenter: oldAnalysis.selectedRasterCenter,
             selectedRasterWindowSizeKm: oldAnalysis.selectedRasterWindowSizeKm};
@@ -4801,29 +4831,31 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Validate a descriptor and label received from browser composition.
+     * Validate a polygon area and label received from browser composition.
      *
      * @param {Readonly<Object>|null} value Candidate descriptor and display label.
      * @return {Readonly<Object>|null} Validated immutable snapshot or null.
      * @throws {TypeError} If identity or predicate fields are invalid.
      */
-    function validateCatalogSelectionSamplingSnapshot(value) {
+    function validatePolygonSamplingSnapshot(value) {
         if (value === null) return null;
-        const area = normalizeRasterSamplingArea({ kind: "catalogSelection", catalogSelection: value.selection });
-        return Object.freeze({ selection: area.catalogSelection, id: JSON.stringify(area.catalogSelection),
-            filename: value.label, selectedDataset: area.catalogSelection.layerName });
+        const area = normalizeRasterSamplingArea(value.polygonArea
+            ? { kind: "polygonArea", polygonArea: value.polygonArea }
+            : { kind: "catalogSelection", catalogSelection: value.selection });
+        return Object.freeze({ area, id: JSON.stringify(area),
+            filename: value.label, selectedDataset: area.catalogSelection?.layerName });
     }
 
     /**
-     * Invalidate a session's result when its catalog selection changes.
+     * Invalidate a session's result when its polygon selection changes.
      *
      * @param {Object} session Retained raster-layer interaction session.
-     * @param {Readonly<Object>|null} nextCatalogSelection Replacement descriptor and label, or null for whole-raster sampling.
+     * @param {Readonly<Object>|null} nextPolygonSampling Replacement descriptor and label, or null for whole-raster sampling.
      * @return {void}
      */
-    function replaceSessionCatalogSelection(session, nextCatalogSelection) {
+    function replaceSessionPolygonSampling(session, nextPolygonSampling) {
         session.analysis.selectedRasterBounds = null;
-        session.analysis.selectedCatalogSelection = nextCatalogSelection;
+        session.analysis.selectedPolygonSampling = nextPolygonSampling;
         session.analysis.selectedRasterCenter = null;
         session.analysis.selectedRasterWindowSizeKm = null;
         session.analysis.selectedRasterStatistics = null;
@@ -4833,17 +4865,17 @@ export function initializeRasterViewer(
     }
 
     /**
-     * Adopt or invalidate a composition-supplied catalog vector selection.
+     * Adopt or invalidate a composition-supplied polygon selection.
      *
-     * @param {Object|null} selection Catalog descriptor and label, or null to invalidate.
+     * @param {Object|null} selection Catalog descriptor or private polygon reference with a label, or null to invalidate.
      * @return {void}
      */
     function setVectorSelection(selection) {
         const previous = vectorSelection;
-        vectorSelection = validateCatalogSelectionSamplingSnapshot(selection);
+        vectorSelection = validatePolygonSamplingSnapshot(selection);
         if (selection) {
             pendingVectorSelection = false;
-            useCatalogSelectionForRasterStatistics(vectorSelection);
+            usePolygonSamplingForRasterStatistics(vectorSelection);
             return;
         }
         if (!previous) return;
@@ -4851,14 +4883,14 @@ export function initializeRasterViewer(
         invalidVectorSamplingId = previous.id;
         const message = "Polygon selection changed. Waiting for the updated features.";
         for (const record of mapLayers.retainedRecords) {
-            if (record.state.analysis?.selectedCatalogSelection?.id === previous.id) {
+            if (record.state.analysis?.selectedPolygonSampling?.id === previous.id) {
                 cancelLayerHistogramRequest(record.state);
-                replaceSessionCatalogSelection(record.state, previous);
+                replaceSessionPolygonSampling(record.state, previous);
                 record.state.analysis.selectedRasterStatisticsState = "error";
                 record.state.analysis.selectedRasterStatisticsError = new Error(message);
             }
         }
-        if (rasterAnalysis.selectedCatalogSelection?.id === previous.id) {
+        if (rasterAnalysis.selectedPolygonSampling?.id === previous.id) {
             rasterStatisticsController.clear();
             rasterAnalysis.selectedRasterStatistics = null;
             rasterAnalysis.selectedRasterStatisticsState = "error";
@@ -4866,14 +4898,14 @@ export function initializeRasterViewer(
             resetPendingRasterStatisticsState();
             controlsView.clearStatistics();
         }
-        if (bivariateCatalogSelection?.id === previous.id) {
+        if (bivariatePolygonSampling?.id === previous.id) {
             pairedStatisticsController.clear();
             bivariateStatistics = null;
             controlsView.clearPairedStatistics?.();
             controlsView.setSampleWindowStatus(message);
         }
         renderLayerHistogramSummaries();
-        renderRasterSamplingAreaControls();
+        renderRasterSamplingAreaControls(previous.area);
     }
 
     /**

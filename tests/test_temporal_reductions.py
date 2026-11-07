@@ -20,7 +20,7 @@ from rasterio.windows import Window
 
 from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregateLimits
 from eolab_app.processing.models import ProcessingError
-from eolab_app.processing.polygon_areas import PolygonSummaryInput
+from eolab_app.polygon_areas import PolygonSummaryInput
 from eolab_app.processing.temporal_models import (
     PrecipitationConversion,
     TemporalMapArtifact,

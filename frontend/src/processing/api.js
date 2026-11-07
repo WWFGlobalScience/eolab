@@ -1,7 +1,7 @@
 /** Same-origin Processing API for catalog rasters, owned polygon inputs and job results. */
 import { validateCalculationRows, validateModelResult } from "./model-results.js";
-import { normalizeRasterSamplingArea } from "../selected-area.js";
-import { normalizeCalculationArea, validatePolygonAreaReference } from "./calculation-area.js";
+import { normalizeRasterSamplingArea, validatePolygonAreaReference } from "../selected-area.js";
+import { normalizeCalculationArea } from "./calculation-area.js";
 import { calculationPixelPoint, chunkPixels, validateModelIdentity } from "./calculation-session.js";
 import { csvParse } from "d3";
 

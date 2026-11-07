@@ -16,6 +16,7 @@ import { EMPTY_VECTOR_FILTER, normalizeVectorFilter } from "../../src/vector/fil
 import { FakeRasterControlDocument } from "../../test-support/raster/fake-controls-document.js";
 import { RasterSeriesView } from "../../src/raster/series-view.js";
 import { RasterSamplingAreaControlsView } from "../../src/raster/sampling-area-controls-view.js";
+import { annotationSummaryPolygons, annotationSummaryTarget } from "../../src/annotations/summary-area.js";
 
 /** @param {number} west Longitude. @return {Object} Valid sampling box. */
 const box = west => ({kind:"selectedArea",selectedBounds:{west,south:0,east:west+1,north:1}});
@@ -944,9 +945,10 @@ test("adding an identical completed raster statistic reuses exact values with in
 /** Connect the production root's two polygon workflows to real statistics and DOM adapters.
  * Source transport, retained map records, dock foreground and viewport are fakes.
  * @param {Object} h Existing real Processing/calculation fixture.
+ * @param {Object[]} [drawings=[]] Committed annotation layers.
  * @return {Object} Accepted filters, both controls, filter actions, scope presentation and recorded viewport events/fits.
  */
-function samplingComposition(h) {
+function samplingComposition(h, drawings = []) {
     const document = new FakeRasterControlDocument();
     document.defaultView.requestAnimationFrame = () => 1;
     document.defaultView.cancelAnimationFrame = () => {};
@@ -961,7 +963,7 @@ function samplingComposition(h) {
     const fields = [{name: "iso3", type: "string"}];
     const records = ["countries", "copy"].map(key => ({entry: {key, label: key === "copy" ? "Other countries view" : "Countries"},
         filter: structuredClone(EMPTY_VECTOR_FILTER)}));
-    const reads = [], pendingFilters = [], pendingReads = [];
+    const reads = [], pendingFilters = [], pendingReads = [], uploaded = [], released = [], clipAreas = [], histogramAreas = [];
     let composed, delayedFilters = false, delayedReads = false, foreground = "raster-series";
     /** Refresh accepted source snapshots through the actual root's layer-change statements.
      * @return {void}
@@ -1008,6 +1010,8 @@ function samplingComposition(h) {
     const editor = main.slice(main.indexOf("    let modelFilterControls = null;"), main.indexOf("    models = new ModelsController({"));
     const workflows = main.slice(main.indexOf("    vectorSampling = new VectorSamplingController({"),
         main.indexOf("    const vectorStyleControls = new VectorStyleControls();"));
+    const mapHandoff = main.slice(main.indexOf("        onSamplingAreaChange: "),
+        main.indexOf("        onSamplingMethodChange: ")).trim().slice(0, -1);
     assert.ok(editor.includes("const getPolygonTargets") && workflows.includes("summarySampling ="));
     const createArea = async (_source, filter, signal) => {
         reads.push({filter, signal});
@@ -1019,20 +1023,32 @@ function samplingComposition(h) {
     composed = new Function("document", "VectorFilterControls", "VectorSamplingController", "VectorSamplingView",
         "createVectorSamplingArea", "VectorSelectionOverlay", "leafletMap", "L", "mapInspection", "mapLayerController",
         "vectorMapLayerAdapter", "annotations", "processingApi", "rasterSeries", "updateRasterSeriesArea",
-        "rasterVisualization", "models", "EMPTY_VECTOR_FILTER", `
+        "rasterVisualization", "models", "EMPTY_VECTOR_FILTER", "annotationSummaryPolygons", "rasterClips", `
         let vectorFilterControls, vectorSampling, summarySampling, modelArea, modelAreaDescription;
         ${editor} ${workflows}
-        return {vectorFilterControls, vectorSampling, summarySampling};`)(document, VectorFilterControls,
+        return {vectorFilterControls, vectorSampling, summarySampling, ${mapHandoff}};`)(document, VectorFilterControls,
         VectorSamplingController, VectorSamplingView, createArea, class {load() {} clear() {}}, viewport, leaflet, inspection,
-        layers, adapter, {filterTarget: () => null, summaryTargets: () => []}, {}, h.controller, updateArea,
-        {setVectorSelection: area => { if (area) updateArea({kind: "catalogSelection", catalogSelection: area.selection}, area.label); }},
-        {refreshMapArea() {}}, EMPTY_VECTOR_FILTER);
+        layers, adapter, {filterTarget: () => null, summaryTargets: () => drawings.map(layer => annotationSummaryTarget(layer.key, layer))},
+        {
+            async uploadPolygonArea(polygons) {
+                uploaded.push(polygons);
+                return {polygonArea: {id: String(uploaded.length).padStart(32, "0"), sha256: "a".repeat(64)}, matched: polygons.length};
+            },
+            async discardPolygonArea(id) { released.push(id); },
+        }, h.controller, updateArea,
+        {setVectorSelection: area => {
+            histogramAreas.push(area);
+            if (area?.selection) updateArea({kind: "catalogSelection", catalogSelection: area.selection}, area.label);
+        }},
+        {refreshMapArea() {}}, EMPTY_VECTOR_FILTER, annotationSummaryPolygons,
+        {setSelection: area => clipAreas.push(area)});
     h.controller.onAreaChoice = choice => {
         if (choice === "vector") void composed.summarySampling.use();
         else composed.summarySampling.invalidate("");
     };
     h.controller.render();
     return {...composed, document, floating, presentation, records, reads, pendingFilters, pendingReads, viewportEvents, fits,
+        uploaded, released, clipAreas, histogramAreas, refresh,
         get foreground() {return foreground;},
         delayFilters: () => {delayedFilters = true;}, delayReads: () => {delayedReads = true;},
         /** Apply a complete editor draft without waiting for its debounce timer.
@@ -1050,6 +1066,48 @@ function samplingComposition(h) {
         },
     };
 }
+
+test("the map picker prepares filtered drawings without replacing independent statistics or clip inputs", async () => {
+    const layer = {key: "local:annotation:maui", name: "Maui drawings",
+        polygons: [{name: "Maui", note: "", vertices: [[0, 0], [2, 0], [1, 2]]},
+            {name: "Other", note: "", vertices: [[3, 0], [5, 0], [4, 2]]}],
+        filter: {enabled: true, match: "all", rules: [{field: "name", operator: "eq", value: "Maui"}]}};
+    const h = fixture(), c = samplingComposition(h, [layer]);
+    try {
+        const layerOptions = c.vectorSampling.views[0].elements.layer.children;
+        assert.ok(layerOptions.some(option => option.textContent === "Maui drawings"));
+        assert.deepEqual(c.uploaded, [], "listing layers performs no upload");
+        await c.summarySampling.choose("countries");
+        const capturedArea = h.controller.getSelectedArea();
+        c.onSamplingAreaChange(box(0), {waitingForPolygons: false, invalidatedArea: null});
+        c.onSamplingAreaChange(null, {waitingForPolygons: true, invalidatedArea: null});
+        assert.deepEqual(c.clipAreas, [box(0), null], "the existing Catalog preparation clears the live clip area");
+        c.onSamplingAreaChange(box(0), {waitingForPolygons: false, invalidatedArea: null});
+
+        const read = c.vectorSampling.choose(layer.key);
+        c.onSamplingAreaChange(null, {waitingForPolygons: true, invalidatedArea: null});
+        const selected = await read;
+        const selectedArea = {kind: "polygonArea", polygonArea: selected.polygonArea};
+        c.onSamplingAreaChange(selectedArea, {waitingForPolygons: false, invalidatedArea: null});
+        assert.deepEqual(c.clipAreas, [box(0), null, box(0)]);
+        assert.deepEqual(h.controller.getSelectedArea(), capturedArea);
+        assert.deepEqual(c.uploaded, [[{type: "Polygon", coordinates: [[[0, 0], [2, 0], [1, 2], [0, 0]]]}]]);
+        assert.deepEqual(c.histogramAreas.at(-1).polygonArea, selected.polygonArea);
+        assert.match(c.vectorSampling.views[0].elements.status.textContent, /Sampling 1 of 2 features/);
+
+        layer.polygons[0].vertices[1] = [3, 0];
+        c.refresh(); await flush();
+        assert.equal(c.uploaded.length, 2);
+        assert.deepEqual(c.released, [selected.polygonArea.id]);
+        c.onSamplingAreaChange(null, {waitingForPolygons: true, invalidatedArea: selectedArea});
+        assert.deepEqual(c.clipAreas, [box(0), null, box(0)]);
+        layer.filter.rules[0].value = "Missing";
+        c.refresh(); await flush();
+        assert.equal(c.histogramAreas.at(-1), null);
+        assert.match(c.vectorSampling.views[0].elements.status.textContent, /No polygons match this filter/);
+        assert.deepEqual(h.controller.getSelectedArea(), capturedArea);
+    } finally { c.close(); h.close(); }
+});
 
 test("statistics-origin filter commits replace captured inputs through both production workflow instances", async () => {
     const h = fixture(), c = samplingComposition(h);

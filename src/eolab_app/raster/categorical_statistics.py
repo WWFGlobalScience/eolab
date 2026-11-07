@@ -33,6 +33,7 @@ from eolab_app.raster.bounded_window import selected_raster_area_for_sampling_bo
 from eolab_app.raster.statistics import (
     selected_raster_area_for_wgs84_bounds,
     selected_raster_area_for_catalog_selection,
+    selected_raster_area_for_polygon_input,
     RASTER_STATISTICS_MAX_TRANSFORMED_COORDINATES,
     summarize_raster_sample,
 )
@@ -41,6 +42,7 @@ from eolab_app.sampling_area import (
     SelectedBoundsSamplingArea,
     SamplingBoxArea,
     CatalogSelectionSamplingArea,
+    PolygonInputSamplingArea,
     WholeRasterSamplingArea,
 )
 
@@ -214,6 +216,10 @@ def read_raster_categorical_statistics(
         elif isinstance(sampling_area, CatalogSelectionSamplingArea):
             selected_area = selected_raster_area_for_catalog_selection(
                 dataset, sampling_area, cancellation_requested
+            )
+        elif isinstance(sampling_area, PolygonInputSamplingArea):
+            selected_area = selected_raster_area_for_polygon_input(
+                dataset, sampling_area
             )
         elif not isinstance(sampling_area, WholeRasterSamplingArea):
             raise TypeError("Unsupported raster sampling area")

@@ -11,14 +11,18 @@ function copyClipRasterSource(source) {
     return labeledRasterSource(source, source.label);
 }
 
-/** Validate a clip's rectangle or polygon selection, excluding whole-raster requests.
+/** Validate a clip's rectangle, sampling box or original vector selection.
  * @param {Object|null|undefined} area Sampling selection.
  * @return {Readonly<Object>|null} Validated area, or null when no clipping area is selected.
  * @throws {TypeError|Error} If a selected rectangle or polygon reference is invalid.
  */
 function normalizeClipArea(area) {
     if (area === null || area === undefined || ["wholeRaster", "wholeOverlap"].includes(area.kind)) return null;
-    return normalizeRasterSamplingArea(area);
+    const selection = normalizeRasterSamplingArea(area);
+    if (selection.kind === "polygonArea") {
+        throw new TypeError("Choose a sampling box, Catalog layer or uploaded polygon layer to clip a raster.");
+    }
+    return selection;
 }
 
 /** Retain clip state and show it only while the raster clip tool is active. */

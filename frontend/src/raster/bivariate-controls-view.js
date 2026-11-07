@@ -499,6 +499,17 @@ export class BivariateRasterControlsView {
         this.#renderLegend(state);
     }
 
+    /** Disable shortcuts until the paired histogram has an area other tools can use.
+     * @param {boolean} available Whether shortcuts can carry over this area.
+     * @return {void}
+     */
+    setAreaActionsAvailable(available) {
+        for (const {button} of this.downloadButtons) {
+            button.disabled = !available;
+            button.title = available ? "" : "Choose a sampling box, Catalog layer or uploaded polygon layer.";
+        }
+    }
+
     /**
      * Reveal the current pair's consolidated controls and focus its palette.
      * The caller owns opening the histogram workspace before this navigation.

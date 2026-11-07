@@ -11,7 +11,7 @@ from eolab_app.sampling_box import sampling_box_bounds
 from eolab_app.processing.aggregate_models import AggregateArea, RasterAggregateLimits
 from eolab_app.processing.models import PreparedJobPlan, ProcessingError
 from eolab_app.processing.operation_context import OperationContext
-from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.processing.raster_operations import bind_area_arguments
 from eolab_app.processing.temporal_series import temporal_series_process_target
 from eolab_app.processing.temporal_series_models import (

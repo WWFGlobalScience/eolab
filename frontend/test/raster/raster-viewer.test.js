@@ -406,6 +406,9 @@ function createFakeControlsView() {
         renderBivariateMode(state) {
             this.bivariateMode = state;
         },
+        setPairedAreaActionsAvailable(available) {
+            this.pairedAreaActionsAvailable = available;
+        },
         setPairedStatisticsLoading(message) {
             this.pairedStatisticsLoading = message;
         },
@@ -2836,6 +2839,63 @@ test('a vector AOI drives both histogram modes and invalidation cannot fall back
     h.controlsView.handlers.onClearSampleWindow(); await flushPromises();
     assert.equal(h.controlsView.samplingAreaMode,"wholeRaster");
     h.destroy();
+});
+
+test("a drawing masks both histogram modes and keeps area handoffs unavailable", async t => {
+    const areas = [], pairedAreas = [], handoffs = [];
+    const polygonArea = {id: "a".repeat(32), sha256: "b".repeat(64)};
+    const selectedArea = {kind: "polygonArea", polygonArea};
+    const h = visibleLayerFixture(async (_item, area) => {
+        areas.push(area);
+        return area.kind === "polygonArea" ? {...RASTER_STATISTICS, scope: "polygonArea", polygonArea} : RASTER_STATISTICS;
+    }, {
+        loadPairedStatistics: async (_x, _y, area) => {
+            pairedAreas.push(area);
+            return area.kind === "polygonArea" ? {...pairedStatistics(), scope: "polygonArea", polygonArea} : pairedStatistics();
+        },
+    }, {
+        onDownloadRequested: (...args) => handoffs.push(args),
+        onCalculateRequested: (...args) => handoffs.push(args),
+    });
+    t.after(() => h.destroy());
+    await h.viewer.show(createRasterItem("bottom"));
+    await h.viewer.show(createRasterItem("top"));
+    await flushPromises();
+    h.controlsView.handlers.onUseVectorArea();
+    assert.equal(h.controlsView.pairedAreaActionsAvailable, false);
+    const firstKey = h.mapLayers.retainedRecords[0].entry.key;
+    h.controlsView.handlers.onCalculateHistogram(firstKey);
+    h.controlsView.handlers.onDownloadHistogram(firstKey);
+    assert.deepEqual(handoffs, []);
+    h.viewer.setVectorSelection({polygonArea, label: "Maui study area"});
+    await flushPromises();
+    assert.deepEqual(areas.at(-1), selectedArea);
+    assert.deepEqual(h.viewer.getSelectedArea(), selectedArea);
+    assert.match(h.controlsView.samplingAreaLabel, /Maui study area/);
+    assert.equal(h.controlsView.layerHistograms.length, 2);
+    for (const {key, canCalculate} of h.controlsView.layerHistograms) {
+        assert.equal(canCalculate, false);
+        assert.deepEqual(h.viewer.getSelectedArea(key, "1d"), selectedArea);
+        h.controlsView.handlers.onCalculateHistogram(key);
+        h.controlsView.handlers.onDownloadHistogram(key);
+    }
+    h.controlsView.handlers.onBivariateModeChange("bivariate");
+    await flushPromises();
+    assert.deepEqual(pairedAreas.at(-1), selectedArea);
+    assert.deepEqual(h.viewer.getSelectedArea(null, "2d"), selectedArea);
+    assert.equal(h.controlsView.pairedAreaActionsAvailable, false);
+    h.controlsView.handlers.onCalculatePairedHistogram("x");
+    h.controlsView.handlers.onDownloadPairedHistogram("x");
+    assert.deepEqual(handoffs, []);
+
+    const requestCount = areas.length + pairedAreas.length;
+    h.viewer.setVectorSelection(null);
+    await flushPromises();
+    assert.equal(h.viewer.getSelectedArea(), null);
+    assert.equal(h.controlsView.samplingAreaMode, "vector");
+    assert.equal(areas.length + pairedAreas.length, requestCount, "a released drawing must not be replaced by the whole raster");
+    h.controlsView.handlers.onClearSampleWindow();
+    assert.equal(h.controlsView.pairedAreaActionsAvailable, true);
 });
 
 test('a late histogram cannot overwrite another layer editor or an edited range', async () => {

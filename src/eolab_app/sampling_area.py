@@ -6,6 +6,7 @@ from typing import Literal, TypeAlias
 
 from eolab_app.raster.models import CanonicalWgs84Bounds
 from eolab_app.catalog_selection import ResolvedCatalogSelection
+from eolab_app.polygon_areas import PolygonAreaReference, PolygonSummaryInput
 
 
 @dataclass(frozen=True)
@@ -91,9 +92,33 @@ class CatalogSelectionSamplingArea:
         return self.kind, self.resolved.selection.model_dump_json(by_alias=True)
 
 
+@dataclass(frozen=True)
+class PolygonInputSamplingArea:
+    """Select a browser's exact polygons after checking the temporary input reference.
+
+    Attributes:
+        reference: Immutable, authorized ID and geometry hash returned on upload.
+        polygons: Validated WGS84 polygon input retained for this read.
+        kind: Public discriminator for a temporary polygon input.
+    """
+
+    reference: PolygonAreaReference
+    polygons: PolygonSummaryInput
+    kind: Literal["polygonArea"] = "polygonArea"
+
+    def cache_identity(self) -> tuple[str, str, str]:
+        """Return the identity for coalescing reads of this exact area reference.
+
+        Returns:
+            Scope, temporary input ID, and its immutable geometry hash.
+        """
+        return self.kind, self.reference.id, self.reference.sha256
+
+
 RasterSamplingArea: TypeAlias = (
     WholeRasterSamplingArea
     | SelectedBoundsSamplingArea
     | SamplingBoxArea
     | CatalogSelectionSamplingArea
+    | PolygonInputSamplingArea
 )

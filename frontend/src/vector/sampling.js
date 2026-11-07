@@ -66,6 +66,13 @@ export class VectorSamplingController {
     choose(key) {
         return this.use({ key });
     }
+
+    /** Read the requested layer before its polygon preparation completes.
+     * @return {Object|undefined} The selected target, or undefined if none is available.
+     */
+    getSelectedTarget() {
+        return this.state.targets.find(target => target.key === this.state.key);
+    }
     /**
      * Request the selected layer's filtered polygons, one request at a time.
      * A newer selection cancels the older request and discards its response.
@@ -76,9 +83,9 @@ export class VectorSamplingController {
      * or null if no source, failed or superseded. Actual read failures remain visible in the controls.
      */
     async use({ key = this.state.key, explicit = true } = {}) {
-        const target = this.state.targets.find(value => value.key === key);
-        this.invalidate("");
         this.state.key = key;
+        const target = this.getSelectedTarget();
+        this.invalidate("");
         this.explicitSelection = explicit;
         if (!target) {
             this.state.message = "Choose a polygon layer.";
@@ -128,7 +135,7 @@ export class VectorSamplingController {
     }
     /** Render the source view's committed predicate and selection progress. @return {void} */
     render() {
-        const target = this.state.targets.find(value => value.key === this.state.key);
+        const target = this.getSelectedTarget();
         const state = { ...this.state, filterSummary: vectorFilterSummary(target?.filter ?? EMPTY_VECTOR_FILTER) };
         this.views.forEach(view => view.render(state));
         this.onSelectionState({ phase: state.phase, message: state.message, explicit: this.explicitSelection, sequence: this.sequence });

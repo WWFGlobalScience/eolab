@@ -14,6 +14,8 @@ from rasterio.transform import Affine, from_bounds, from_origin
 from rasterio.warp import transform as transform_coordinates, transform_bounds
 from rasterio.windows import Window
 
+from eolab_app.polygon_areas import PolygonAreaReference, PolygonSummaryInput
+from eolab_app.raster.categorical_statistics import read_raster_categorical_statistics
 from eolab_app.raster.errors import RasterConflictError, RasterStatisticsCapacityError
 from eolab_app.raster import paired_statistics
 from eolab_app.raster.models import (
@@ -52,6 +54,7 @@ from eolab_app.sampling_area import (
     RasterSamplingArea,
     SelectedBoundsSamplingArea,
     CatalogSelectionSamplingArea,
+    PolygonInputSamplingArea,
     WholeRasterSamplingArea,
 )
 
@@ -1279,6 +1282,72 @@ def test_catalog_selection_unions_overlapping_polygons_once(tmp_path: Path) -> N
     assert sum(paired.histogram.x_marginal_counts) == paired.paired_sample_count
     assert paired.y_minimum == 2 * paired.x_minimum
     assert paired.y_maximum == 2 * paired.x_maximum
+
+
+def test_saved_polygons_mask_ordinary_categorical_and_paired_histograms(
+    tmp_path: Path,
+) -> None:
+    """Use the drawn polygon union, including overlap and gaps in its envelope.
+
+    Args:
+        tmp_path: Isolated directory for the real X and Y raster sources.
+    """
+    x_path = tmp_path / "x.tif"
+    y_path = tmp_path / "y.tif"
+    values = numpy.full((21, 21), 7, dtype=numpy.float32)
+    values[0:6, 15:21] = 99
+    transform = from_origin(0, 21, 1, 1)
+    _write_raster(x_path, values, transform=transform)
+    _write_raster(y_path, values * 2, transform=transform)
+    polygons = (
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(0.1, 0.1), (5.9, 0.1), (5.9, 20.9), (0.1, 20.9), (0.1, 0.1)]
+            ],
+        },
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(0.1, 0.1), (20.9, 0.1), (20.9, 5.9), (0.1, 5.9), (0.1, 0.1)]
+            ],
+        },
+    )
+    payload = PolygonSummaryInput(polygons=polygons)
+    reference = PolygonAreaReference(id="a" * 32, sha256=payload.geometry_hash())
+    area = PolygonInputSamplingArea(reference, payload)
+    expected = int(
+        geometry_mask(
+            polygons,
+            out_shape=values.shape,
+            transform=transform,
+            all_touched=True,
+            invert=True,
+        ).sum()
+    )
+
+    ordinary = read_raster_statistics(x_path, area)
+    assert ordinary.scope == "polygonArea"
+    assert ordinary.polygon_area == reference
+    assert ordinary.valid_sample_count == sum(ordinary.histogram.counts) == expected
+    assert ordinary.sample_minimum == ordinary.sample_maximum == 7
+
+    categorical = read_raster_categorical_statistics(
+        x_path, area, category_values=(7, 99)
+    )
+    assert categorical.scope == "polygonArea"
+    assert categorical.polygon_area == reference
+    distribution = categorical.categorical_distribution
+    assert distribution is not None
+    assert distribution.areas_hectares[0] > 0
+    assert distribution.areas_hectares[1] == 0
+
+    paired = read_raster_paired_statistics(x_path, y_path, None, polygon_input=area)
+    assert paired.scope == "polygonArea"
+    assert paired.polygon_area == reference
+    assert paired.paired_sample_count == expected
+    assert paired.x_minimum == paired.x_maximum == 7
+    assert paired.y_minimum == paired.y_maximum == 14
 
 
 def test_catalog_selection_sample_grid_masks_a_large_interior_hole(

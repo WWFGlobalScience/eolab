@@ -42,7 +42,7 @@ from eolab_app.processing.model_runs import (
 from eolab_app.processing.model_yaml import parse_yaml
 from eolab_app.processing.models import JobInputFile, ProcessingError
 from eolab_app.processing.native_processes import create_native_process
-from eolab_app.processing.polygon_areas import PolygonSummaryInput
+from eolab_app.polygon_areas import PolygonSummaryInput
 from eolab_app.processing.service import serialize_processing_job
 from eolab_app.processing.worker import ProcessingWorker
 from eolab_app.raster.models import AuthorizedRaster, CatalogRasterRequest

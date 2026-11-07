@@ -35,7 +35,7 @@ from eolab_app.processing.models import (
     JobResponse,
     OpaqueId,
 )
-from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.raster.models import CatalogRasterRequest, Wgs84Bounds
 from eolab_app.raster.source_models import RasterSourceReference

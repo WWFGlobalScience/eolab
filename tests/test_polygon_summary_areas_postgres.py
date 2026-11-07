@@ -1,12 +1,150 @@
 """Polygon summary inputs through real HTTP routes, workers and PostgreSQL."""
 
 import asyncio
+from contextlib import closing
+from pathlib import Path
 from uuid import uuid4
 from typing import Any
+
+import httpx2
+import numpy
+import pytest
 from fastapi.testclient import TestClient
+
+from eolab_app.main import create_app
+from eolab_app.processing.job_events import PostgresJobEvents
+from eolab_app.processing.job_store import PostgresJobStore
+from app_support import mounted_geotiff_item
+from raster_fixture_support import write_source
+from raster_source_support import SOURCE
 from test_processing_jobs import boundary, store, HEADERS
 from test_processing_calculations import calculation_inputs, submit_calculation
 from test_polygon_summary_areas import rectangle
+
+
+def test_drawn_polygon_histograms_authorize_before_serving_cached_results(
+    store: PostgresJobStore,
+    configured_environment: None,
+    version_file_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sample saved drawings through real application and PostgreSQL boundaries.
+
+    Args:
+        store: Migrated disposable PostgreSQL store for temporary inputs.
+        configured_environment: Isolated application settings.
+        version_file_path: Application version fixture.
+        tmp_path: Original raster mount and writable processing directory.
+        monkeypatch: Inject the disposable store and fixture deployment paths.
+    """
+    values = numpy.full((100, 100), 7, dtype=numpy.int16)
+    values[:, 50:] = 23
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    path = write_source(sources / "histogram.tif", values)
+    item = mounted_geotiff_item(path.as_uri())
+    monkeypatch.setenv("SCAN_MOUNT_PATH", str(sources))
+    monkeypatch.setenv("PROCESSING_DATA_PATH", str(tmp_path / "processing"))
+    monkeypatch.setattr("eolab_app.main.PostgresJobStore", lambda _: store)
+    monkeypatch.setattr(
+        "eolab_app.main.PostgresJobEvents", lambda: PostgresJobEvents(store.conninfo)
+    )
+
+    def catalog(request: httpx2.Request) -> httpx2.Response:
+        """Serve the fixture's raster without admitting a vector source.
+
+        Args:
+            request: Source authorization request.
+
+        Returns:
+            The Catalog item's original raster identity and asset.
+        """
+        assert (
+            request.url.path
+            == f"/collections/{SOURCE['collectionId']}/items/{SOURCE['itemId']}"
+        )
+        return httpx2.Response(200, json=item)
+
+    def reject_geoserver(request: httpx2.Request) -> httpx2.Response:
+        """Fail if polygon statistics contact the renderer.
+
+        Args:
+            request: Unexpected GeoServer request.
+
+        Raises:
+            AssertionError: Always because the fixture has no published layer.
+        """
+        raise AssertionError(f"Histogram contacted GeoServer: {request.url}")
+
+    app = create_app(
+        version_file_path,
+        catalog_transport=httpx2.MockTransport(catalog),
+        geoserver_transport=httpx2.MockTransport(reject_geoserver),
+    )
+    with (
+        TestClient(app, base_url="https://testserver") as owner,
+        closing(TestClient(app, base_url="https://testserver")) as other,
+    ):
+        upload = owner.post(
+            "/api/processing/polygon-areas",
+            headers=HEADERS,
+            json={"polygons": [rectangle(0.1, 9.1, 0.3, 9.5)]},
+        )
+        assert upload.status_code == 200, upload.text
+        reference = upload.json()["polygonArea"]
+        ordinary = {**SOURCE, "polygonArea": reference}
+        cases = [
+            ("statistics", ordinary, "sampleMaximum"),
+            ("statistics", {**ordinary, "categoryValues": [7, 23]}, "sampleMaximum"),
+            (
+                "paired-statistics",
+                {"xRaster": SOURCE, "yRaster": SOURCE, "polygonArea": reference},
+                "xMaximum",
+            ),
+        ]
+        for endpoint, body, value_field in cases:
+            url = f"/api/raster-analysis/{endpoint}"
+            response = owner.post(url, headers=HEADERS, json=body)
+            assert response.status_code == 200, response.text
+            result = response.json()
+            assert result["scope"] == "polygonArea"
+            assert result["polygonArea"] == reference
+            assert result[value_field] == 7
+            assert response.headers["Cache-Control"] == "private, no-store"
+            assert owner.post(url, headers=HEADERS, json=body).json() == result
+            assert owner.post(url, json=body).status_code == 403
+            assert (
+                owner.post(
+                    url,
+                    headers=HEADERS,
+                    json={
+                        **body,
+                        "selectedBounds": {
+                            "west": 0.1,
+                            "south": 9.1,
+                            "east": 0.3,
+                            "north": 9.5,
+                        },
+                    },
+                ).status_code
+                == 422
+            )
+            other_response = other.post(url, headers=HEADERS, json=body)
+            assert other_response.status_code == 409
+            assert other_response.headers["Cache-Control"] == "private, no-store"
+
+        with store._transaction() as cursor:
+            cursor.execute(
+                "UPDATE processing.inputs SET expires_at=now()-interval '1 second' WHERE id=%s",
+                (reference["id"],),
+            )
+        for endpoint, body, _ in cases:
+            expired = owner.post(
+                f"/api/raster-analysis/{endpoint}", headers=HEADERS, json=body
+            )
+            assert expired.status_code == 409, expired.text
+            assert "Choose the polygon layer again" in expired.json()["detail"]
 
 
 def test_polygon_upload_ownership_release_and_cached_reuse(

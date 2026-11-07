@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from eolab_app.catalog_selection import UploadedSelection
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.routes.browser_identity import get_browser_owner_hash
 from eolab_app.vector_uploads import VectorUploadError
 
@@ -78,11 +79,21 @@ def create_raster_analysis_router(
         """
         response.headers["Cache-Control"] = "private, no-store"
         context = {}
-        if any(isinstance(reference, RunArtifactReference) for reference in references):
+        if any(
+            isinstance(reference, (RunArtifactReference, PolygonAreaReference))
+            for reference in references
+        ):
             if session_owner is None:
                 raise HTTPException(
                     404,
-                    "This raster result is unavailable.",
+                    (
+                        "This polygon area is unavailable."
+                        if any(
+                            isinstance(reference, PolygonAreaReference)
+                            for reference in references
+                        )
+                        else "This raster result is unavailable."
+                    ),
                     headers={"Cache-Control": "private, no-store"},
                 )
             context["owner"] = session_owner(request, response)
@@ -195,7 +206,7 @@ def create_raster_analysis_router(
         """Summarize one original raster and normalized sampling area.
 
         Args:
-            request: Raster source and whole, rectangular or filtered-vector area.
+            request: Raster source and an optional bounds, box or polygon area.
             http_request: Incoming request used to detect cancellation.
             response: Private response headers.
 
@@ -208,7 +219,11 @@ def create_raster_analysis_router(
 
         try:
             context = owner_context(
-                (raster_source_reference(request), request.catalog_selection),
+                (
+                    raster_source_reference(request),
+                    request.catalog_selection,
+                    request.polygon_area,
+                ),
                 http_request,
                 response,
             )
@@ -236,7 +251,7 @@ def create_raster_analysis_router(
         """Summarize valid paired cells on the ordered X reference grid.
 
         Args:
-            request: Two catalog or private identities and optional sampling area.
+            request: Two catalog or private identities and optional bounds, box or polygon area.
             http_request: Incoming request used to detect cancellation.
             response: Private response headers.
 
@@ -248,7 +263,12 @@ def create_raster_analysis_router(
         """
         try:
             context = owner_context(
-                (request.x_raster, request.y_raster, request.catalog_selection),
+                (
+                    request.x_raster,
+                    request.y_raster,
+                    request.catalog_selection,
+                    request.polygon_area,
+                ),
                 http_request,
                 response,
             )
