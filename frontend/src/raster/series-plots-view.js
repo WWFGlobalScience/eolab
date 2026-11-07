@@ -49,9 +49,9 @@ export function createStatisticSwatch(documentContext, styleIndex, color = null)
  * @property {HTMLParagraphElement} note Units and omitted-value explanation.
  * @property {SVGSVGElement} chart Current chart.
  * @property {HTMLParagraphElement} empty Non-calculating empty state.
- * @property {HTMLDivElement} pendingProgress Shared-job progress for this pending plot.
+ * @property {HTMLDivElement} pendingProgress Calculation status for this empty plot.
  * @property {HTMLParagraphElement} pendingDetail Current authoritative calculation message.
- * @property {HTMLProgressElement} pendingBar Measured shared-job progress.
+ * @property {HTMLProgressElement} pendingBar Measured work when available, otherwise indeterminate progress.
  * @property {ReturnType<typeof createChartTooltip>} tooltip Chart inspection tooltip.
  * @property {string|null} signature Last chart-input signature.
  * @property {ReturnType<typeof renderOrdinalSeriesChart>} [domains] Last rendered chart domains.
@@ -201,7 +201,7 @@ export class RasterSeriesPlotsView {
      * Newly added secondary plots are revealed once; updates preserve scrolling.
      * Progress updates change pending placeholders without redrawing retained figures.
      * @param {import("./series-view.js").SeriesPresentation} state Authoritative result and job-progress snapshot.
-     * @return {boolean} Whether a visible pending plot presents the shared calculation's progress.
+     * @return {boolean} Whether a visible pending plot presents calculation progress.
      */
     renderPlots(state) {
         let hasPendingPlot = false;
@@ -241,9 +241,9 @@ export class RasterSeriesPlotsView {
     }
 
     /**
-     * Show the shared temporal job's current progress inside a plot awaiting values.
+     * Show the current calculation status inside an empty plot awaiting values.
      * Completed NoData/error rows, hidden statistics and unassigned plots keep their existing empty states.
-     * This display uses the supplied snapshot and never starts or observes a separate job.
+     * Use measured work for a time range and the existing completion count for a raster stack.
      * @param {RasterSeriesPlotCard} elements Retained plot presentation.
      * @param {import("./series-view.js").SeriesPresentation} state Authoritative result and progress snapshot.
      * @param {import("./series-view.js").SeriesStatistic[]} statistics Visible statistics assigned to this plot.
@@ -254,7 +254,7 @@ export class RasterSeriesPlotsView {
             const rows = state.showingPrevious ? statistic.previousRows : statistic.rows;
             return rows.length === 0 || rows.some(row => row.state === "waiting");
         });
-        const pending = Boolean(state.temporal && state.busy && waiting && elements.chart.hidden);
+        const pending = Boolean(state.busy && waiting && elements.chart.hidden);
         if (elements.pendingProgress.hidden !== !pending) elements.pendingProgress.hidden = !pending;
         if (!pending) {
             if (elements.chart.hidden && elements.empty.hidden) elements.empty.hidden = false;
