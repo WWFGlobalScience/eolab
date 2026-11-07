@@ -45,6 +45,14 @@ class FakeElement extends EventTarget {
     this.children = children;
   }
 
+  /** Check whether this element owns a candidate focus target.
+   * @param {FakeElement|null|undefined} element Candidate element.
+   * @return {boolean} Whether it is this node or a descendant.
+   */
+  contains(element) {
+    return this === element || this.children.some(child => child.contains(element));
+  }
+
   /** Store one string attribute and synchronize class names. */
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
@@ -463,16 +471,16 @@ test("bivariate projection guides remain transient and pointer-transparent", () 
 });
 
 /**
- * Return the three rendered threshold lines for one paired axis.
+ * Return the rendered threshold targets for one paired axis.
  * @param {BivariateRasterControlsView} view Rendered controls view.
  * @param {"x"|"y"} axis Marginal axis.
- * @return {FakeElement[]} Lines in L/M/U order.
+ * @return {FakeElement[]} Marker targets in L/M/U order.
  */
-function thresholdLines(view, axis) {
+function thresholdTargets(view, axis) {
   const group = view.thresholdMarkers.children.find(
     (element) => element.getAttribute("data-threshold-axis") === axis,
   );
-  return group?.children.filter((element) => element.getAttribute("data-threshold")) ?? [];
+  return group?.children ?? [];
 }
 
 test("marginal markers use numeric thresholds and inverted vertical coordinates", () => {
@@ -482,22 +490,28 @@ test("marginal markers use numeric thresholds and inverted vertical coordinates"
     ...PRESENTATION,
     xStyle: { ...PRESENTATION.xStyle, minimum: -2, midpoint: 8, maximum: 40 },
   });
-  assert.deepEqual(thresholdLines(view, "x").map(line => Number(line.getAttribute("x1"))),
+  assert.deepEqual(thresholdTargets(view, "x").map(marker => Number(marker.children[0].getAttribute("x1"))),
     [160, 265, 580]);
-  assert.deepEqual(thresholdLines(view, "y").map(line => Number(line.getAttribute("y1"))),
+  assert.deepEqual(thresholdTargets(view, "y").map(marker => Number(marker.children[0].getAttribute("y1"))),
     [494, 284, 74]);
-  assert.deepEqual(thresholdLines(view, "x").map(line => Number(line.getAttribute("data-value"))),
+  assert.deepEqual(thresholdTargets(view, "x").map(marker => Number(marker.getAttribute("data-value"))),
     [-2, 8, 40]);
   assert.equal(view.rangeControls.x.label.textContent, PRESENTATION.xLabel);
   assert.equal(view.rangeControls.y.label.textContent, PRESENTATION.yLabel);
   for (const group of view.thresholdMarkers.children) {
-    assert.deepEqual(group.children.filter(child => child.tagName === "TEXT").map(child => child.textContent),
+    assert.deepEqual(group.children.map(marker => marker.children[3].textContent),
       ["L", "M", "U"]);
+    assert.ok(group.children.every(marker => marker.getAttribute("tabindex") === "0"));
   }
+  const [topTick, rightTick] = ["x", "y"].map(axis => thresholdTargets(view, axis)[1].children[1]);
+  assert.deepEqual([topTick.getAttribute("y1"), topTick.getAttribute("y2")], ["16", "20"]);
+  assert.deepEqual([rightTick.getAttribute("x1"), rightTick.getAttribute("x2")], ["638", "634"]);
+  assert.match(thresholdTargets(view, "x")[1].getAttribute("aria-label"), /Middle threshold for .+ \(X\) at 8/);
 });
 
 test("range previews preserve histogram interactions and clear on stale or invalid data", () => {
-  const view = new BivariateRasterControlsView(new FakeBivariateDocument());
+  const documentContext = new FakeBivariateDocument();
+  const view = new BivariateRasterControlsView(documentContext);
   view.bind({});
   view.renderStatistics(pairedStatistics(), PRESENTATION);
   const cell = view.cells.get("6:4");
@@ -509,15 +523,17 @@ test("range previews preserve histogram interactions and clear on stale or inval
     message: "Estimated", applicable: true, invalid: false,
   };
   view.renderPercentiles("x", candidate);
-  assert.equal(thresholdLines(view, "x")[1].getAttribute("data-value"), "16");
+  assert.equal(thresholdTargets(view, "x")[1].getAttribute("data-value"), "16");
+  thresholdTargets(view, "x")[1].focus();
   view.styleRanges.open = true;
   view.styleRanges.dispatchEvent(new Event("toggle"));
-  assert.equal(thresholdLines(view, "x")[1].getAttribute("data-value"), "8");
-  assert.equal(thresholdLines(view, "y")[1].getAttribute("data-value"), "16");
+  assert.equal(thresholdTargets(view, "x")[1].getAttribute("data-value"), "8");
+  assert.equal(thresholdTargets(view, "y")[1].getAttribute("data-value"), "16");
+  assert.equal(documentContext.activeElement, thresholdTargets(view, "x")[1]);
   assert.equal(view.cells.get("6:4"), cell);
   assert.equal(cell.classList.contains("is-hovered"), true);
   view.renderPercentiles("x", { ...candidate, applicable: false, invalid: true });
-  assert.equal(thresholdLines(view, "x")[1].getAttribute("data-value"), "16");
+  assert.equal(thresholdTargets(view, "x")[1].getAttribute("data-value"), "16");
   view.renderPercentiles("x", candidate);
   view.setStatisticsLoading("Loading");
   assert.equal(view.thresholdMarkers.children.length, 0);
@@ -526,7 +542,7 @@ test("range previews preserve histogram interactions and clear on stale or inval
   assert.equal(view.thresholdMarkers.children.length, 0);
   view.renderStatistics(pairedStatistics(), { ...PRESENTATION,
     xStyle: PRESENTATION.yStyle, yStyle: PRESENTATION.xStyle });
-  assert.equal(thresholdLines(view, "x")[1].getAttribute("data-value"), "16");
+  assert.equal(thresholdTargets(view, "x")[1].getAttribute("data-value"), "16");
   view.clearStatistics();
   view.styleRanges.dispatchEvent(new Event("toggle"));
   assert.equal(view.histogram.children.length, 0);
@@ -598,7 +614,7 @@ test("2D log axes align cells, marginal hover bands and markers without new anal
   hovered.dispatchEvent(new Event("pointerenter"));
   assert.equal(yGuide.getAttribute("hidden"), "");
   const group = view.thresholdMarkers.children.find(child => child.getAttribute("data-threshold-axis") === "x");
-  const middle = group.children.find(child => child.getAttribute("data-threshold") === "midpoint");
+  const middle = group.children.find(child => child.getAttribute("data-threshold") === "midpoint").children[0];
   assert.ok(Math.abs(Number(middle.getAttribute("x1")) - (160 + Math.log(16) / Math.log(32) * 420)) < 1e-10);
   assert.deepEqual(statistics, original);
 

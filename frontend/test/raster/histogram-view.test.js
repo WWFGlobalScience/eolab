@@ -160,15 +160,16 @@ test("candidate style thresholds are colored, labeled, and clamped to the plot",
   const group = chart.children.find(child =>
     child.classList.contains("raster-histogram-thresholds")
   );
-  const lines = group.children.filter(child =>
-    child.classList.contains("raster-histogram-threshold")
-  );
-  const labels = group.children.filter(child =>
-    child.classList.contains("raster-histogram-threshold-label")
-  );
-  assert.deepEqual(lines.map(line => line.style.stroke), markers.map(marker => marker.color));
-  assert.deepEqual(lines.map(line => Number(line.attributes.get("x1"))), [48, 213.5, 379]);
+  const guides = group.children.map(marker => marker.children[0]);
+  const ticks = group.children.map(marker => marker.children[1]);
+  const labels = group.children.map(marker => marker.children[3]);
+  assert.deepEqual(guides.map(line => line.style.stroke), markers.map(marker => marker.color));
+  assert.deepEqual(guides.map(line => Number(line.attributes.get("x1"))), [48, 213.5, 379]);
+  assert.ok(ticks.every(tick => tick.getAttribute("y1") === "24" && tick.getAttribute("y2") === "28"));
+  assert.ok(labels.every(label => Number(label.getAttribute("y")) < 28));
   assert.deepEqual(labels.map(label => label.textContent), ["L", "M", "U"]);
+  assert.ok(group.children.every(marker => marker.getAttribute("tabindex") === "0"));
+  assert.match(group.children[0].getAttribute("aria-label"), /lower 5% at -1\.000e\+2/);
   assert.match(chart.attributes.get("aria-label"), /lower 5% at -1\.000e\+2/);
 
   assert.throws(
@@ -182,6 +183,29 @@ test("candidate style thresholds are colored, labeled, and clamped to the plot",
     ),
     /threshold markers are invalid/,
   );
+});
+
+test("equal values retain exact guide positions and separately focusable letters through a redraw", () => {
+  const {chart, documentContext} = createChart();
+  const {ResizeObserver, instances} = createFakeResizeObservers();
+  documentContext.defaultView.ResizeObserver = ResizeObserver;
+  const markers = ["lower", "middle", "upper"].map(label => ({label, value: 10, color: "#abcdef"}));
+  const draw = () => renderRasterHistogramChart(chart, RASTER_STATISTICS, DEFAULT_RASTER_STYLE, documentContext,
+    "Raster value", markers);
+  draw();
+  const targets = chart.children.find(child => child.classList.contains("raster-histogram-thresholds")).children;
+  assert.equal(new Set(targets.map(marker => marker.children[0].getAttribute("x1"))).size, 1);
+  assert.equal(new Set(targets.map(marker => marker.children[3].getAttribute("x"))).size, 3);
+  for (const [guide, tick] of targets.map(marker => marker.children)) {
+    assert.equal(tick.getAttribute("x1"), guide.getAttribute("x1"));
+    assert.equal(tick.getAttribute("x2"), guide.getAttribute("x1"));
+  }
+  targets[1].focus();
+  instances[0].resize(280);
+  assert.notEqual(documentContext.activeElement, targets[1]);
+  assert.equal(documentContext.activeElement.getAttribute("data-threshold-id"), "x:1");
+  draw();
+  assert.equal(documentContext.activeElement.getAttribute("data-threshold-id"), "x:1");
 });
 
 test("resizing redraws the plot and stale observers cannot revive cleared charts", () => {
@@ -220,6 +244,9 @@ test("raster histogram hover styles emphasize only the active bar", () => {
     stylesheet,
     /\.raster-histogram-bar\.is-hovered\s*\{[^}]*opacity:\s*1[^}]*stroke:/s,
   );
+  assert.match(stylesheet, /\.raster-histogram-threshold-guide\s*\{[^}]*stroke-dasharray:[^}]*visibility:\s*hidden/s);
+  assert.match(stylesheet, /\.raster-histogram-threshold-marker:is\(:hover, :focus-visible\) \.raster-histogram-threshold-guide\s*\{[^}]*visibility:\s*visible/s);
+  assert.match(stylesheet, /\.raster-histogram-threshold-target\s*\{[^}]*pointer-events:\s*all/s);
 });
 
 test("log and clipped 1D axes preserve bin identity, hover counts and style marker coordinates", () => {
@@ -243,6 +270,6 @@ test("log and clipped 1D axes preserve bin identity, hover counts and style mark
   assert.equal(tooltip.children[1].textContent, "1–10");
   assert.match(tooltip.children[2].textContent, /5 pixels · 50.00%/);
   const markers = chart.children.find(child => child.classNames.includes("raster-histogram-thresholds"));
-  assert.equal(Number(markers.children[0].attributes.get("x1")), 338);
+  assert.equal(Number(markers.children[0].children[0].attributes.get("x1")), 338);
   assert.deepEqual(statistics, original);
 });
