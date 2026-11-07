@@ -218,13 +218,15 @@ export class RasterSeriesView {
      * One result position opens the existing values table instead of drawing a
      * chart. Pending temporal calculations open the plot area with measured progress; completed failures
      * and NoData remain available in the values table without an empty chart.
+     * Pending raster comparisons can set up plots before numeric values arrive.
      * Previous-area values remain plotted while replacements are calculated.
      * Source columns keep individual checkmarks visible but disabled during time-range analysis.
      * @param {SeriesPresentation} state Latest presentation supplied to render().
      * @return {void}
      */
     draw(state) {
-        const singleResult = state.statistics[0].rows.length === 1;
+        const resultPositions = state.statistics[0].rows.length;
+        const singleResult = resultPositions === 1;
         if (this.singleResult !== singleResult) {
             this.singleResult = singleResult;
             this.root.classList.toggle("raster-series-single-result", singleResult);
@@ -299,16 +301,20 @@ export class RasterSeriesView {
             (showingPrevious ? statistic.previousRows : statistic.rows).some(row => row.state === "value"));
         const hasResultRows = state.rows.some(row => row.state !== "waiting");
         const calculating = this.renderCalculationProgress(state);
-        const hideResults = !hasPlotValues && !hasResultRows && !calculating;
-        if (this.results.hidden !== hideResults) this.results.hidden = hideResults;
         const hidePlots = singleResult || !hasPlotValues;
+        const preparingComparison = hidePlots && !timeRange && state.busy &&
+            Boolean(state.area.area) && resultPositions > 1;
+        const hideResults = !hasPlotValues && !hasResultRows && !calculating && !preparingComparison;
+        if (this.results.hidden !== hideResults) this.results.hidden = hideResults;
         if (this.plots.hidden !== hidePlots) this.plots.hidden = hidePlots;
-        if (this.addPlot.hidden !== hidePlots) this.addPlot.hidden = hidePlots;
-        const hideToolbar = hidePlots && !calculating;
+        const hideAddPlot = hidePlots && !preparingComparison;
+        if (this.addPlot.hidden !== hideAddPlot) this.addPlot.hidden = hideAddPlot;
+        const hideToolbar = hideAddPlot && !calculating;
         if (this.chartToolbar.hidden !== hideToolbar) this.chartToolbar.hidden = hideToolbar;
-        if (this.plotHeading.hidden !== hideToolbar) this.plotHeading.hidden = hideToolbar;
+        const hideHeading = hidePlots && !calculating;
+        if (this.plotHeading.hidden !== hideHeading) this.plotHeading.hidden = hideHeading;
         this.renderPlotHeading(state);
-        const hideValues = calculating && !hasResultRows;
+        const hideValues = (calculating || preparingComparison) && !hasResultRows;
         if (this.values.hidden !== hideValues) this.values.hidden = hideValues;
         if (this.chartSettings.hidden !== !hasPlotValues) this.chartSettings.hidden = !hasPlotValues;
         if (this.chartNote.hidden !== !showingPrevious) this.chartNote.hidden = !showingPrevious;
