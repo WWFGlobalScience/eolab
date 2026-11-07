@@ -654,6 +654,46 @@ test("plot signatures ignore progress and catalog metadata, but retain display c
     assert.equal(calls.length, 6);
 });
 
+test("a previously hidden plot draws at its visible width as soon as it has a value", () => {
+    const h = fixture();
+    const view = new RasterSeriesPlotsView(h.document, {});
+    const rows = [
+        { label: "Raster A", state: "value", value: 2, rawValue: "2" },
+        { label: "Raster B", state: "value", value: 4, rawValue: "4" },
+    ];
+    const statistic = { id: 1, label: "Sum", expression: "sum(a)", styleIndex: 0, visible: true, plotId: 1, rows };
+    const state = {
+        plots: [
+            { id: 1, displayNumber: 1, scale: "linear", bounds: null, xBounds: null },
+            { id: 2, displayNumber: 2, scale: "linear", bounds: null, xBounds: null },
+        ],
+        statistics: [statistic], chartType: "line", showingPrevious: false,
+    };
+    view.renderPlots(state);
+    const chart = view.cards.get(2).chart;
+    Object.defineProperty(chart, "clientWidth", {
+        get() { return chart.getAttribute("hidden") === null ? 640 : 0; },
+    });
+    assert.equal(chart.clientWidth, 0, "CSS hides the unassigned SVG");
+
+    statistic.plotId = 2;
+    view.renderPlots(state);
+    assert.equal(chart.getAttribute("hidden"), null);
+    assert.equal(chart.getAttribute("viewBox").split(" ")[2], "640");
+    assert.equal(chart.querySelectorAll(".series-chart-point").length, 2);
+
+    state.busy = true;
+    for (const row of rows) Object.assign(row, { state: "waiting", value: null, rawValue: null });
+    view.renderPlots(state);
+    assert.equal(chart.clientWidth, 0, "the plot is hidden while waiting for replacement values");
+
+    Object.assign(rows[0], { state: "value", value: 6, rawValue: "6" });
+    view.renderPlots(state);
+    assert.equal(chart.getAttribute("hidden"), null);
+    assert.equal(chart.getAttribute("viewBox").split(" ")[2], "640");
+    assert.equal(chart.querySelectorAll(".series-chart-point").length, 1);
+});
+
 test("temporal plots use actual UTC spacing and retain NoData gaps through presentation changes", () => {
     const h = controlsFixture();
     const view = new RasterSeriesPlotsView(h.document, {});

@@ -309,7 +309,9 @@ export class RasterSeriesPlotsView {
         }
         chart.classList.toggle("is-previous", state.showingPrevious);
         chart.hidden = !values.some(point => plot.scale !== "log" || point.yValue > 0);
+        // Reveal the SVG before measuring it. Its hidden property does not reflect the attribute.
         if (chart.hidden) chart.setAttribute("hidden", "");
+        else chart.removeAttribute("hidden");
         empty.hidden = !chart.hidden;
         empty.textContent = !statistics.length ? "Choose this plot beside a statistic to show it here."
             : excluded && excluded === values.length ? "No positive values to plot. Choose Linear to see these results."
