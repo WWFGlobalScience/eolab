@@ -22,7 +22,7 @@ from eolab_app.processing.aggregate_models import (
     PixelPoint,
     RasterAggregateLimits,
 )
-from eolab_app.processing.polygon_areas import PolygonSummaryInput
+from eolab_app.polygon_areas import PolygonSummaryInput
 from eolab_app.processing.raster_aggregate import (
     calculate_raster_statistics_for_area,
     plan_statistics_grid,

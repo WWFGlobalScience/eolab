@@ -343,10 +343,10 @@ test("composition forwards inspection layout and CSS does not infer it from chan
     assert.match(STYLESHEET, /#app \.panel-opener\s*\{\s*inset: calc\(16px \+ var\(--map-tools-height, 42px\)\) auto auto 16px;/);
 });
 
-test("composition calculates committed boxes and closes inspection when no raster accepts a click", () => {
+test("composition forwards compatible map areas and closes inspection when no raster accepts a click", () => {
     assert.match(
         COMPOSITION_SOURCE,
-        /rasterClickSelected = rasterVisualization\.exploreAt\(event\.latlng, \{\s*onSelected: area => \{\s*updateRasterSeriesArea\(area, [^;]+\);\s*\},\s*\}\);\s*if \(!rasterClickSelected\) \{\s*mapInspection\.closeHistogram\(false\);\s*updateRasterSeriesArea\(null, ""\);/
+        /rasterClickSelected = rasterVisualization\.exploreAt\(event\.latlng, \{\s*onSelected: area => \{\s*if \(area\?\.kind === "polygonArea"\) return;\s*updateRasterSeriesArea\(area, [^;]+\);\s*\},\s*\}\);\s*if \(!rasterClickSelected\) \{\s*mapInspection\.closeHistogram\(false\);\s*updateRasterSeriesArea\(null, ""\);/
     );
     assert.match(COMPOSITION_SOURCE, /vectorFeatureInspector\.inspect\(event\)/);
 });

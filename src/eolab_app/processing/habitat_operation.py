@@ -23,7 +23,7 @@ from eolab_app.processing.habitat_models import (
 from eolab_app.processing.habitat_earth_engine import HabitatEarthEngineRuntime
 from eolab_app.processing.models import PreparedJobPlan, ProcessingError
 from eolab_app.processing.operation_context import OperationContext
-from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.processing.raster_operations import bind_area_arguments
 from eolab_app.raster.source_models import RasterSourceReference
 

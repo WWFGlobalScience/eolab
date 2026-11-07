@@ -404,7 +404,7 @@ export class RasterControlsView {
     /**
      * Mark the active histogram-area choice without changing availability.
      *
-     * @param {"none"|"wholeRaster"|"selectedArea"|"catalogSelection"} mode
+     * @param {"none"|"wholeRaster"|"selectedArea"|"catalogSelection"|"polygonArea"|"vector"} mode
      * Active area, or no selected histogram area for the raster.
      * @param {string} [label=""] Optional semantic histogram scope label.
      * @return {void}
@@ -505,6 +505,14 @@ export class RasterControlsView {
      */
     renderBivariateMode(state) {
         this.#bivariateView.renderMode(state);
+    }
+
+    /** Set whether the paired histogram can hand its area to other tools.
+     * @param {boolean} available Whether the area is supported by the destination tools.
+     * @return {void}
+     */
+    setPairedAreaActionsAvailable(available) {
+        this.#bivariateView.setAreaActionsAvailable(available);
     }
 
     /** Reveal and focus the paired controls in the histogram. @return {void} */

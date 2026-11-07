@@ -88,6 +88,17 @@ test("submission freezes the selected source and box independently of later map 
     assert.deepEqual(h.view.state.jobs[0].area.bounds, [77,22,78,23]);
 });
 
+test("the clip form rejects a histogram drawing without changing the selected clip area", async t => {
+    const h = fixture();
+    t.after(() => h.controller.destroy());
+    h.controller.open(source, box);
+    const drawing = {kind: "polygonArea", polygonArea: {id, sha256: "a".repeat(64)}};
+    assert.throws(() => h.controller.open(source, drawing), /uploaded polygon layer to clip/);
+    assert.deepEqual(h.view.state.area, box);
+    await h.controller.submit();
+    assert.deepEqual(h.requests.map(request => request.area), [box]);
+});
+
 test("clip choices distinguish two files from the same run and preserve the chosen original source", async () => {
     const first={kind:"runArtifact",jobId:"a".repeat(32),artifactId:"b".repeat(32),label:"First output"};
     const second={...first,artifactId:"c".repeat(32),label:"Second output"};

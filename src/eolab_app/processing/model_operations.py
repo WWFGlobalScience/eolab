@@ -12,7 +12,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from eolab_app.catalog_selection import VectorSelection
 from eolab_app.processing.models import Artifact, PreparedJobPlan, ProcessingError
-from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.processing.aggregate_models import (
     AggregateJobRequest,
     AggregateSpec,

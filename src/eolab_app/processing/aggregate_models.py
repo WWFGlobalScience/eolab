@@ -31,7 +31,7 @@ from eolab_app.raster.source_models import (
     RunArtifactReference,
 )
 
-from eolab_app.processing.polygon_areas import PolygonAreaReference, PolygonSummaryInput
+from eolab_app.polygon_areas import PolygonAreaReference, PolygonSummaryInput
 
 OPERATION_VERSION = "raster.aggregate.v1"
 Alias = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,31}$")]

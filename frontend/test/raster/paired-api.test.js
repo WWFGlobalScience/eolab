@@ -88,6 +88,25 @@ test("paired statistics retain the uploaded polygon filter and browser owner", a
   assert.equal(request.options.cache, "no-store");
 });
 
+test("paired statistics require the exact private drawing reference in the response", async () => {
+  const polygonArea = {id: "a".repeat(32), sha256: "b".repeat(64)};
+  const area = {kind: "polygonArea", polygonArea};
+  const response = {...pairedResponse(), scope: "polygonArea", polygonArea};
+  const result = await loadRasterPairedStatistics(X_ITEM, Y_ITEM, area, undefined, async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), {
+      xRaster: {collectionId: X_ITEM.collection, itemId: X_ITEM.id},
+      yRaster: {collectionId: Y_ITEM.collection, itemId: Y_ITEM.id}, polygonArea,
+    });
+    assert.equal(options.headers["X-EOLab-Processing"], "1");
+    assert.equal(options.credentials, "same-origin");
+    return Response.json(response);
+  });
+  assert.deepEqual(result.polygonArea, polygonArea);
+  await assert.rejects(loadRasterPairedStatistics(X_ITEM, Y_ITEM, area, undefined,
+    async () => Response.json({...response, polygonArea: {...polygonArea, id: "c".repeat(32)}})),
+    /polygon-area identity/);
+});
+
 
 test("paired sampling-box analysis keeps the same descriptor and rejects mismatched geometry", async () => {
   const area = {kind: "samplingBox", samplingBox: {center: {longitude: 0, latitude: 60}, sideLengthKm: 600}};

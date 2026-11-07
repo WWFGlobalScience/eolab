@@ -1,8 +1,10 @@
-"""Validate browser-supplied polygons for an exact raster summary area."""
+"""Validate, identify and load temporary browser-owned polygon areas."""
 
+import asyncio
 import hashlib
 import json
-from typing import Annotated, Literal, Self
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shapely.geometry import Polygon
@@ -18,7 +20,7 @@ Coordinate = tuple[
 
 
 class SummaryPolygon(BaseModel):
-    """A closed WGS84 polygon without holes, supplied for a raster calculation."""
+    """A browser-supplied, closed WGS84 polygon without holes."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["Polygon"] = "Polygon"
@@ -106,7 +108,7 @@ class PolygonSummaryInput(BaseModel):
 
 
 class PolygonAreaReference(BaseModel):
-    """An expiring Processing-owned input ID and the hash of its exact geometry."""
+    """An expiring browser-owned input ID and the hash of its exact geometry."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
@@ -120,3 +122,40 @@ class PolygonAreaUploadResponse(BaseModel):
     polygonArea: PolygonAreaReference
     bbox: tuple[float, float, float, float]
     matched: Annotated[int, Field(ge=1, le=500)]
+
+
+async def read_polygon_area_input(
+    get_input: Callable[[str, str, str], dict[str, Any]],
+    owner: str,
+    reference: PolygonAreaReference,
+) -> PolygonSummaryInput:
+    """Read the validated polygons stored under an unexpired, owned reference.
+
+    Storage errors propagate to the caller for translation.
+
+    Args:
+        get_input: Storage read that checks owner, expiry and content identity.
+        owner: Server-derived browser-session hash.
+        reference: Temporary input ID and expected geometry hash.
+
+    Returns:
+        Immutable polygon coordinates validated at the storage boundary.
+
+    Raises:
+        ValueError: If persisted geometry violates the polygon contract.
+    """
+
+    def load_polygons() -> PolygonSummaryInput:
+        """Validate an owned polygon payload off the event loop.
+
+        Returns:
+            Immutable polygon input from the store.
+
+        Raises:
+            ValueError: If the stored geometry is invalid.
+        """
+        return PolygonSummaryInput.model_validate(
+            get_input(owner, reference.id, reference.sha256)
+        )
+
+    return await asyncio.to_thread(load_polygons)

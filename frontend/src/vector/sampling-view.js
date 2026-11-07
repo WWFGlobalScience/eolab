@@ -5,9 +5,11 @@ export class VectorSamplingView {
      * @param {Document} [documentContext=document] Owning document.
      * @param {Object} [options] Mount selectors supplied by browser composition.
      * @param {string} [options.root="#vector-sampling"] Control container selector.
+     * @param {string} [options.polygonAreaHelp=""] Guidance when this placement uses a drawing.
      */
-    constructor(documentContext = document, { root = "#vector-sampling" } = {}) {
+    constructor(documentContext = document, { root = "#vector-sampling", polygonAreaHelp = "" } = {}) {
         this.document = documentContext;
+        this.polygonAreaHelp = polygonAreaHelp;
         this.root = documentContext.querySelector(root);
         this.elements = Object.fromEntries(["layer", "filter", "retry", "remove", "status", "predicate"]
             .map(name => [name, documentContext.querySelector(`${root} [data-vector-sampling="${name}"]`)]));
@@ -40,7 +42,9 @@ export class VectorSamplingView {
         this.elements.layer.value = state.key;
         this.elements.layer.disabled = state.targets.length === 0;
         this.elements.predicate.textContent = state.filterSummary;
-        this.elements.status.textContent = state.targets.length ? state.message : "Add a polygon layer to the map first.";
+        const message = state.targets.length ? state.message : "Add a polygon layer to the map first.";
+        this.elements.status.textContent = state.area?.polygonArea && this.polygonAreaHelp
+            ? `${message} ${this.polygonAreaHelp}` : message;
         this.elements.status.setAttribute("role", state.phase === "error" ? "alert" : "status");
         this.elements.status.classList.toggle("is-working", state.phase === "reading");
         this.elements.filter.disabled = !state.key;

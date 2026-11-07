@@ -9,7 +9,7 @@ from nhi_terrestrial_integrity_modeling.analysis_config import RasterStackConfig
 from eolab_app.catalog_selection import VectorSelection
 from eolab_app.processing.aggregate_models import AggregateArea
 from eolab_app.processing.clip_models import ClipGrid
-from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.raster.models import Wgs84Bounds
 from eolab_app.raster.source_models import RasterSourceReference

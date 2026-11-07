@@ -286,10 +286,10 @@ export class RasterSamplingAreaControlsView {
      * @throws {RangeError} If the mode is outside the sampling-area contract.
      */
     setSamplingAreaMode(mode, label = "") {
-        if (!["none", "wholeRaster", "selectedArea", "catalogSelection", "vector"].includes(mode)) {
+        if (!["none", "wholeRaster", "selectedArea", "catalogSelection", "polygonArea", "vector"].includes(mode)) {
             throw new RangeError(`Unknown raster sampling-area mode: ${mode}`);
         }
-        this.vectorChoice.checked = ["vector", "catalogSelection"].includes(mode) ||
+        this.vectorChoice.checked = ["vector", "catalogSelection", "polygonArea"].includes(mode) ||
             (mode === "none" && this.vectorChoice.checked);
         this.clearSampleWindowButton.checked = mode === "wholeRaster";
         this.useMapWindowButton.checked = mode === "selectedArea";

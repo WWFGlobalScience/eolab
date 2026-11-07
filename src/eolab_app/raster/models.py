@@ -2,6 +2,7 @@
 
 from eolab_app.sampling_box import Wgs84SamplingBox
 from eolab_app.catalog_selection import VectorSelection
+from eolab_app.polygon_areas import PolygonAreaReference
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
@@ -167,6 +168,7 @@ class RasterStatisticsArea(BaseModel):
         catalog_selection: Optional immutable catalog or uploaded-vector descriptor;
             absence selects the other explicit area or the whole raster.
         sampling_box: Optional kilometer-based geodesic box, exclusive of the other areas.
+        polygon_area: Optional temporary browser-owned polygon reference.
         category_values: Optional distinct numeric classification codes. Labels,
             colors and opacity remain outside the analysis contract.
     """
@@ -181,6 +183,7 @@ class RasterStatisticsArea(BaseModel):
         default=None, alias="catalogSelection"
     )
     sampling_box: Wgs84SamplingBox | None = Field(default=None, alias="samplingBox")
+    polygon_area: PolygonAreaReference | None = Field(default=None, alias="polygonArea")
 
     category_values: tuple[CategoryCode, ...] | None = Field(
         default=None, alias="categoryValues", min_length=1, max_length=256
@@ -190,13 +193,13 @@ class RasterStatisticsArea(BaseModel):
     def require_strict_sampling_area_union(
         self,
     ) -> "RasterStatisticsArea":
-        """Require at most one rectangle, geodesic box or vector sampling area.
+        """Require at most one explicit sampling area and distinct category codes.
 
         Returns:
             Validated request with one optional explicit sampling area.
 
         Raises:
-            ValueError: If more than one sampling area is supplied.
+            ValueError: If sampling areas or category codes conflict.
         """
         if (
             sum(
@@ -205,12 +208,13 @@ class RasterStatisticsArea(BaseModel):
                     self.selected_bounds,
                     self.catalog_selection,
                     self.sampling_box,
+                    self.polygon_area,
                 )
             )
             > 1
         ):
             raise ValueError(
-                "selectedBounds, samplingBox and catalogSelection are mutually exclusive"
+                "selectedBounds, samplingBox, catalogSelection and polygonArea are mutually exclusive"
             )
         if self.category_values is not None and len(set(self.category_values)) != len(
             self.category_values
@@ -239,6 +243,7 @@ class CatalogRasterPairRequest(BaseModel):
         catalog_selection: Optional Catalog or uploaded-vector selection used
             instead of rectangular bounds.
         sampling_box: Optional kilometer-based geodesic box, exclusive of other areas.
+        polygon_area: Optional temporary browser-owned polygon reference.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -254,10 +259,11 @@ class CatalogRasterPairRequest(BaseModel):
         default=None, alias="catalogSelection"
     )
     sampling_box: Wgs84SamplingBox | None = Field(default=None, alias="samplingBox")
+    polygon_area: PolygonAreaReference | None = Field(default=None, alias="polygonArea")
 
     @model_validator(mode="after")
     def reject_ambiguous_sampling_area(self) -> "CatalogRasterPairRequest":
-        """Require at most one rectangle, geodesic box or vector selection.
+        """Require at most one explicit area for the paired sampling grid.
 
         Returns:
             Validated ordered pair request.
@@ -272,12 +278,13 @@ class CatalogRasterPairRequest(BaseModel):
                     self.selected_bounds,
                     self.catalog_selection,
                     self.sampling_box,
+                    self.polygon_area,
                 )
             )
             > 1
         ):
             raise ValueError(
-                "selectedBounds, samplingBox and catalogSelection are mutually exclusive"
+                "selectedBounds, samplingBox, catalogSelection and polygonArea are mutually exclusive"
             )
         return self
 
@@ -385,9 +392,11 @@ class RasterPairedStatistics(BaseModel):
     """Bounded paired-raster distribution on the documented X reference grid.
 
     Attributes:
-        scope: Whole overlap, rectangle, geodesic box or vector-selection discriminator.
+        scope: Whole overlap, rectangle, geodesic box or polygon sampling mode.
         selected_bounds: Requested rectangle for ``selectedArea`` only.
         sampling_box: Requested center and size for ``samplingBox`` only.
+        catalog_selection: Source and filter for ``catalogSelection`` only.
+        polygon_area: Browser-owned reference for ``polygonArea`` only.
         reference_grid: Fixed declaration that X owns cell locations.
         resampling: Fixed nearest-neighbor alignment applied to Y.
         source_width: Width of the bounded X reference envelope.
@@ -406,9 +415,14 @@ class RasterPairedStatistics(BaseModel):
         histogram: Fixed 32-by-32 paired histogram with marginals.
     """
 
-    scope: Literal["wholeOverlap", "selectedArea", "catalogSelection", "samplingBox"]
+    scope: Literal[
+        "wholeOverlap", "selectedArea", "catalogSelection", "samplingBox", "polygonArea"
+    ]
     catalog_selection: VectorSelection | None = Field(
         default=None, alias="catalogSelection", exclude_if=_exclude_none_from_response
+    )
+    polygon_area: PolygonAreaReference | None = Field(
+        default=None, alias="polygonArea", exclude_if=_exclude_none_from_response
     )
     selected_bounds: Wgs84Bounds | None = Field(alias="selectedBounds")
     sampling_box: Wgs84SamplingBox | None = Field(
@@ -450,6 +464,8 @@ class RasterPairedStatistics(BaseModel):
             raise ValueError("paired statistics scope and bounds disagree")
         if (self.scope == "catalogSelection") != (self.catalog_selection is not None):
             raise ValueError("paired statistics scope and catalog selection disagree")
+        if (self.scope == "polygonArea") != (self.polygon_area is not None):
+            raise ValueError("paired statistics scope and polygon area disagree")
         if self.source_pixel_count != self.source_width * self.source_height:
             raise ValueError("paired source pixel count is inconsistent")
         if self.sampled_cell_count != self.sample_width * self.sample_height:
@@ -572,10 +588,11 @@ class RasterStatistics(BaseModel):
 
     Attributes:
         band: Fixed source band summarized by this response.
-        scope: Whole-raster, rectangle, geodesic-box or catalog-selection discriminator.
+        scope: Whole-raster, rectangle, geodesic box or polygon sampling mode.
         selected_bounds: Canonical WGS 84 rectangle for ``selectedArea`` only.
         sampling_box: Requested center and size for ``samplingBox`` only.
         catalog_selection: Catalog or uploaded-vector descriptor for ``catalogSelection``.
+        polygon_area: Browser-owned reference for ``polygonArea`` only.
         source_width: Width of the integral source envelope in pixels.
         source_height: Height of the integral source envelope in pixels.
         source_pixel_count: Pixel count of the integral source envelope.
@@ -594,13 +611,18 @@ class RasterStatistics(BaseModel):
     """
 
     band: Literal[1] = 1
-    scope: Literal["wholeRaster", "selectedArea", "catalogSelection", "samplingBox"]
+    scope: Literal[
+        "wholeRaster", "selectedArea", "catalogSelection", "samplingBox", "polygonArea"
+    ]
     selected_bounds: Wgs84Bounds | None = Field(alias="selectedBounds")
     sampling_box: Wgs84SamplingBox | None = Field(
         default=None, alias="samplingBox", exclude_if=_exclude_none_from_response
     )
     catalog_selection: VectorSelection | None = Field(
         default=None, alias="catalogSelection", exclude_if=_exclude_none_from_response
+    )
+    polygon_area: PolygonAreaReference | None = Field(
+        default=None, alias="polygonArea", exclude_if=_exclude_none_from_response
     )
     source_width: int = Field(alias="sourceWidth", gt=0)
     source_height: int = Field(alias="sourceHeight", gt=0)
@@ -652,6 +674,12 @@ class RasterStatistics(BaseModel):
         ):
             raise ValueError(
                 "catalogSelection statistics require only a catalog selection descriptor"
+            )
+        if (self.scope == "polygonArea") != (self.polygon_area is not None) or (
+            self.scope == "polygonArea" and (has_bounds or has_catalog_selection)
+        ):
+            raise ValueError(
+                "polygonArea statistics require only a polygon area reference"
             )
         if self.estimated != (self.sampling_method == "sampleGrid"):
             raise ValueError(

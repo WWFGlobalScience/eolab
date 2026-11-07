@@ -16,7 +16,7 @@ export const DEFAULT_RASTER_PERCENTILES = Object.freeze({
     upper: 95
 });
 
-import { vectorSelectionsEqual, normalizeRasterSamplingArea, WHOLE_RASTER_SAMPLING_AREA } from "../selected-area.js";
+import { polygonAreaReferencesEqual, validatePolygonAreaReference, vectorSelectionsEqual, normalizeRasterSamplingArea, WHOLE_RASTER_SAMPLING_AREA } from "../selected-area.js";
 export { normalizeRasterSamplingArea, WHOLE_RASTER_SAMPLING_AREA } from "../selected-area.js";
 
 /**
@@ -54,7 +54,9 @@ export function validateRasterStatistics(statistics) {
         throw rasterStatisticsContractError("band identity");
     }
     const catalogSelection = statistics.catalogSelection ?? null;
+    const polygonArea = statistics.polygonArea ?? null;
     const samplingBox = statistics.samplingBox ?? null;
+    if ((statistics.scope === "polygonArea") !== (polygonArea !== null)) throw rasterStatisticsContractError("polygon-area scope");
     if ((statistics.scope === "samplingBox") !== (samplingBox !== null)) throw rasterStatisticsContractError("sampling-box scope");
     if (samplingBox) normalizeSamplingBox(samplingBox);
     const hasValidCatalogSelectionId =
@@ -74,6 +76,9 @@ export function validateRasterStatistics(statistics) {
         if (statistics.selectedBounds !== null || !hasValidCatalogSelectionId) {
             throw rasterStatisticsContractError("catalog-selection scope");
         }
+    } else if (statistics.scope === "polygonArea") {
+        if (statistics.selectedBounds !== null || catalogSelection !== null) throw rasterStatisticsContractError("polygon-area scope");
+        validatePolygonAreaReference(polygonArea);
     } else if (statistics.scope === "samplingBox") {
         if (statistics.selectedBounds !== null || catalogSelection !== null) throw rasterStatisticsContractError("sampling-box scope");
     } else if (statistics.scope !== "wholeRaster") {
@@ -244,6 +249,10 @@ export function validateRasterStatisticsForSelection(
     ) {
         throw rasterStatisticsContractError("catalog-selection response identity");
     }
+    if (normalizedArea.kind === "polygonArea" && (validatedStatistics.scope !== "polygonArea" ||
+        !polygonAreaReferencesEqual(validatedStatistics.polygonArea, normalizedArea.polygonArea))) {
+        throw rasterStatisticsContractError("polygon-area response identity");
+    }
     return validatedStatistics;
 }
 
@@ -259,6 +268,10 @@ export function rasterStatisticsMatchesSelection(
     samplingArea
 ) {
     const normalizedArea = normalizeRasterSamplingArea(samplingArea);
+    if (normalizedArea.kind === "polygonArea") {
+        return statistics.scope === "polygonArea" &&
+            polygonAreaReferencesEqual(statistics.polygonArea, normalizedArea.polygonArea);
+    }
     if (normalizedArea.kind === "catalogSelection") {
         return (
             statistics.scope === "catalogSelection" &&

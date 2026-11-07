@@ -10,7 +10,7 @@ import math
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -18,6 +18,7 @@ from typing import Any, Protocol, cast
 import rasterio
 from functools import partial
 
+from eolab_app.polygon_areas import PolygonAreaReference, PolygonSummaryInput
 from eolab_app.raster.categorical_statistics import (
     CATEGORICAL_STATISTICS_ALGORITHM,
     categorical_statistics_policy_parameters,
@@ -72,6 +73,7 @@ from eolab_app.sampling_area import (
     SelectedBoundsSamplingArea,
     SamplingBoxArea,
     CatalogSelectionSamplingArea,
+    PolygonInputSamplingArea,
     WholeRasterSamplingArea,
 )
 
@@ -93,7 +95,7 @@ class _CategoricalStatisticsReader(Protocol):
 
         Args:
             data: Authorized original file or selected temporal observation.
-            sampling_area: Resolved whole-raster, rectangle, geodesic box or Catalog selection.
+            sampling_area: Resolved whole-raster, rectangle, geodesic box or polygon selection.
             cancellation_requested: Last-waiter cancellation predicate.
             category_values: Canonically sorted numeric classification codes.
 
@@ -153,6 +155,9 @@ class RasterStatisticsService:
             RasterPairedStatistics,
         ] = read_raster_paired_statistics,
         *,
+        polygon_area_reader: (
+            Callable[[str, PolygonAreaReference], Awaitable[PolygonSummaryInput]] | None
+        ) = None,
         categorical_statistics_reader: _CategoricalStatisticsReader = read_raster_categorical_statistics,
         queue_capacity: int = 32,
         queue_wait_seconds: float = 30,
@@ -169,6 +174,8 @@ class RasterStatisticsService:
                 source files and filters. Required for catalog selection requests.
             statistics_reader: Synchronous bounded native raster reader.
             paired_statistics_reader: Synchronous ordered-pair reader boundary.
+            polygon_area_reader: Loads an unexpired temporary polygon input for
+                its current browser session. Required for drawn polygon sampling.
             categorical_statistics_reader: Numeric category/area reader sharing
                 the same admission, authorization and cancellation lifecycle.
             queue_capacity: Additional distinct reads allowed to wait for a reader.
@@ -198,6 +205,7 @@ class RasterStatisticsService:
         self._tasks: set[asyncio.Task[_StatisticsResult]] = set()
         self._cache_entries = cache_entries
         self._catalog_selection_reader = catalog_selection_reader
+        self._polygon_area_reader = polygon_area_reader
         self._categorical_statistics_reader = categorical_statistics_reader
         self._statistics_reader = statistics_reader
         self._paired_statistics_reader = paired_statistics_reader
@@ -241,7 +249,7 @@ class RasterStatisticsService:
 
         Args:
             request: Existing catalog request or explicit raster source and area.
-            owner: Server-derived session hash for a private source.
+            owner: Server-derived session hash for a private raster or polygon area.
             upload_owner: Server-derived browser hash for uploaded polygon selections.
 
         Returns:
@@ -255,12 +263,15 @@ class RasterStatisticsService:
         async with self._source_access.open(
             raster_source_reference(request), owner
         ) as source:
-            return await self._get_authorized_statistics(request, source, upload_owner)
+            return await self._get_authorized_statistics(
+                request, source, owner, upload_owner
+            )
 
     async def _get_authorized_statistics(
         self,
         request: CatalogRasterStatisticsRequest | RasterStatisticsSourceRequest,
         authorized_raster: RasterReadSource,
+        owner: str | None,
         upload_owner: str | None,
     ) -> RasterStatistics:
         """Reuse or calculate statistics for an authorized raster and sampling area.
@@ -268,6 +279,7 @@ class RasterStatisticsService:
         Args:
             request: Validated raster identity and strict sampling-area union.
             authorized_raster: Source retained by the calling access scope.
+            owner: Server-derived session hash for a temporary polygon area.
             upload_owner: Browser identity for the selected uploaded polygons.
 
         Returns:
@@ -281,7 +293,9 @@ class RasterStatisticsService:
             VectorUploadError: If the selected upload is unavailable to this browser.
         """
         try:
-            sampling_area = await self._resolve_sampling_area(request, upload_owner)
+            sampling_area = await self._resolve_sampling_area(
+                request, owner, upload_owner
+            )
         except SelectionUnavailableError as error:
             raise RasterConflictError(error.detail) from error
         category_values = (
@@ -335,7 +349,10 @@ class RasterStatisticsService:
             detail = (
                 "The selected polygons do not overlap the raster. Choose another "
                 "polygon selection or use the whole raster."
-                if isinstance(sampling_area, CatalogSelectionSamplingArea)
+                if isinstance(
+                    sampling_area,
+                    (CatalogSelectionSamplingArea, PolygonInputSamplingArea),
+                )
                 else "The selected area does not overlap the raster"
             )
             raise RasterConflictError(detail) from error
@@ -343,7 +360,10 @@ class RasterStatisticsService:
             detail = (
                 "The selected polygons overlap the raster but contain no finite, "
                 "non-nodata sampled pixels. Choose another polygon selection or raster."
-                if isinstance(sampling_area, CatalogSelectionSamplingArea)
+                if isinstance(
+                    sampling_area,
+                    (CatalogSelectionSamplingArea, PolygonInputSamplingArea),
+                )
                 else "No finite, non-nodata pixels were found in the bounded "
                 "raster sample"
             )
@@ -378,7 +398,7 @@ class RasterStatisticsService:
 
         Args:
             request: Ordered raster references and optional sampling area.
-            owner: Server-derived session hash for any private input.
+            owner: Server-derived session hash for a private raster or polygon area.
             upload_owner: Server-derived browser hash for uploaded polygon selections.
 
         Returns:
@@ -397,7 +417,7 @@ class RasterStatisticsService:
                 self._source_access.open(request.y_raster, owner)
             )
             return await self._get_authorized_paired_statistics(
-                request, x, y, upload_owner
+                request, x, y, owner, upload_owner
             )
 
     async def _get_authorized_paired_statistics(
@@ -405,6 +425,7 @@ class RasterStatisticsService:
         request: CatalogRasterPairRequest | RasterPairSourceRequest,
         authorized_x: RasterReadSource,
         authorized_y: RasterReadSource,
+        owner: str | None,
         upload_owner: str | None,
     ) -> RasterPairedStatistics:
         """Return bounded paired statistics for two authorized original rasters.
@@ -417,6 +438,7 @@ class RasterStatisticsService:
             request: Validated ordered source pair and optional WGS 84 bounds.
             authorized_x: Retained X reference-grid source.
             authorized_y: Retained Y source for alignment.
+            owner: Server-derived session hash for a temporary polygon area.
             upload_owner: Browser identity for the selected uploaded polygons.
 
         Returns:
@@ -436,7 +458,9 @@ class RasterStatisticsService:
             else None
         )
         try:
-            sampling_area = await self._resolve_sampling_area(request, upload_owner)
+            sampling_area = await self._resolve_sampling_area(
+                request, owner, upload_owner
+            )
         except SelectionUnavailableError as error:
             raise RasterConflictError(error.detail) from error
         cache_key: tuple[object, ...] = (
@@ -476,7 +500,9 @@ class RasterStatisticsService:
             )
         except NoRasterBoundsOverlapError as error:
             raise RasterConflictError(
-                "The selected rasters and bounds have no geographic overlap"
+                "The selected polygons do not overlap both rasters. Choose another polygon layer or area."
+                if isinstance(sampling_area, PolygonInputSamplingArea)
+                else "The selected rasters and bounds have no geographic overlap"
             ) from error
         except NoValidRasterSamplesError as error:
             raise RasterConflictError(
@@ -602,7 +628,7 @@ class RasterStatisticsService:
             selected_bounds: Optional canonical WGS 84 sampling rectangle.
             cache_key: Ordered identities, signatures, bounds, and policy.
             cancellation_requested: Thread-safe last-waiter signal.
-            sampling_area: Authorized vector selection, rectangle or geodesic box descriptor.
+            sampling_area: Authorized polygon selection, rectangle or geodesic box descriptor.
 
         Returns:
             Newly computed bounded paired statistics.
@@ -620,15 +646,13 @@ class RasterStatisticsService:
         try:
             async with self._wait_for_read_capacity(cache_key):
                 require_active_raster_read(cancellation_requested.is_set)
-                options = (
-                    {"catalog_selection": sampling_area}
-                    if isinstance(sampling_area, CatalogSelectionSamplingArea)
-                    else (
-                        {"sampling_box": sampling_area.box}
-                        if isinstance(sampling_area, SamplingBoxArea)
-                        else {}
-                    )
-                )
+                options = {}
+                if isinstance(sampling_area, CatalogSelectionSamplingArea):
+                    options["catalog_selection"] = sampling_area
+                elif isinstance(sampling_area, PolygonInputSamplingArea):
+                    options["polygon_input"] = sampling_area
+                elif isinstance(sampling_area, SamplingBoxArea):
+                    options["sampling_box"] = sampling_area.box
                 private = authorized_x.private or authorized_y.private
                 execute = read_private_raster if private else asyncio.to_thread
                 statistics = await execute(
@@ -798,25 +822,36 @@ class RasterStatisticsService:
             | CatalogRasterPairRequest
             | RasterPairSourceRequest
         ),
+        owner: str | None,
         upload_owner: str | None,
     ) -> RasterSamplingArea:
-        """Resolve the requested whole-raster, rectangle, geodesic box or vector area.
+        """Resolve the area and check temporary polygon ownership before cache lookup.
 
         Args:
             request: Validated raster identity and exclusive sampling fields.
+            owner: Server-derived session hash for a temporary polygon area.
             upload_owner: Browser identity used to authorize an uploaded selection.
 
         Returns:
-            Whole-raster, rectangular, geodesic-box or authorized vector selection area.
+            Whole-raster, rectangle, geodesic box or authorized polygon selection.
 
         Raises:
             SelectionUnavailableError: If the selection reader or source is unavailable.
             VectorUploadError: If the selected upload is unavailable to this browser.
+            RasterConflictError: If the temporary polygon input is unavailable.
+            RasterUpstreamError: If temporary polygon storage cannot be read.
         """
         if request.selected_bounds is not None:
             return SelectedBoundsSamplingArea(request.selected_bounds.canonical_tuple())
         if request.sampling_box is not None:
             return SamplingBoxArea(request.sampling_box)
+        if request.polygon_area is not None:
+            if owner is None or self._polygon_area_reader is None:
+                raise RasterConflictError(
+                    "This drawn polygon area is unavailable. Choose the polygon layer again."
+                )
+            polygons = await self._polygon_area_reader(owner, request.polygon_area)
+            return PolygonInputSamplingArea(request.polygon_area, polygons)
         if request.catalog_selection is None:
             return WholeRasterSamplingArea()
         if self._catalog_selection_reader is None:

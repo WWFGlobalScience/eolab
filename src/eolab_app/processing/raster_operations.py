@@ -43,7 +43,7 @@ from eolab_app.processing.calculation_cache import (
     restore_cached_calculation_rows,
     prepare_calculation_values_for_cache,
 )
-from eolab_app.processing.polygon_areas import PolygonAreaReference
+from eolab_app.polygon_areas import PolygonAreaReference
 from eolab_app.raster.models import AuthorizedRaster, CatalogRasterRequest
 from eolab_app.raster.source_models import (
     RasterAnalysisSourceReference,

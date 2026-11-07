@@ -9,7 +9,7 @@ import fiona
 from eolab_app.catalog_selection import ResolvedCatalogSelection
 from eolab_app.bounded_vector import selection_summary
 from eolab_app.processing.aggregate_models import AggregateArea
-from eolab_app.processing.polygon_areas import PolygonSummaryInput
+from eolab_app.polygon_areas import PolygonSummaryInput
 from eolab_app.vector.filters import CatalogVectorFilterRequest, VectorFilter
 from eolab_app.vector.models import ResolvedVectorSource
 from eolab_app.vector.sampling import VectorSamplingService

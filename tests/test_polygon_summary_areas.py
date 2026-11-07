@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from rasterio.transform import from_origin
 
 from eolab_app.processing.aggregate_models import AggregateArea
-from eolab_app.processing.polygon_areas import PolygonSummaryInput
+from eolab_app.polygon_areas import PolygonSummaryInput
 from eolab_app.processing.raster_aggregate import calculate_raster_statistics_for_area
 from raster_aggregate_support import make_spec, LIMITS
 from raster_fixture_support import write_source

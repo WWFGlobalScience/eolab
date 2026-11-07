@@ -33,7 +33,11 @@ from eolab_app.processing.aggregate_models import (
     AggregateArea,
     AggregateJobRequest,
 )
-from eolab_app.processing.polygon_areas import PolygonAreaReference, PolygonSummaryInput
+from eolab_app.polygon_areas import (
+    PolygonAreaReference,
+    PolygonSummaryInput,
+    read_polygon_area_input,
+)
 from eolab_app.processing.ports import (
     JobArtifactStore,
     JobStore,
@@ -1150,10 +1154,7 @@ class ProcessingService:
             ProcessingError: If the input expired or is not owned by the caller.
             ValueError: If persisted geometry violates its input contract.
         """
-        payload = await asyncio.to_thread(
-            self.jobs.get_input, owner, reference.id, reference.sha256
-        )
-        polygons = PolygonSummaryInput.model_validate(payload)
+        polygons = await read_polygon_area_input(self.jobs.get_input, owner, reference)
         return AggregateArea(
             kind="polygons",
             bounds=polygons.bounds(),

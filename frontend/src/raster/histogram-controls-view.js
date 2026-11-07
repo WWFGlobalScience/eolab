@@ -290,7 +290,7 @@ export class RasterHistogramControlsView {
     /**
      * Explain whether an empty histogram needs a vector area or visible rasters.
      *
-     * @param {"none"|"wholeRaster"|"selectedArea"|"catalogSelection"|"vector"} mode
+     * @param {"none"|"wholeRaster"|"selectedArea"|"catalogSelection"|"polygonArea"|"vector"} mode
      * Active sampling-area discriminator.
      * @return {void}
      */

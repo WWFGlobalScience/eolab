@@ -32,6 +32,11 @@ from eolab_app.catalog.search_counts import number_matched_is_estimated
 from eolab_app.catalog.stac_api import StacApiWriter
 from eolab_app.diagnostics.service import RenderingDiagnosticsService
 from eolab_app.diagnostics.tracker import GetMapRequestTracker
+from eolab_app.polygon_areas import (
+    PolygonAreaReference,
+    PolygonSummaryInput,
+    read_polygon_area_input,
+)
 from eolab_app.processing.artifacts import LocalJobArtifacts
 from eolab_app.processing.job_store import PostgresJobStore
 from eolab_app.processing.job_notifications import PostgresJobWakeup
@@ -42,7 +47,11 @@ from eolab_app.processing.service import ProcessingService
 from eolab_app.processing.worker import ProcessingWorker, serve as serve_processing
 from eolab_app.raster.catalog import StacRasterCatalog
 from eolab_app.raster.geoserver import GeoServerRasterPublisher
-from eolab_app.raster.errors import RasterFeatureError
+from eolab_app.raster.errors import (
+    RasterConflictError,
+    RasterFeatureError,
+    RasterUpstreamError,
+)
 from eolab_app.raster.pixel_service import RasterPixelService
 from eolab_app.raster.publication import (
     RasterPublicationService,
@@ -247,11 +256,46 @@ def create_app(
         raster_sources,
         app_global_configuration.raster_pixel_read_concurrency,
     )
+
+    async def read_histogram_polygon_area(
+        owner: str, reference: PolygonAreaReference
+    ) -> PolygonSummaryInput:
+        """Load histogram polygons using the existing temporary input store.
+
+        Args:
+            owner: Server-derived session hash for the browser making the request.
+            reference: Expiring identifier and geometry hash supplied by that browser.
+
+        Returns:
+            Authorized, validated WGS84 polygons for a bounded read.
+
+        Raises:
+            RasterConflictError: If the polygon selection is unavailable or expired.
+            RasterUpstreamError: If temporary input storage is unavailable.
+        """
+        try:
+            return await read_polygon_area_input(
+                processing_store.get_input, owner, reference
+            )
+        except ProcessingError as error:
+            if error.code == "input_unavailable":
+                raise RasterConflictError(
+                    "This drawn polygon area expired or is unavailable. Choose the polygon layer again."
+                ) from error
+            raise RasterUpstreamError(
+                "Drawn polygon areas are temporarily unavailable. Try again shortly."
+            ) from error
+        except ValueError as error:
+            raise RasterConflictError(
+                "This drawn polygon area could not be read. Choose the polygon layer again."
+            ) from error
+
     raster_statistics_service = RasterStatisticsService(
         raster_sources,
         app_global_configuration.raster_statistics_read_concurrency,
         app_global_configuration.raster_statistics_cache_entries,
         catalog_selection_reader=vector_selection_reader,
+        polygon_area_reader=read_histogram_polygon_area,
         queue_capacity=app_global_configuration.raster_statistics_queue_capacity,
         queue_wait_seconds=app_global_configuration.raster_statistics_queue_wait_seconds,
         max_waiters=app_global_configuration.raster_statistics_max_waiters,
