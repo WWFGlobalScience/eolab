@@ -23,6 +23,8 @@
  * of the pane being shown.
  * @property {HTMLElement|null} [returnFocusTarget=null] Result control to focus
  * when returning from details, if it still exists in the current results.
+ * @property {() => void} [onDismiss] Notify the caller once when the inspector
+ * closes, after any focus restoration.
  */
 
 /**
@@ -71,6 +73,7 @@ export function initializeCatalogPaneControls(
         );
     }
     let returnFocusTarget = null;
+    let onInspectorDismiss = null;
     if (detailsDialog) {
         detailsDialog.append(elements.inspectorPane);
         elements.closeItemDetails.textContent = "×";
@@ -79,7 +82,7 @@ export function initializeCatalogPaneControls(
     }
 
     /**
-     * Applies selected-Item visibility without deciding its CSS placement.
+     * Apply inspector visibility and notify its caller after closing.
      *
      * @param {boolean} isVisible Whether the inspector is presented.
      * @param {CatalogPaneFocusOptions} [options={}] Focus behavior.
@@ -116,6 +119,11 @@ export function initializeCatalogPaneControls(
             target.focus();
         }
         if (visibilityChanged) {
+            if (!isVisible) {
+                const onDismiss = onInspectorDismiss;
+                onInspectorDismiss = null;
+                onDismiss?.();
+            }
             onLayoutChange();
         }
     }
@@ -151,13 +159,14 @@ export function initializeCatalogPaneControls(
 
     return Object.freeze({
         /**
-         * Reveals the requested metadata and remembers its originating control.
+         * Reveal metadata and remember where to return focus and report dismissal.
          *
-         * @param {CatalogPaneFocusOptions} [options={}] Focus behavior.
+         * @param {CatalogPaneFocusOptions} [options={}] Focus and dismissal behavior.
          * @return {void}
          */
         showInspector(options = {}) {
             returnFocusTarget = options.returnFocusTarget ?? null;
+            onInspectorDismiss = options.onDismiss ?? null;
             setInspectorVisible(true, options);
         },
 

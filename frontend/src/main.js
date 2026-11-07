@@ -1662,7 +1662,8 @@ async function initializeCatalog(
     }
 
     /**
-     * Select one result and activate analysis when it is a Catalog raster.
+     * Select one result, show its footprint until details close, and activate
+     * analysis when it is a Catalog raster.
      *
      * @param {Object} item Catalog Item selected from results or discovery.
      * @param {HTMLElement|null} [requestedButton=null] Optional matching result
@@ -1697,6 +1698,7 @@ async function initializeCatalog(
         updateCatalogMapAction(item);
         catalogPaneControls.showInspector({
             moveFocus: true, returnFocusTarget: itemButton,
+            onDismiss: () => footprintController.clearSelectedFootprint(),
         });
     }
 

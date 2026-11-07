@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { initializeCatalogPaneControls } from "../src/catalog-pane-controller.js";
+import { CatalogFootprintController } from "../src/catalog.js";
 
 class FakeClassList {
   constructor() {
@@ -211,6 +212,47 @@ test("Escape closes only the progressive inspector and restores results focus", 
   assert.equal(fixture.inspectorPane.hidden, true);
   assert.equal(fixture.resultsBody.hidden, false);
   assert.equal(fixture.document.activeElement, fixture.resultsHeading);
+});
+
+test("Dismissing item details clears the solid outline without leaving a focus preview", () => {
+  const fixture = createCatalogPaneFixture();
+  const controls = initializeCatalogPaneControls(fixture.document);
+  const visible = new Set();
+  const map = { removeLayer: layer => visible.delete(layer) };
+  const footprints = new CatalogFootprintController(map, (_item, state) => ({
+    state,
+    addTo() { visible.add(this); return this; },
+    getBounds: () => ({ isValid: () => false }),
+  }));
+  const item = { collection: "catalog", id: "workshop" };
+  const opener = new FakeElement({}, fixture.document);
+  opener.isConnected = true;
+  opener.focus = () => {
+    fixture.document.activeElement = opener;
+    footprints.preview(item);
+  };
+  const escape = new Event("keydown", { cancelable: true });
+  Object.defineProperty(escape, "key", { value: "Escape" });
+
+  const dismissals = [
+    [fixture.closeItemDetails, new Event("click")],
+    [fixture.inspectorPane, escape],
+  ];
+  for (const [target, event] of dismissals) {
+    footprints.select(item);
+    controls.showInspector({
+      moveFocus: true, returnFocusTarget: opener,
+      onDismiss: () => footprints.clearSelectedFootprint(),
+    });
+    assert.deepEqual([...visible].map(layer => layer.state), ["selected"]);
+
+    target.dispatchEvent(event);
+
+    assert.equal(fixture.document.activeElement, opener);
+    assert.equal(visible.size, 0);
+    footprints.preview(item);
+    assert.deepEqual([...visible].map(layer => layer.state), ["preview"]);
+  }
 });
 
 test("Catalog inspector shows requested metadata without a second disclosure", () => {
