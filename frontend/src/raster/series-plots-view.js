@@ -78,16 +78,17 @@ export class RasterSeriesPlotsView {
      * @return {RasterSeriesPlotCard} Retained controls, chart and pending-state elements.
      */
     createPlotCard(plot) {
+        const plotLabel = `Plot ${plot.displayNumber}`;
         const card = this.document.createElement("section");
         card.className = "raster-series-plot";
-        card.setAttribute("aria-label", `Plot ${plot.id}`);
+        card.setAttribute("aria-label", plotLabel);
         const header = this.document.createElement("div"); header.className = "raster-series-plot-header";
-        const title = this.document.createElement("strong"); title.textContent = `Plot ${plot.id}`;
+        const title = this.document.createElement("strong"); title.textContent = plotLabel;
         const options = this.document.createElement("fieldset"); options.className = "raster-series-axis-options";
-        const caption = this.document.createElement("legend"); caption.textContent = `Plot ${plot.id}`;
+        const caption = this.document.createElement("legend"); caption.textContent = plotLabel;
         options.append(caption); this.axisOptions.append(options);
         const label = this.document.createElement("label"); label.textContent = "Y scale ";
-        const scale = this.document.createElement("select"); scale.setAttribute("aria-label", `Plot ${plot.id} Y axis`);
+        const scale = this.document.createElement("select"); scale.setAttribute("aria-label", `${plotLabel} Y axis`);
         for (const value of ["linear", "log"]) {
             const option = this.document.createElement("option"); option.value = value; option.textContent = value === "log" ? "Log" : "Linear"; scale.append(option);
         }
@@ -96,7 +97,7 @@ export class RasterSeriesPlotsView {
         for (const axis of ["x", "y"]) {
             const group = this.document.createElement("div"); group.className = "raster-series-axis-range";
             const rangeLabel = this.document.createElement("label"); rangeLabel.textContent = axis === "x" ? "Time (UTC) " : "Y bounds ";
-            const range = this.document.createElement("select"); range.setAttribute("aria-label", `Plot ${plot.id} ${axis.toUpperCase()} bounds`);
+            const range = this.document.createElement("select"); range.setAttribute("aria-label", `${plotLabel} ${axis.toUpperCase()} bounds`);
             for (const [value, text] of [["auto", "Automatic"], ["custom", "Custom"]]) {
                 const option = this.document.createElement("option"); option.value = value; option.textContent = text; range.append(option);
             }
@@ -107,7 +108,7 @@ export class RasterSeriesPlotsView {
                 const input = this.document.createElement("input"); input.type = axis === "x" ? "text" : "number";
                 input.step = "any";
                 if (axis === "x") input.placeholder = "YYYY-MM-DD HH:mm";
-                input.setAttribute("aria-label", `Plot ${plot.id} ${axis.toUpperCase()} ${name.toLowerCase()}`);
+                input.setAttribute("aria-label", `${plotLabel} ${axis.toUpperCase()} ${name.toLowerCase()}`);
                 field.append(input); bounds.append(field); return input;
             });
             group.append(rangeLabel, bounds); options.append(group);
@@ -121,14 +122,14 @@ export class RasterSeriesPlotsView {
             const label = this.document.createElement("label"); label.textContent = caption;
             const input = this.document.createElement("input"); input.type = "number"; input.min = String(min); input.max = String(max);
             input.step = "1"; input.value = String(plot[name] ?? value);
-            input.setAttribute("aria-label", `Plot ${plot.id} ${caption}`);
+            input.setAttribute("aria-label", `${plotLabel} ${caption}`);
             label.append(input); options.append(label); appearance[name] = input;
         }
         const error = this.document.createElement("p"); error.className = "raster-series-axis-error"; error.setAttribute("role", "status"); error.hidden = true;
         options.append(error);
         if (plot.id !== 1) {
             const remove = this.document.createElement("button"); remove.type = "button"; remove.className = "secondary-button"; remove.textContent = "×";
-            remove.setAttribute("aria-label", `Remove Plot ${plot.id}; move statistics to Plot 1`);
+            remove.setAttribute("aria-label", `Remove ${plotLabel}; move statistics to Plot 1`);
             remove.title = "Remove plot; move statistics to Plot 1";
             remove.addEventListener("click", () => this.actions.onRemovePlot(plot.id)); header.append(remove);
         }
@@ -144,7 +145,7 @@ export class RasterSeriesPlotsView {
         const pendingHeading = this.document.createElement("strong"); pendingHeading.textContent = "Calculating statistics";
         const pendingDetail = this.document.createElement("p");
         const pendingBar = this.document.createElement("progress");
-        pendingBar.setAttribute("aria-label", `Calculation progress for Plot ${plot.id}`);
+        pendingBar.setAttribute("aria-label", `Calculation progress for ${plotLabel}`);
         pendingMessage.append(pendingHeading, pendingDetail, pendingBar); pendingProgress.append(pendingMessage);
         card.append(header, legend, note, chart, empty, pendingProgress);
         const tooltip = createChartTooltip(this.document, card);
@@ -274,7 +275,7 @@ export class RasterSeriesPlotsView {
     /** Update one existing plot card's chart, legend, value details and empty-state message.
      * Values its scale cannot represent stay in the result table and CSV.
      * @param {Object} elements Retained card elements.
-     * @param {{id:number,scale:string}} plot Plot settings.
+     * @param {import("./series-view.js").SeriesPlot} plot Plot settings.
      * @param {Object[]} statistics Visible statistics assigned to this plot.
      * @param {{showingPrevious:boolean,chartType:string,temporal:Object|null}} state Current presentation settings.
      * @param {import("../charts/series-chart.js").ChartSeries[]} series Chart-only observations and styles.
@@ -322,7 +323,7 @@ export class RasterSeriesPlotsView {
             xScale: state.temporal ? "numeric" : "ordinal", xAxisLabel: state.temporal ? "Time (UTC)" : "Raster",
             yAxisLabel: (units.length === 1 && units[0] !== "unit unspecified" ? `Value (${units[0]})` : "Value") + (plot.scale === "log" ? " · log" : ""),
             yAxisLabelPosition: "top",
-            ariaLabel: `Plot ${plot.id}${state.showingPrevious ? "; previous results" : ""}: ${series.map(item => item.label).join("; ")}`,
+            ariaLabel: `Plot ${plot.displayNumber}${state.showingPrevious ? "; previous results" : ""}: ${series.map(item => item.label).join("; ")}`,
             pointAccessibleLabel: (point, item, index) => this.describePoint(series, index, plot.scale, state.showingPrevious),
             onInspect: inspection => {
                 if (inspection?.point) tooltip.show(this.describePoint(series, inspection.index, plot.scale, state.showingPrevious));

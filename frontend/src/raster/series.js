@@ -81,7 +81,8 @@ export class RasterSeriesController {
         this.formulas = [{ id: 1, ...SERIES_STATISTICS.mean }];
         this.formulaSerial = 1;
         this.areaChoice = "selection";
-        this.plots = [{ id: 1, scale: "linear", bounds: null, xBounds: null }];
+        /** @type {import("./series-view.js").SeriesPlot[]} Plots in creation order. */
+        this.plots = [{ id: 1, displayNumber: 1, scale: "linear", bounds: null, xBounds: null }];
         this.plotSerial = 1;
         this.statisticDisplay = new Map([[1, { plotId: 1, visible: true, styleIndex: 0 }]]);
         this.selectedArea = null;
@@ -630,9 +631,13 @@ export class RasterSeriesController {
         this.render();
     }
 
-    /** Add an empty plot with a linear Y axis; retain all calculation results. @return {void} */
+    /** Add an empty plot numbered after the last remaining plot.
+     * A fresh identity keeps its assignment and axis controls separate from removed plots.
+     * @return {void}
+     */
     addPlot() {
-        this.plots.push({ id: ++this.plotSerial, scale: "linear", bounds: null, xBounds: null });
+        const displayNumber = this.plots.at(-1).displayNumber + 1;
+        this.plots.push({ id: ++this.plotSerial, displayNumber, scale: "linear", bounds: null, xBounds: null });
         this.render();
     }
 

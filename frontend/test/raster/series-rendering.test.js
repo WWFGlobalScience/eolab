@@ -49,7 +49,7 @@ function controlsFixture() {
         rows: [{ label: "Raster A", statisticLabel: "Mean", state: "waiting", value: null, rawValue: null }] };
     const state = { active: true, busy: true, sources: [source], rows: formula.rows, previousRows: null,
         showingPrevious: false, message: "Preparing", canDownload: false, chartType: "line",
-        statistics: [formula], plots: [{ id: 1, scale: "linear" }],
+        statistics: [formula], plots: [{ id: 1, displayNumber: 1, scale: "linear" }],
         area: { formulas: [formula], sources: [source], results: new Map(), areaChoice: "whole",
             hasErrors: false, recoverable: false } };
     const draw = () => { h.view.render(state); h.frame(); };
@@ -161,8 +161,8 @@ test("changed controls remain current without overwriting a focused formula edit
     const inputs = row.querySelectorAll("input");
     const expression = inputs.find(input => input.dataset.field === "expression");
     expression.value = "mean(a) + "; expression.focus();
-    Object.assign(h.state.statistics[0], { label: "Average", visible: false, plotId: 2 });
-    h.state.plots.push({ id: 2, scale: "log" });
+    Object.assign(h.state.statistics[0], { label: "Average", visible: false, plotId: 5 });
+    h.state.plots.push({ id: 5, displayNumber: 2, scale: "log" });
     h.state.sources[0].label = "Renamed raster";
     h.state.busy = false; h.state.canDownload = true;
     h.state.area.recoverable = true;
@@ -172,7 +172,8 @@ test("changed controls remain current without overwriting a focused formula edit
     assert.equal(inputs.find(input => input.dataset.field === "label").value, "Average");
     assert.equal(inputs[0].checked, false);
     assert.equal(inputs[0].getAttribute("aria-label"), "Show Average on plot");
-    assert.equal(row.querySelector("select").value, "2");
+    assert.equal(row.querySelector("select").value, "5");
+    assert.deepEqual(row.querySelector("select").children.map(option => option.textContent), ["Plot 1", "Plot 2"]);
     assert.equal(row.querySelector("select").getAttribute("aria-label"), "Plot for Average");
     assert.equal(h.view.sources.children[0].children[0].children[1].textContent, "Renamed raster");
     assert.equal(h.view.root.getAttribute("aria-busy"), "false");
@@ -635,7 +636,7 @@ test("plot signatures ignore progress and catalog metadata, but retain display c
     const row = { label: "Raster", state: "value", value: 2, rawValue: "2.000", unit: "ha",
         item: { toJSON() { throw Error("Catalog metadata must never be serialized for drawing"); } } };
     const statistic = { id: 1, label: "Mean", expression: "mean(a)", styleIndex: 0, visible: true, plotId: 1, rows: [row] };
-    const state = { plots: [{ id: 1, scale: "linear" }], statistics: [statistic], chartType: "line", showingPrevious: false };
+    const state = { plots: [{ id: 1, displayNumber: 1, scale: "linear" }], statistics: [statistic], chartType: "line", showingPrevious: false };
     view.renderPlots(state);
     row.errorMessage = "Progress changed";
     view.renderPlots(state);
@@ -661,7 +662,7 @@ test("temporal plots use actual UTC spacing and retain NoData gaps through prese
         xValue: Date.UTC(2000, 0, 1, hour), state: hour === 2 ? "no_valid_data" : "value",
         value: hour === 2 ? null : hour + 1, rawValue: hour === 2 ? null : `${hour + 1}.0000000000000001`, unit: "K",
     }));
-    const state = { plots: [{ id: 1, scale: "linear" }], chartType: "line", temporal: {}, showingPrevious: false,
+    const state = { plots: [{ id: 1, displayNumber: 1, scale: "linear" }], chartType: "line", temporal: {}, showingPrevious: false,
         statistics: [{ id: 1, label: "Mean", expression: "mean(a)", styleIndex: 0, visible: true, plotId: 1, rows }] };
     view.renderPlots(state);
     const chart = view.cards.get(1).chart;
@@ -720,7 +721,7 @@ test("axis editors redraw retained observations and preserve the valid plot duri
     const h = fixture();
     const rows = [0,1,6].map(hour => ({label: `${hour}:00 UTC`, xValue: Date.UTC(2000,0,1,hour),
         state:"value",value:hour+1,rawValue:String(hour+1),unit:"K"}));
-    const state = {plots:[{id:1,scale:"linear",bounds:null,xBounds:null}],chartType:"bar",temporal:{},showingPrevious:false,
+    const state = {plots:[{id:1,displayNumber:1,scale:"linear",bounds:null,xBounds:null}],chartType:"bar",temporal:{},showingPrevious:false,
         statistics:[{id:1,label:"Mean",expression:"mean(a)",styleIndex:0,visible:true,plotId:1,rows}]};
     const original = JSON.stringify(rows), changes = [];
     const view = new RasterSeriesPlotsView(h.document, {onPlotOptions(id, change) {
@@ -765,14 +766,17 @@ test("axis editors redraw retained observations and preserve the valid plot duri
 test("adding a secondary plot reveals it once; initial drawing and updates preserve scroll and focus", () => {
     const h = fixture();
     const view = new RasterSeriesPlotsView(h.document, {});
-    const state = { plots: [{ id: 1, scale: "linear" }], statistics: [], chartType: "line", showingPrevious: false };
+    const state = { plots: [{ id: 1, displayNumber: 1, scale: "linear" }], statistics: [], chartType: "line", showingPrevious: false };
     view.renderPlots(state);
     assert.deepEqual(view.cards.get(1).card.scrollRequests, []);
-    state.plots.push({ id: 2, scale: "linear" });
+    state.plots.push({ id: 5, displayNumber: 2, scale: "linear" });
     view.renderPlots(state);
-    const added = view.cards.get(2);
+    const added = view.cards.get(5);
     assert.equal(view.cards.get(1).title.parentElement.hidden, false);
     assert.equal(added.title.parentElement.hidden, false);
+    assert.equal(added.title.textContent, "Plot 2");
+    assert.equal(added.card.getAttribute("aria-label"), "Plot 2");
+    assert.equal(added.scale.getAttribute("aria-label"), "Plot 2 Y axis");
     assert.equal(added.empty.textContent, "Choose this plot beside a statistic to show it here.");
     assert.deepEqual(added.card.scrollRequests, [{ block: "start", inline: "nearest" }]);
     added.scale.focus();
